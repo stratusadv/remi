@@ -1,55 +1,74 @@
 import { ref } from 'vue'
+import { assert } from '../lib/assert'
 import { ipc } from '../lib/ipc'
 import { use_endpoints } from './use_endpoints'
-import type { NotesTemplate } from '../types'
+import type { Instruction, NotesTemplate, TemplateID } from '../types'
 
 
 const MESSAGE_KEY_MISSING = 'Add your notes API key under Settings first.'
 const templates = ref<NotesTemplate[]>([])
 const error_message = ref<string | null>(null)
+const api = Object.freeze({ templates, error_message, refresh, save, remove, generate })
 
 
-async function refresh() {
-    error_message.value = null
+export function use_notes_templates(): typeof api {
+    assert(Object.isFrozen(api))
+    assert(Array.isArray(templates.value))
 
-    try {
-        templates.value = await ipc.notes_templates_list()
-    } catch (error) {
-        error_message.value = String(error)
-    }
+    return api
 }
 
-async function save(template: NotesTemplate) {
-    error_message.value = null
+async function generate(description: Instruction): Promise<string> {
+    assert(typeof description === 'string')
 
-    try {
-        await ipc.notes_template_save(template)
-        await refresh()
-    } catch (error) {
-        error_message.value = String(error)
-    }
-}
-
-async function remove(id: string) {
-    error_message.value = null
-
-    try {
-        await ipc.notes_template_delete(id)
-        await refresh()
-    } catch (error) {
-        error_message.value = String(error)
-    }
-}
-
-async function generate(description: string): Promise<string> {
     const { endpoints_by_purpose } = use_endpoints()
     const endpoint_id = endpoints_by_purpose('notes')[0]?.id
 
-    if (!endpoint_id) throw new Error(MESSAGE_KEY_MISSING)
+    if (endpoint_id === undefined) throw new Error(MESSAGE_KEY_MISSING)
 
-    return await ipc.notes_template_generate(endpoint_id, description)
+    assert(typeof endpoint_id === 'string')
+
+    return ipc.notes_template_generate(endpoint_id, description)
 }
 
-export function use_notes_templates() {
-    return { templates, error_message, refresh, save, remove, generate }
+async function refresh(): Promise<void> {
+    error_message.value = null
+
+    try {
+        const fetched = await ipc.notes_templates_list()
+
+        assert(Array.isArray(fetched))
+
+        templates.value = fetched
+
+        assert(templates.value.length === fetched.length)
+    } catch (error) {
+        error_message.value = String(error)
+    }
+}
+
+async function remove(id: TemplateID): Promise<void> {
+    assert(typeof id === 'string')
+    assert(Array.isArray(templates.value))
+
+    error_message.value = null
+
+    return ipc.notes_template_delete(id)
+        .then(refresh)
+        .catch((error: unknown) => {
+            error_message.value = String(error)
+        })
+}
+
+async function save(template: NotesTemplate): Promise<void> {
+    assert(typeof template.id === 'string')
+    assert(typeof template.name === 'string')
+
+    error_message.value = null
+
+    return ipc.notes_template_save(template)
+        .then(refresh)
+        .catch((error: unknown) => {
+            error_message.value = String(error)
+        })
 }

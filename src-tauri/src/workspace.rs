@@ -1,35 +1,52 @@
+use crate::contract::{ClipEnd, ClipStart};
 use crate::error::{AppError, AppResult};
+use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::fmt::Write as _;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::thread;
 
+const AUDIO_FILE_NAME: &str = "audio.wav";
 pub(crate) const AUDIO_HOURS_MAX: u64 = 6;
 pub(crate) const AUDIO_SECONDS_MAX: u64 = AUDIO_HOURS_MAX * 60 * 60;
-pub(crate) const NOTES_BYTES_MAX: u32 = 4 << 20;
-pub(crate) const PCM16_SAMPLE_BYTES: u32 = 2;
-const JOBS_FOLDER: &str = "jobs";
-const AUDIO_FILE_NAME: &str = "audio.wav";
 const CLIP_FILE_PREFIX: &str = "clip-";
-const META_FILE_NAME: &str = "meta.json";
-const NOTES_FILE_NAME: &str = "notes.md";
-const TRANSCRIPT_FILE_PREFIX: &str = "transcript-";
-const TRANSCRIPT_FILE_SUFFIX: &str = ".json";
+const ENGINE_COUNT_MAX: u32 = 16;
+#[cfg(not(windows))]
+const FILE_MODE_PRIVATE: u32 = 0o600;
 const HASH_BUFFER_BYTES: u32 = 64 * 1024;
+const JOB_COUNT_MAX: u32 = 4096;
 const JOB_ID_BYTES: usize = 16;
 const JOB_ID_HEX_LENGTH: usize = JOB_ID_BYTES * 2;
-const JOB_COUNT_MAX: u32 = 4096;
-const ENGINE_COUNT_MAX: u32 = 16;
+const JOBS_FOLDER: &str = "jobs";
 const META_BYTES_MAX: u32 = 64 << 10;
-const TRANSCRIPT_BYTES_MAX: u32 = 64 << 20;
-const SNIPPET_CHARS_MAX: u32 = 160;
+const META_FILE_NAME: &str = "meta.json";
+pub(crate) const NOTES_BYTES_MAX: u32 = 4 << 20;
+const NOTES_FILE_NAME: &str = "notes.md";
+pub(crate) const PCM16_SAMPLE_BYTES: u32 = 2;
 const SNIPPET_CHARS_CONTEXT: u32 = 80;
+const SNIPPET_CHARS_MAX: u32 = 160;
+const TRANSCRIPT_BLANK_BYTES_MAX: u64 = 64;
+const TRANSCRIPT_BYTES_MAX: u32 = 64 << 20;
+const TRANSCRIPT_FILE_PREFIX: &str = "transcript-";
+const TRANSCRIPT_FILE_SUFFIX: &str = ".json";
 
 const _: () = assert!(SNIPPET_CHARS_CONTEXT < SNIPPET_CHARS_MAX);
 const _: () = assert!(META_BYTES_MAX < TRANSCRIPT_BYTES_MAX);
 const _: () = assert!(NOTES_BYTES_MAX < TRANSCRIPT_BYTES_MAX);
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClipPaths<'path> {
+    pub(crate) clip: &'path Path,
+    pub(crate) source: &'path Path,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClipSpan {
+    end_seconds: f64,
+    start_seconds: f64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct JobMeta {
@@ -91,14 +108,462 @@ pub(crate) struct JobSearchHit {
     pub(crate) snippet: String,
 }
 
+#[derive(Debug)]
+pub(crate) struct SearchNeedle(String);
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TranscriptSlot<'text> {
+    pub(crate) engine_id: &'text str,
+    pub(crate) job_id: &'text str,
+}
+
+impl ClipSpan {
+    pub(crate) fn of(start: ClipStart, end: ClipEnd) -> AppResult<Self> {
+        let ClipStart(start_seconds) = start;
+        let ClipEnd(end_seconds) = end;
+        let ordered = start_seconds >= 0.0_f64 && end_seconds > start_seconds;
+
+        if !ordered {
+            return Err(AppError::Config("a clip needs a positive time range".into()));
+        }
+
+        Ok(Self { end_seconds, start_seconds })
+    }
+}
+
+impl JobMetaPatch {
+    #[cfg(test)]
+    pub(crate) fn empty() -> Self {
+        Self::default()
+    }
+}
+
+impl SearchNeedle {
+    fn of(query: &str) -> Option<Self> {
+        let needle = query.trim().to_lowercase();
+
+        if needle.is_empty() {
+            return None;
+        }
+
+        Some(Self(needle))
+    }
+}
+
+pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> AppResult<()> {
+    atomic_replace(path, |path_temporary| fs::write(path_temporary, contents))
+}
+
+#[cfg(not(windows))]
+pub(crate) fn atomic_write_private(path: &Path, contents: &[u8]) -> AppResult<()> {
+    use std::fs::{OpenOptions, Permissions};
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
+    assert!(path.file_name().is_some());
+
+    atomic_replace(path, |path_temporary| {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .mode(FILE_MODE_PRIVATE)
+            .truncate(true)
+            .write(true)
+            .open(path_temporary)?;
+
+        file.set_permissions(Permissions::from_mode(FILE_MODE_PRIVATE))?;
+        file.write_all(contents)
+    })
+}
+
+pub(crate) fn audio_clip_save(paths: &ClipPaths<'_>, span: ClipSpan) -> AppResult<()> {
+    assert!(span.start_seconds >= 0.0_f64);
+    assert!(span.end_seconds > span.start_seconds);
+
+    let mut reader = wav_reader_open(paths.source)?;
+    let specification = reader.spec();
+    let rate = f64::from(specification.sample_rate);
+    let length = reader.len();
+    let sample_start = sample_index_clamp((span.start_seconds * rate).floor(), length);
+    let sample_end = sample_index_clamp((span.end_seconds * rate).ceil(), length);
+
+    if sample_end <= sample_start {
+        return Err(AppError::Audio("the clip lies past the end of the audio".into()));
+    }
+
+    reader.seek(sample_start).map_err(|error| AppError::Audio(format!("wav seek: {error}")))?;
+
+    let mut writer = hound::WavWriter::create(paths.clip, specification)
+        .map_err(|error| AppError::Audio(format!("wav create: {error}")))?;
+
+    let sample_count = usize::try_from(sample_end - sample_start).unwrap_or(usize::MAX);
+
+    for sample in reader.samples::<i16>().take(sample_count) {
+        let value = sample.map_err(|error| AppError::Audio(format!("wav read: {error}")))?;
+
+        writer
+            .write_sample(value)
+            .map_err(|error| AppError::Audio(format!("wav write: {error}")))?;
+    }
+
+    writer.finalize().map_err(|error| AppError::Audio(format!("wav finalize: {error}")))?;
+
+    Ok(())
+}
+
+pub(crate) fn audio_wav_duration_seconds(path: &Path) -> AppResult<f64> {
+    let reader = wav_reader_open(path)?;
+    let sample_rate = reader.spec().sample_rate;
+
+    assert!(sample_rate > 0);
+
+    let duration_seconds = f64::from(reader.duration()) / f64::from(sample_rate);
+
+    assert!(duration_seconds >= 0.0_f64);
+    assert!(duration_seconds.is_finite());
+
+    Ok(duration_seconds)
+}
+
+pub(crate) fn audio_wav_is_prepared(path: &Path) -> bool {
+    assert!(path.file_name().is_some());
+
+    if !path.exists() {
+        return false;
+    }
+
+    !audio_wav_duration_seconds(path).is_ok_and(|seconds| seconds <= 0.0_f64)
+}
+
+pub(crate) fn audio_wav_load(path: &Path) -> AppResult<(Vec<f32>, u32)> {
+    let mut reader = wav_reader_open(path)?;
+    let sample_rate = reader.spec().sample_rate;
+    let samples_max = u64::from(reader.len());
+
+    let read: Result<Vec<f32>, _> = reader
+        .samples::<i16>()
+        .map(|sample| sample.map(|value| f32::from(value) / f32::from(i16::MAX)))
+        .collect();
+
+    let samples = read.map_err(|error| AppError::Audio(format!("wav read: {error}")))?;
+
+    assert!(sample_rate > 0);
+    assert!(u64::try_from(samples.len()).unwrap_or(u64::MAX) <= samples_max);
+
+    Ok((samples, sample_rate))
+}
+
+pub(crate) fn audio_wav_save(samples: &[f32], sample_rate: u32, path: &Path) -> AppResult<()> {
+    assert!(sample_rate > 0);
+
+    let sample_count = u64::try_from(samples.len()).unwrap_or(u64::MAX);
+
+    if sample_count > AUDIO_SECONDS_MAX * u64::from(sample_rate) {
+        return Err(AppError::Audio(format!(
+            "the audio is longer than the {AUDIO_HOURS_MAX} hours this app keeps",
+        )));
+    }
+
+    let mut writer = hound::WavWriter::create(path, wav_specification_mono_pcm16(sample_rate))
+        .map_err(|error| AppError::Audio(format!("wav create: {error}")))?;
+
+    for value in samples_to_pcm16(samples) {
+        writer
+            .write_sample(value)
+            .map_err(|error| AppError::Audio(format!("wav write: {error}")))?;
+    }
+
+    assert_eq!(u64::from(writer.len()), sample_count);
+
+    writer.finalize().map_err(|error| AppError::Audio(format!("wav finalize: {error}")))?;
+
+    Ok(())
+}
+
+pub(crate) fn engines_for_job(id: &str) -> AppResult<Vec<String>> {
+    job_id_validate(id)?;
+
+    let directory = jobs_directory()?.join(id);
+
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut engines: Vec<String> = Vec::new();
+
+    for listed in fs::read_dir(directory)? {
+        let entry = listed?;
+        let name = entry.file_name();
+        let name_text = name.to_string_lossy();
+
+        let Some(rest) = name_text.strip_prefix(TRANSCRIPT_FILE_PREFIX) else {
+            continue;
+        };
+
+        let Some(engine) = rest.strip_suffix(TRANSCRIPT_FILE_SUFFIX) else {
+            continue;
+        };
+
+        if transcript_file_is_blank(&entry.path()) {
+            continue;
+        }
+
+        if engines.len() >= usize_of!(ENGINE_COUNT_MAX) {
+            return Err(AppError::Config(format!(
+                "job {id} holds more than the {ENGINE_COUNT_MAX} transcripts this app keeps",
+            )));
+        }
+
+        engines.push(engine.to_owned());
+    }
+
+    engines.sort();
+
+    assert!(engines.len() <= usize_of!(ENGINE_COUNT_MAX));
+
+    Ok(engines)
+}
+
+pub(crate) fn file_read_bounded(path: &Path, size_bytes_max: u32) -> AppResult<String> {
+    assert!(size_bytes_max > 0);
+
+    let size = fs::metadata(path)?.len();
+
+    if size > u64::from(size_bytes_max) {
+        return Err(file_oversized(path, size, size_bytes_max));
+    }
+
+    let contents = fs::read_to_string(path)?;
+
+    if contents.len() > usize_of!(size_bytes_max) {
+        let size_read = u64::try_from(contents.len()).unwrap_or(u64::MAX);
+
+        return Err(file_oversized(path, size_read, size_bytes_max));
+    }
+
+    Ok(contents)
+}
+
+pub(crate) fn job_audio_clip_path(id: &str, span: ClipSpan) -> AppResult<PathBuf> {
+    assert!(span.start_seconds >= 0.0_f64);
+    assert!(span.end_seconds > span.start_seconds);
+
+    let start_milliseconds = milliseconds_for(span.start_seconds);
+    let end_milliseconds = milliseconds_for(span.end_seconds);
+    let file_name = format!("{CLIP_FILE_PREFIX}{start_milliseconds}-{end_milliseconds}.wav");
+
+    Ok(job_directory(id)?.join(file_name))
+}
+
+pub(crate) fn job_audio_clips_remove(id: &str) -> AppResult<()> {
+    for entry in fs::read_dir(job_directory(id)?)? {
+        let path = entry?.path();
+        let name = path.file_name().map(|file_name| file_name.to_string_lossy().into_owned());
+
+        if name.is_some_and(|file_name| file_name.starts_with(CLIP_FILE_PREFIX)) {
+            fs::remove_file(&path)?;
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn job_audio_path(id: &str) -> AppResult<PathBuf> {
+    Ok(job_directory(id)?.join(AUDIO_FILE_NAME))
+}
+
+pub(crate) fn job_delete(id: &str) -> AppResult<()> {
+    job_id_validate(id)?;
+
+    let directory = jobs_directory()?.join(id);
+
+    if directory.exists() {
+        fs::remove_dir_all(&directory)?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn job_directory(id: &str) -> AppResult<PathBuf> {
+    job_id_validate(id)?;
+
+    let path = jobs_directory()?.join(id);
+
+    fs::create_dir_all(&path)?;
+
+    assert!(path.ends_with(id));
+
+    Ok(path)
+}
+
+pub(crate) fn job_id_from_source_content(source: &Path) -> AppResult<String> {
+    let mut file = fs::File::open(source)?;
+    let mut block = vec![0_u8; usize_of!(HASH_BUFFER_BYTES)];
+    let block_bytes = u64::try_from(block.len()).unwrap_or(u64::MAX);
+    let block_count_max = file.metadata()?.len().div_ceil(block_bytes) + 1;
+    let mut hasher = Sha256::new();
+    let mut source_bytes_hashed: u64 = 0;
+    let mut source_exhausted = false;
+
+    for _block_index in 0..block_count_max {
+        let read = file.read(&mut block)?;
+
+        if read == 0 {
+            source_exhausted = true;
+
+            break;
+        }
+
+        let block_read = block
+            .get(..read)
+            .ok_or_else(|| AppError::IO(std::io::Error::other("read past the hash block")))?;
+
+        hasher.update(block_read);
+
+        source_bytes_hashed =
+            source_bytes_hashed.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+    }
+
+    if !source_exhausted {
+        return Err(AppError::IO(std::io::Error::other(format!(
+            "{} grew while it was being hashed",
+            source.display(),
+        ))));
+    }
+
+    tracing::debug!(
+        target: "scribe_lib::workspace",
+        "hashed {} bytes of {}",
+        source_bytes_hashed,
+        source.display(),
+    );
+
+    Ok(job_id_from_digest(&hasher.finalize()))
+}
+
+pub(crate) fn job_id_from_text(text: &str) -> String {
+    let mut hasher = Sha256::new();
+
+    hasher.update(text.as_bytes());
+
+    job_id_from_digest(&hasher.finalize())
+}
+
+pub(crate) fn job_id_validate(id: &str) -> AppResult<()> {
+    if job_id_is_valid(id) {
+        return Ok(());
+    }
+
+    Err(AppError::Config(format!("{id:?} is not a job id")))
+}
+
+pub(crate) fn job_meta_path(id: &str) -> AppResult<PathBuf> {
+    Ok(job_directory(id)?.join(META_FILE_NAME))
+}
+
+pub(crate) fn job_notes_path(id: &str) -> AppResult<PathBuf> {
+    Ok(job_directory(id)?.join(NOTES_FILE_NAME))
+}
+
+pub(crate) fn job_transcript_path(slot: &TranscriptSlot<'_>) -> AppResult<PathBuf> {
+    let engine_safe = sanitize_segment(slot.engine_id);
+
+    assert_eq!(engine_safe.chars().count(), slot.engine_id.chars().count());
+
+    let file_name = format!("{TRANSCRIPT_FILE_PREFIX}{engine_safe}{TRANSCRIPT_FILE_SUFFIX}");
+
+    Ok(job_directory(slot.job_id)?.join(file_name))
+}
+
+pub(crate) fn jobs_directory() -> AppResult<PathBuf> {
+    let path = root()?.join(JOBS_FOLDER);
+
+    fs::create_dir_all(&path)?;
+
+    assert!(path.ends_with(JOBS_FOLDER));
+
+    Ok(path)
+}
+
+pub(crate) fn jobs_list_all() -> AppResult<Vec<JobMeta>> {
+    let directory = jobs_directory()?;
+    let mut jobs: Vec<JobMeta> = Vec::new();
+
+    for (entry_index, listed) in fs::read_dir(directory)?.enumerate() {
+        if entry_index >= usize_of!(JOB_COUNT_MAX) {
+            return Err(AppError::Config(format!(
+                "the jobs folder holds more than the {JOB_COUNT_MAX} recordings this app lists",
+            )));
+        }
+
+        let entry = listed?;
+
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+
+        let meta_path = entry.path().join(META_FILE_NAME);
+
+        if !meta_path.exists() {
+            continue;
+        }
+
+        match jobs_list_entry_load(&meta_path) {
+            Ok(meta) => jobs.push(meta),
+            Err(error) => {
+                tracing::warn!(path = %meta_path.display(), %error, "job metadata unreadable");
+            }
+        }
+    }
+
+    jobs.sort_by_key(|job| std::cmp::Reverse(job.created_at_unix));
+
+    assert!(jobs.len() <= usize_of!(JOB_COUNT_MAX));
+
+    Ok(jobs)
+}
+
+pub(crate) fn jobs_listing_all() -> AppResult<Vec<JobListing>> {
+    let jobs = jobs_list_all()?;
+    let job_count = jobs.len();
+    let mut listings: Vec<JobListing> = Vec::with_capacity(job_count);
+
+    for meta in jobs {
+        listings.push(job_listing_build(meta)?);
+    }
+
+    assert_eq!(listings.len(), job_count);
+
+    Ok(listings)
+}
+
+pub(crate) fn jobs_search_all(query: &str) -> AppResult<Vec<JobSearchHit>> {
+    let Some(needle) = SearchNeedle::of(query) else {
+        return Ok(Vec::new());
+    };
+
+    let jobs = jobs_list_all()?;
+    let job_count = jobs.len();
+    let mut hits: Vec<JobSearchHit> = Vec::with_capacity(job_count);
+
+    for job in jobs {
+        if let Some(hit) = search_job(&job, &needle)? {
+            hits.push(hit);
+        }
+    }
+
+    assert!(hits.len() <= job_count);
+
+    Ok(hits)
+}
+
 pub(crate) fn meta_apply_patch(id: &str, patch: JobMetaPatch) -> AppResult<JobMeta> {
-    let mut meta = meta_load(id)?
-        .ok_or_else(|| AppError::Config(format!("job not found: {id}")))?;
+    let mut meta =
+        meta_load(id)?.ok_or_else(|| AppError::Config(format!("job not found: {id}")))?;
 
     if meta.id != id {
         return Err(AppError::Config(format!(
             "the folder for job {id} holds metadata for job {}",
-            meta.id
+            meta.id,
         )));
     }
 
@@ -130,39 +595,222 @@ pub(crate) fn meta_apply_patch(id: &str, patch: JobMetaPatch) -> AppResult<JobMe
         meta.favourite = favourite;
     }
 
-    debug_assert_eq!(meta.id, id);
+    assert_eq!(meta.id, id);
 
     meta_save(&meta)?;
 
     Ok(meta)
 }
 
-fn text_clean(text: &str) -> Option<String> {
-    let trimmed = text.trim();
+pub(crate) fn meta_load(id: &str) -> AppResult<Option<JobMeta>> {
+    let path = job_meta_path(id)?;
 
-    if trimmed.is_empty() {
-        return None;
+    if !path.exists() {
+        return Ok(None);
     }
 
-    debug_assert!(!trimmed.starts_with(' '));
-    debug_assert!(!trimmed.ends_with(' '));
+    let meta: JobMeta = serde_json::from_str(&file_read_bounded(&path, META_BYTES_MAX)?)?;
 
-    Some(trimmed.to_owned())
+    if meta.id.is_empty() {
+        return Err(AppError::Config(format!("the metadata of job {id} carries no id")));
+    }
+
+    Ok(Some(meta))
 }
 
-fn names_clean(names: Vec<String>) -> Vec<String> {
-    let names_count_before = names.len();
+pub(crate) fn meta_save(meta: &JobMeta) -> AppResult<()> {
+    let path = job_meta_path(&meta.id)?;
 
-    let cleaned: Vec<String> = names
-        .into_iter()
-        .map(|name| name.trim().to_owned())
-        .filter(|name| !name.is_empty())
-        .collect();
+    atomic_write(&path, serde_json::to_string_pretty(meta)?.as_bytes())
+}
 
-    debug_assert!(cleaned.len() <= names_count_before);
-    debug_assert!(cleaned.iter().all(|name| !name.is_empty()));
+pub(crate) fn notes_load(id: &str) -> AppResult<Option<String>> {
+    let path = job_notes_path(id)?;
 
-    cleaned
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    Ok(Some(file_read_bounded(&path, NOTES_BYTES_MAX)?))
+}
+
+pub(crate) fn notes_save(id: &str, markdown: &[u8]) -> AppResult<()> {
+    if markdown.len() > usize_of!(NOTES_BYTES_MAX) {
+        return Err(AppError::Config(format!(
+            "these notes are {} bytes, over the {NOTES_BYTES_MAX} bytes this app keeps",
+            markdown.len(),
+        )));
+    }
+
+    let path = job_notes_path(id)?;
+
+    atomic_write(&path, markdown)
+}
+
+pub(crate) fn root() -> AppResult<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = test_support::root_override() {
+        return Ok(path);
+    }
+
+    let data_directory = dirs::data_dir()
+        .ok_or_else(|| AppError::Config("could not resolve the data directory".into()))?;
+
+    let path = data_directory.join(crate::APP_DATA_FOLDER);
+
+    assert!(path.ends_with(crate::APP_DATA_FOLDER));
+
+    Ok(path)
+}
+
+pub(crate) fn root_file_path(file_name: &str) -> AppResult<PathBuf> {
+    assert_ne!(file_name, "");
+    assert!(!file_name.contains(['/', '\\']));
+
+    let directory = root()?;
+
+    fs::create_dir_all(&directory)?;
+
+    let path = directory.join(file_name);
+
+    assert!(path.ends_with(file_name));
+
+    Ok(path)
+}
+
+pub(crate) fn samples_to_pcm16(samples: &[f32]) -> impl Iterator<Item = i16> {
+    samples.iter().map(|sample| {
+        let value = (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)).to_i16().unwrap_or(0);
+
+        assert!(value > i16::MIN);
+
+        value
+    })
+}
+
+pub(crate) fn transcript_load<T: for<'de> Deserialize<'de>>(
+    slot: &TranscriptSlot<'_>,
+) -> AppResult<Option<T>> {
+    let path = job_transcript_path(slot)?;
+
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    Ok(Some(serde_json::from_str(&file_read_bounded(&path, TRANSCRIPT_BYTES_MAX)?)?))
+}
+
+pub(crate) fn transcript_save<T: Serialize>(
+    slot: &TranscriptSlot<'_>,
+    transcript: &T,
+) -> AppResult<()> {
+    let path = job_transcript_path(slot)?;
+
+    atomic_write(&path, serde_json::to_string_pretty(transcript)?.as_bytes())
+}
+
+pub(crate) fn transcript_save_edited<T: Serialize>(id: &str, transcript: &T) -> AppResult<()> {
+    let engines = engines_for_job(id)?;
+
+    let Some(engine_id) = engines.first() else {
+        return Err(AppError::Config(format!("job {id} has no transcript to replace")));
+    };
+
+    let json = serde_json::to_string_pretty(transcript)?;
+
+    if json.len() > usize_of!(TRANSCRIPT_BYTES_MAX) {
+        return Err(AppError::Config(format!(
+            "this transcript is {} bytes, over the {TRANSCRIPT_BYTES_MAX} bytes this app keeps",
+            json.len(),
+        )));
+    }
+
+    let path = job_transcript_path(&TranscriptSlot { engine_id, job_id: id })?;
+
+    atomic_write(&path, json.as_bytes())
+}
+
+pub(crate) fn wav_reader_open(path: &Path) -> AppResult<hound::WavReader<BufReader<fs::File>>> {
+    let reader = hound::WavReader::open(path)
+        .map_err(|error| AppError::Audio(format!("wav open: {error}")))?;
+
+    let sample_rate = reader.spec().sample_rate;
+
+    if sample_rate == 0 {
+        return Err(AppError::Audio("the recording reports a sample rate of zero".into()));
+    }
+
+    if u64::from(reader.duration()) > AUDIO_SECONDS_MAX * u64::from(sample_rate) {
+        return Err(AppError::Audio(format!(
+            "the recording is longer than the {AUDIO_HOURS_MAX} hours this app keeps",
+        )));
+    }
+
+    Ok(reader)
+}
+
+pub(crate) fn wav_specification_mono_pcm16(sample_rate: u32) -> hound::WavSpec {
+    assert!(sample_rate > 0);
+
+    let specification = hound::WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+
+    assert_eq!(u32::from(specification.bits_per_sample), PCM16_SAMPLE_BYTES * 8);
+
+    specification
+}
+
+fn atomic_replace<Writer>(path: &Path, writer: Writer) -> AppResult<()>
+where
+    Writer: FnOnce(&Path) -> std::io::Result<()>,
+{
+    assert!(path.file_name().is_some());
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let path_temporary =
+        path.with_extension(format!("{:?}.{}", thread::current().id(), extension_temporary(path)));
+
+    assert_ne!(path_temporary, path);
+
+    writer(&path_temporary)?;
+
+    if let Err(error) = fs::rename(&path_temporary, path) {
+        drop(fs::remove_file(&path_temporary));
+
+        return Err(error.into());
+    }
+
+    Ok(())
+}
+
+fn extension_temporary(path: &Path) -> String {
+    let existing = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let extension = if existing.is_empty() { "tmp".to_owned() } else { format!("{existing}.tmp") };
+
+    assert!(extension.ends_with("tmp"));
+
+    extension
+}
+
+fn file_oversized(path: &Path, size: u64, size_bytes_max: u32) -> AppError {
+    assert!(size > 0);
+    assert!(size_bytes_max > 0);
+
+    AppError::Config(format!(
+        "{} is {size} bytes, over the {size_bytes_max} bytes this app reads",
+        path.display(),
+    ))
 }
 
 fn ids_clean(ids: Vec<String>) -> Vec<String> {
@@ -183,72 +831,22 @@ fn ids_clean(ids: Vec<String>) -> Vec<String> {
         cleaned.push(trimmed.to_owned());
     }
 
-    debug_assert!(cleaned.len() <= ids_count_before);
-    debug_assert!(cleaned.iter().all(|id| !id.is_empty()));
+    assert!(cleaned.len() <= ids_count_before);
+    assert!(cleaned.iter().all(|id| !id.is_empty()));
 
     cleaned
 }
 
-#[cfg(test)]
-thread_local! {
-    static ROOT_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-pub(crate) fn root() -> AppResult<PathBuf> {
-    #[cfg(test)]
-    if let Some(path) = ROOT_OVERRIDE.with(|root| root.borrow().clone()) {
-        return Ok(path);
-    }
-
-    let data_directory = dirs::data_dir()
-        .ok_or_else(|| AppError::Config("could not resolve the data directory".into()))?;
-
-    let path = data_directory.join(crate::APP_DATA_FOLDER);
-
-    debug_assert!(path.is_absolute());
-    debug_assert!(path.ends_with(crate::APP_DATA_FOLDER));
-
-    Ok(path)
-}
-
-pub(crate) fn root_file_path(file_name: &str) -> AppResult<PathBuf> {
-    debug_assert_ne!(file_name, "");
-    debug_assert!(!file_name.contains(['/', '\\']));
-
-    let directory = root()?;
-
-    fs::create_dir_all(&directory)?;
-
-    let path = directory.join(file_name);
-
-    debug_assert!(path.is_absolute());
-    debug_assert!(path.ends_with(file_name));
-
-    Ok(path)
-}
-
-pub(crate) fn jobs_directory() -> AppResult<PathBuf> {
-    let path = root()?.join(JOBS_FOLDER);
-
-    fs::create_dir_all(&path)?;
-
-    debug_assert!(path.ends_with(JOBS_FOLDER));
-
-    Ok(path)
-}
-
 fn job_id_from_digest(digest: &[u8]) -> String {
-    debug_assert!(digest.len() >= JOB_ID_BYTES);
+    assert!(digest.len() >= JOB_ID_BYTES);
 
-    let mut id = String::with_capacity(JOB_ID_HEX_LENGTH);
+    let bytes: Vec<String> =
+        digest.iter().take(JOB_ID_BYTES).map(|byte| format!("{byte:02x}")).collect();
 
-    for byte in digest.iter().take(JOB_ID_BYTES) {
-        let _ = write!(id, "{byte:02x}");
-    }
+    let id = bytes.concat();
 
-    debug_assert_eq!(id.len(), JOB_ID_HEX_LENGTH);
-    debug_assert!(job_id_is_valid(&id));
+    assert_eq!(id.len(), JOB_ID_HEX_LENGTH);
+    assert!(job_id_is_valid(&id));
 
     id
 }
@@ -261,558 +859,9 @@ fn job_id_is_valid(id: &str) -> bool {
     id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn job_id_validate(id: &str) -> AppResult<()> {
-    if job_id_is_valid(id) {
-        return Ok(());
-    }
-
-    Err(AppError::Config(format!("{id:?} is not a job id")))
-}
-
-pub(crate) fn job_id_from_source_content(source: &Path) -> AppResult<String> {
-    let mut file = fs::File::open(source)?;
-    let block_count_max = file.metadata()?.len().div_ceil(u64::from(HASH_BUFFER_BYTES)) + 1;
-    let mut block = vec![0_u8; HASH_BUFFER_BYTES as usize];
-    let mut hasher = Sha256::new();
-    let mut source_bytes_hashed: u64 = 0;
-    let mut source_exhausted = false;
-
-    for _block_index in 0..block_count_max {
-        let read = file.read(&mut block)?;
-
-        if read == 0 {
-            source_exhausted = true;
-
-            break;
-        }
-
-        let block_read = block
-            .get(..read)
-            .ok_or_else(|| AppError::IO(std::io::Error::other("read past the hash block")))?;
-
-        hasher.update(block_read);
-        source_bytes_hashed += read as u64;
-    }
-
-    if !source_exhausted {
-        return Err(AppError::IO(std::io::Error::other(format!(
-            "{} grew while it was being hashed",
-            source.display()
-        ))));
-    }
-
-    tracing::debug!(
-        target: "scribe_lib::workspace",
-        "hashed {} bytes of {}",
-        source_bytes_hashed,
-        source.display()
-    );
-
-    Ok(job_id_from_digest(&hasher.finalize()))
-}
-
-pub(crate) fn job_id_from_text(text: &str) -> String {
-    let mut hasher = Sha256::new();
-
-    hasher.update(text.as_bytes());
-
-    job_id_from_digest(&hasher.finalize())
-}
-
-pub(crate) fn job_directory(id: &str) -> AppResult<PathBuf> {
-    job_id_validate(id)?;
-
-    let path = jobs_directory()?.join(id);
-
-    fs::create_dir_all(&path)?;
-
-    debug_assert!(path.ends_with(id));
-
-    Ok(path)
-}
-
-pub(crate) fn job_audio_path(id: &str) -> AppResult<PathBuf> {
-    Ok(job_directory(id)?.join(AUDIO_FILE_NAME))
-}
-
-pub(crate) fn job_meta_path(id: &str) -> AppResult<PathBuf> {
-    Ok(job_directory(id)?.join(META_FILE_NAME))
-}
-
-pub(crate) fn job_transcript_path(id: &str, engine_id: &str) -> AppResult<PathBuf> {
-    let engine_safe = sanitize_segment(engine_id);
-
-    debug_assert_eq!(engine_safe.chars().count(), engine_id.chars().count());
-
-    let file_name = format!("{TRANSCRIPT_FILE_PREFIX}{engine_safe}{TRANSCRIPT_FILE_SUFFIX}");
-
-    Ok(job_directory(id)?.join(file_name))
-}
-
-pub(crate) fn job_notes_path(id: &str) -> AppResult<PathBuf> {
-    Ok(job_directory(id)?.join(NOTES_FILE_NAME))
-}
-
-pub(crate) fn file_read_bounded(path: &Path, size_bytes_max: u32) -> AppResult<String> {
-    debug_assert!(size_bytes_max > 0);
-
-    let size = fs::metadata(path)?.len();
-
-    if size > u64::from(size_bytes_max) {
-        return Err(AppError::Config(format!(
-            "{} is {} bytes, over the {size_bytes_max} bytes this app reads",
-            path.display(),
-            size
-        )));
-    }
-
-    let contents = fs::read_to_string(path)?;
-
-    debug_assert!(contents.len() <= size_bytes_max as usize);
-
-    Ok(contents)
-}
-
-pub(crate) fn meta_save(meta: &JobMeta) -> AppResult<()> {
-    let path = job_meta_path(&meta.id)?;
-    atomic_write(&path, serde_json::to_string_pretty(meta)?.as_bytes())
-}
-
-pub(crate) fn meta_load(id: &str) -> AppResult<Option<JobMeta>> {
-    let path = job_meta_path(id)?;
-
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let meta: JobMeta = serde_json::from_str(&file_read_bounded(&path, META_BYTES_MAX)?)?;
-
-    debug_assert_ne!(meta.id, "");
-
-    Ok(Some(meta))
-}
-
-pub(crate) fn notes_save(id: &str, markdown: &str) -> AppResult<()> {
-    if markdown.len() > NOTES_BYTES_MAX as usize {
-        return Err(AppError::Config(format!(
-            "these notes are {} bytes, over the {NOTES_BYTES_MAX} bytes this app keeps",
-            markdown.len()
-        )));
-    }
-
-    let path = job_notes_path(id)?;
-    atomic_write(&path, markdown.as_bytes())
-}
-
-pub(crate) fn notes_load(id: &str) -> AppResult<Option<String>> {
-    let path = job_notes_path(id)?;
-
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    Ok(Some(file_read_bounded(&path, NOTES_BYTES_MAX)?))
-}
-
-pub(crate) fn sample_to_pcm16(sample: f32) -> i16 {
-    // tigerstyle-ignore: TS020
-    #[expect(clippy::cast_possible_truncation, reason = "clamp bounds the product to i16::MAX")]
-    let value = (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
-
-    debug_assert!(value > i16::MIN);
-    debug_assert!(value.unsigned_abs() <= i16::MAX.unsigned_abs());
-
-    value
-}
-
-pub(crate) fn wav_specification_mono_pcm16(sample_rate: u32) -> hound::WavSpec {
-    debug_assert!(sample_rate > 0);
-
-    let specification = hound::WavSpec {
-        channels: 1,
-        sample_rate,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-
-    debug_assert_eq!(u32::from(specification.bits_per_sample), PCM16_SAMPLE_BYTES * 8);
-
-    specification
-}
-
-pub(crate) fn audio_wav_save(samples: &[f32], sample_rate: u32, path: &Path) -> AppResult<()> {
-    debug_assert!(sample_rate > 0);
-
-    if samples.len() as u64 > AUDIO_SECONDS_MAX * u64::from(sample_rate) {
-        return Err(AppError::Audio(format!(
-            "the audio is longer than the {AUDIO_HOURS_MAX} hours this app keeps"
-        )));
-    }
-
-    let mut writer = hound::WavWriter::create(path, wav_specification_mono_pcm16(sample_rate))
-        .map_err(|error| AppError::Audio(format!("wav create: {error}")))?;
-
-    for sample in samples {
-        writer
-            .write_sample(sample_to_pcm16(*sample))
-            .map_err(|error| AppError::Audio(format!("wav write: {error}")))?;
-    }
-
-    debug_assert_eq!(writer.len() as usize, samples.len());
-
-    writer
-        .finalize()
-        .map_err(|error| AppError::Audio(format!("wav finalize: {error}")))?;
-
-    Ok(())
-}
-
-pub(crate) fn audio_clip_save(
-    path_source: &Path,
-    start_seconds: f64,
-    end_seconds: f64,
-    path_clip: &Path,
-) -> AppResult<()> {
-    debug_assert!(start_seconds >= 0.0);
-    debug_assert!(end_seconds > start_seconds);
-
-    let mut reader = wav_reader_open(path_source)?;
-    let specification = reader.spec();
-    let rate = f64::from(specification.sample_rate);
-    let length = reader.len();
-    let sample_start = sample_index_clamp((start_seconds * rate).floor(), length);
-    let sample_end = sample_index_clamp((end_seconds * rate).ceil(), length);
-
-    if sample_end <= sample_start {
-        return Err(AppError::Audio("the clip lies past the end of the audio".into()));
-    }
-
-    reader
-        .seek(sample_start)
-        .map_err(|error| AppError::Audio(format!("wav seek: {error}")))?;
-
-    let mut writer = hound::WavWriter::create(path_clip, specification)
-        .map_err(|error| AppError::Audio(format!("wav create: {error}")))?;
-
-    for sample in reader.samples::<i16>().take((sample_end - sample_start) as usize) {
-        let value = sample.map_err(|error| AppError::Audio(format!("wav read: {error}")))?;
-
-        writer
-            .write_sample(value)
-            .map_err(|error| AppError::Audio(format!("wav write: {error}")))?;
-    }
-
-    writer
-        .finalize()
-        .map_err(|error| AppError::Audio(format!("wav finalize: {error}")))?;
-
-    Ok(())
-}
-
-pub(crate) fn job_audio_clip_path(id: &str, start_seconds: f64, end_seconds: f64) -> AppResult<PathBuf> {
-    debug_assert!(start_seconds >= 0.0);
-    debug_assert!(end_seconds > start_seconds);
-
-    let start_milliseconds = milliseconds_for(start_seconds);
-    let end_milliseconds = milliseconds_for(end_seconds);
-    let file_name = format!("{CLIP_FILE_PREFIX}{start_milliseconds}-{end_milliseconds}.wav");
-
-    Ok(job_directory(id)?.join(file_name))
-}
-
-pub(crate) fn job_audio_clips_remove(id: &str) -> AppResult<()> {
-    for entry in fs::read_dir(job_directory(id)?)? {
-        let path = entry?.path();
-        let name = path.file_name().map(|name| name.to_string_lossy().into_owned());
-
-        if name.is_some_and(|name| name.starts_with(CLIP_FILE_PREFIX)) {
-            fs::remove_file(&path)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn milliseconds_for(seconds: f64) -> u64 {
-    let scaled = (seconds * 1000.0).round().max(0.0);
-
-    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "rounded and floored at zero")]
-    let milliseconds = scaled as u64;
-
-    milliseconds
-}
-
-fn sample_index_clamp(value: f64, length: u32) -> u32 {
-    let scaled = value.clamp(0.0, f64::from(length));
-
-    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "clamp bounds the value to 0..=length")]
-    let index = scaled as u32;
-
-    index
-}
-
-pub(crate) fn wav_reader_open(path: &Path) -> AppResult<hound::WavReader<BufReader<fs::File>>> {
-    let reader = hound::WavReader::open(path)
-        .map_err(|error| AppError::Audio(format!("wav open: {error}")))?;
-
-    let spec = reader.spec();
-
-    if spec.sample_rate == 0 {
-        return Err(AppError::Audio("the recording reports a sample rate of zero".into()));
-    }
-
-    if u64::from(reader.duration()) > AUDIO_SECONDS_MAX * u64::from(spec.sample_rate) {
-        return Err(AppError::Audio(format!(
-            "the recording is longer than the {AUDIO_HOURS_MAX} hours this app keeps"
-        )));
-    }
-
-    debug_assert!(spec.sample_rate > 0);
-
-    Ok(reader)
-}
-
-pub(crate) fn audio_wav_duration_seconds(path: &Path) -> AppResult<f64> {
-    let reader = wav_reader_open(path)?;
-    let sample_rate = reader.spec().sample_rate;
-
-    debug_assert!(sample_rate > 0);
-
-    let duration_seconds = f64::from(reader.duration()) / f64::from(sample_rate);
-
-    debug_assert!(duration_seconds >= 0.0);
-    debug_assert!(duration_seconds.is_finite());
-
-    Ok(duration_seconds)
-}
-
-pub(crate) fn audio_wav_load(path: &Path) -> AppResult<(Vec<f32>, u32)> {
-    let mut reader = wav_reader_open(path)?;
-    let sample_rate = reader.spec().sample_rate;
-    let frame_count = reader.duration();
-
-    let samples: Result<Vec<f32>, _> = reader
-        .samples::<i16>()
-        .map(|sample| sample.map(|value| f32::from(value) / f32::from(i16::MAX)))
-        .collect();
-
-    let samples = samples.map_err(|error| AppError::Audio(format!("wav read: {error}")))?;
-
-    debug_assert!(sample_rate > 0);
-    let samples_max = u64::from(frame_count) * u64::from(reader.spec().channels);
-
-    debug_assert!(samples.len() as u64 <= samples_max);
-
-    Ok((samples, sample_rate))
-}
-
-pub(crate) fn transcript_save<T: Serialize>(
-    id: &str,
-    engine_id: &str,
-    transcript: &T,
-) -> AppResult<()> {
-    let path = job_transcript_path(id, engine_id)?;
-    atomic_write(&path, serde_json::to_string_pretty(transcript)?.as_bytes())
-}
-
-pub(crate) fn transcript_save_edited<T: Serialize>(id: &str, transcript: &T) -> AppResult<()> {
-    let engines = engines_for_job(id)?;
-
-    let Some(engine_id) = engines.first() else {
-        return Err(AppError::Config(format!("job {id} has no transcript to replace")));
-    };
-
-    let json = serde_json::to_string_pretty(transcript)?;
-
-    if json.len() > TRANSCRIPT_BYTES_MAX as usize {
-        return Err(AppError::Config(format!(
-            "this transcript is {} bytes, over the {TRANSCRIPT_BYTES_MAX} bytes this app keeps",
-            json.len()
-        )));
-    }
-
-    let path = job_transcript_path(id, engine_id)?;
-    atomic_write(&path, json.as_bytes())
-}
-
-pub(crate) fn transcript_load<T: for<'de> Deserialize<'de>>(
-    id: &str,
-    engine_id: &str,
-) -> AppResult<Option<T>> {
-    let path = job_transcript_path(id, engine_id)?;
-
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    Ok(Some(serde_json::from_str(&file_read_bounded(&path, TRANSCRIPT_BYTES_MAX)?)?))
-}
-
-pub(crate) fn jobs_search_all(query: &str) -> AppResult<Vec<JobSearchHit>> {
-    let needle = query.trim().to_lowercase();
-
-    if needle.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let jobs = jobs_list_all()?;
-    let job_count = jobs.len();
-    let mut hits: Vec<JobSearchHit> = Vec::with_capacity(job_count);
-
-    for job in jobs {
-        let hit = search_job(&job, &needle)?;
-
-        if let Some(hit) = hit {
-            hits.push(hit);
-        }
-    }
-
-    debug_assert!(hits.len() <= job_count);
-
-    Ok(hits)
-}
-
-fn search_job(job: &JobMeta, needle: &str) -> AppResult<Option<JobSearchHit>> {
-    debug_assert_ne!(needle, "");
-    debug_assert_eq!(needle, needle.to_lowercase());
-
-    let title = job.title.as_deref().or(job.label.as_deref()).unwrap_or("");
-
-    if let Some(snippet) = search_snippet(title, needle) {
-        return Ok(Some(JobSearchHit { job_id: job.id.clone(), source: "title".into(), snippet }));
-    }
-
-    if let Some(notes) = notes_load(&job.id)? {
-        if let Some(snippet) = search_snippet(&notes, needle) {
-            let source = "notes".into();
-
-            return Ok(Some(JobSearchHit { job_id: job.id.clone(), source, snippet }));
-        }
-    }
-
-    let engines = engines_for_job(&job.id)?;
-
-    let Some(engine_id) = engines.first() else {
-        return Ok(None);
-    };
-
-    let transcript =
-        transcript_load::<crate::transcription::types::Transcript>(&job.id, engine_id)?;
-
-    let Some(transcript) = transcript else {
-        return Ok(None);
-    };
-
-    Ok(search_snippet(&transcript.text, needle).map(|snippet| JobSearchHit {
-        job_id: job.id.clone(),
-        source: "transcript".into(),
-        snippet,
-    }))
-}
-
-fn search_snippet(haystack: &str, needle: &str) -> Option<String> {
-    debug_assert_ne!(needle, "");
-
-    let line = haystack
-        .lines()
-        .find(|line| line.to_lowercase().contains(needle))?
-        .trim();
-
-    if line.chars().count() <= SNIPPET_CHARS_MAX as usize {
-        return Some(line.to_owned());
-    }
-
-    Some(search_snippet_window(line, needle))
-}
-
-fn search_snippet_window(line: &str, needle: &str) -> String {
-    debug_assert_ne!(needle, "");
-    debug_assert!(line.chars().count() > SNIPPET_CHARS_MAX as usize);
-
-    let lowered = line.to_lowercase();
-    let found_bytes = lowered.find(needle).unwrap_or(0);
-    let found_chars = lowered.get(..found_bytes).map_or(0, |head| head.chars().count());
-    let start = found_chars.saturating_sub(SNIPPET_CHARS_CONTEXT as usize);
-
-    let window: String = line
-        .chars()
-        .skip(start)
-        .take(SNIPPET_CHARS_MAX as usize)
-        .collect();
-
-    debug_assert!(window.chars().count() <= SNIPPET_CHARS_MAX as usize);
-
-    if start > 0 {
-        return format!("\u{2026}{window}");
-    }
-
-    window
-}
-
-pub(crate) fn jobs_list_all() -> AppResult<Vec<JobMeta>> {
-    let directory = jobs_directory()?;
-    let mut jobs: Vec<JobMeta> = Vec::new();
-
-    for (entry_index, entry) in fs::read_dir(directory)?.enumerate() {
-        if entry_index >= JOB_COUNT_MAX as usize {
-            return Err(AppError::Config(format!(
-                "the jobs folder holds more than the {JOB_COUNT_MAX} recordings this app lists"
-            )));
-        }
-
-        let entry = entry?;
-
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-
-        let meta_path = entry.path().join(META_FILE_NAME);
-
-        if !meta_path.exists() {
-            continue;
-        }
-
-        match jobs_list_entry_load(&meta_path) {
-            Ok(meta) => jobs.push(meta),
-            Err(error) => {
-                tracing::warn!(path = %meta_path.display(), %error, "job metadata unreadable");
-            }
-        }
-    }
-
-    jobs.sort_by_key(|job| std::cmp::Reverse(job.created_at_unix));
-
-    debug_assert!(jobs.len() <= JOB_COUNT_MAX as usize);
-
-    Ok(jobs)
-}
-
-fn jobs_list_entry_load(meta_path: &Path) -> AppResult<JobMeta> {
-    debug_assert!(meta_path.ends_with(META_FILE_NAME));
-
-    let raw = file_read_bounded(meta_path, META_BYTES_MAX)?;
-    let meta: JobMeta = serde_json::from_str(&raw)?;
-
-    debug_assert_ne!(meta.id, "");
-
-    Ok(meta)
-}
-
-pub(crate) fn jobs_listing_all() -> AppResult<Vec<JobListing>> {
-    let jobs = jobs_list_all()?;
-    let job_count = jobs.len();
-    let mut listings: Vec<JobListing> = Vec::with_capacity(job_count);
-
-    for meta in jobs {
-        listings.push(job_listing_build(meta)?);
-    }
-
-    debug_assert_eq!(listings.len(), job_count);
-
-    Ok(listings)
-}
-
 fn job_listing_build(meta: JobMeta) -> AppResult<JobListing> {
+    assert_ne!(meta.id, "");
+
     let has_transcript = !engines_for_job(&meta.id)?.is_empty();
     let notes_metadata = fs::metadata(job_notes_path(&meta.id)?);
     let has_notes = notes_metadata.is_ok_and(|metadata| metadata.len() > 0);
@@ -823,6 +872,7 @@ fn job_listing_build(meta: JobMeta) -> AppResult<JobListing> {
             Ok(seconds) => Some(seconds),
             Err(error) => {
                 tracing::warn!(job_id = %meta.id, %error, "audio duration unreadable");
+
                 None
             }
         }
@@ -830,102 +880,60 @@ fn job_listing_build(meta: JobMeta) -> AppResult<JobListing> {
         None
     };
 
-    debug_assert!(duration_seconds.is_none_or(|seconds| seconds >= 0.0));
+    assert!(duration_seconds.is_none_or(|seconds| seconds >= 0.0_f64));
 
     Ok(JobListing { meta, has_transcript, has_notes, duration_seconds })
 }
 
-pub(crate) fn job_delete(id: &str) -> AppResult<()> {
-    job_id_validate(id)?;
+fn jobs_list_entry_load(meta_path: &Path) -> AppResult<JobMeta> {
+    assert!(meta_path.ends_with(META_FILE_NAME));
 
-    let directory = jobs_directory()?.join(id);
+    let raw = file_read_bounded(meta_path, META_BYTES_MAX)?;
+    let meta: JobMeta = serde_json::from_str(&raw)?;
 
-    if directory.exists() {
-        fs::remove_dir_all(&directory)?;
+    if meta.id.is_empty() {
+        return Err(AppError::Config(format!("{} carries no job id", meta_path.display())));
     }
 
-    debug_assert!(!directory.exists());
-
-    Ok(())
+    Ok(meta)
 }
 
-pub(crate) fn engines_for_job(id: &str) -> AppResult<Vec<String>> {
-    job_id_validate(id)?;
+fn milliseconds_for(seconds: f64) -> u64 {
+    assert!(seconds >= 0.0_f64);
 
-    let directory = jobs_directory()?.join(id);
+    let scaled = (seconds * 1000.0).round().max(0.0);
+    let milliseconds = scaled.to_u64().unwrap_or(u64::MAX);
 
-    if !directory.exists() {
-        return Ok(Vec::new());
-    }
+    assert!(milliseconds > 0 || seconds < 0.001_f64);
 
-    let mut engines: Vec<String> = Vec::new();
-
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_text = name.to_string_lossy();
-
-        let Some(rest) = name_text.strip_prefix(TRANSCRIPT_FILE_PREFIX) else {
-            continue;
-        };
-
-        let Some(engine) = rest.strip_suffix(TRANSCRIPT_FILE_SUFFIX) else {
-            continue;
-        };
-
-        if engines.len() >= ENGINE_COUNT_MAX as usize {
-            return Err(AppError::Config(format!(
-                "job {id} holds more than the {ENGINE_COUNT_MAX} transcripts this app keeps"
-            )));
-        }
-
-        engines.push(engine.to_owned());
-    }
-
-    engines.sort();
-
-    debug_assert!(engines.len() <= ENGINE_COUNT_MAX as usize);
-
-    Ok(engines)
+    milliseconds
 }
 
-pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> AppResult<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+fn names_clean(names: Vec<String>) -> Vec<String> {
+    let names_count_before = names.len();
 
-    let path_temporary = path.with_extension(extension_temporary(path));
+    let cleaned: Vec<String> = names
+        .into_iter()
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .collect();
 
-    debug_assert_ne!(path_temporary, path);
+    assert!(cleaned.len() <= names_count_before);
+    assert!(cleaned.iter().all(|name| !name.is_empty()));
 
-    fs::write(&path_temporary, contents)?;
-
-    if let Err(error) = fs::rename(&path_temporary, path) {
-        drop(fs::remove_file(&path_temporary));
-
-        return Err(error.into());
-    }
-
-    debug_assert!(!path_temporary.exists());
-
-    Ok(())
+    cleaned
 }
 
-fn extension_temporary(path: &Path) -> String {
-    let existing = path
-        .extension()
-        .map(|extension| extension.to_string_lossy().into_owned())
-        .unwrap_or_default();
+fn sample_index_clamp(value: f64, length: u32) -> u32 {
+    assert!(value >= 0.0_f64);
+    assert!(f64::from(length) >= 0.0_f64);
 
-    let extension = if existing.is_empty() {
-        "tmp".to_owned()
-    } else {
-        format!("{existing}.tmp")
-    };
+    let scaled = value.clamp(0.0, f64::from(length));
+    let index = scaled.to_u32().unwrap_or(0);
 
-    debug_assert!(extension.ends_with("tmp"));
+    assert!(index <= length);
 
-    extension
+    index
 }
 
 fn sanitize_segment(segment: &str) -> String {
@@ -944,17 +952,113 @@ fn sanitize_segment(segment: &str) -> String {
         })
         .collect();
 
-    debug_assert_eq!(sanitized.chars().count(), segment.chars().count());
-    debug_assert!(!sanitized.contains(['/', '\\']));
+    assert_eq!(sanitized.chars().count(), segment.chars().count());
+    assert!(!sanitized.contains(['/', '\\']));
 
     sanitized
 }
 
+fn search_job(job: &JobMeta, needle: &SearchNeedle) -> AppResult<Option<JobSearchHit>> {
+    assert_ne!(needle.0, "");
+
+    let title = job.title.as_deref().or(job.label.as_deref()).unwrap_or("");
+
+    if let Some(snippet) = search_snippet(title, needle) {
+        return Ok(Some(JobSearchHit { job_id: job.id.clone(), source: "title".into(), snippet }));
+    }
+
+    let notes = notes_load(&job.id)?.unwrap_or_default();
+
+    if let Some(snippet) = search_snippet(&notes, needle) {
+        return Ok(Some(JobSearchHit { job_id: job.id.clone(), source: "notes".into(), snippet }));
+    }
+
+    let engines = engines_for_job(&job.id)?;
+
+    let Some(engine_id) = engines.first() else {
+        return Ok(None);
+    };
+
+    let slot = TranscriptSlot { engine_id, job_id: &job.id };
+    let loaded = transcript_load::<crate::transcription::types::Transcript>(&slot)?;
+
+    let Some(transcript) = loaded else {
+        return Ok(None);
+    };
+
+    Ok(search_snippet(&transcript.text, needle).map(|snippet| JobSearchHit {
+        job_id: job.id.clone(),
+        source: "transcript".into(),
+        snippet,
+    }))
+}
+
+fn search_snippet(haystack: &str, needle: &SearchNeedle) -> Option<String> {
+    assert_ne!(needle.0, "");
+
+    let line = haystack.lines().find(|text| text.to_lowercase().contains(&needle.0))?.trim();
+
+    if line.chars().count() <= usize_of!(SNIPPET_CHARS_MAX) {
+        return Some(line.to_owned());
+    }
+
+    Some(search_snippet_window(line, needle))
+}
+
+fn search_snippet_window(line: &str, needle: &SearchNeedle) -> String {
+    assert_ne!(needle.0, "");
+    assert!(line.chars().count() > usize_of!(SNIPPET_CHARS_MAX));
+
+    let lowered = line.to_lowercase();
+    let found_bytes = lowered.find(&needle.0).unwrap_or(0);
+    let found_chars = lowered.get(..found_bytes).map_or(0, |head| head.chars().count());
+    let start = found_chars.saturating_sub(usize_of!(SNIPPET_CHARS_CONTEXT));
+    let window: String = line.chars().skip(start).take(usize_of!(SNIPPET_CHARS_MAX)).collect();
+
+    assert!(window.chars().count() <= usize_of!(SNIPPET_CHARS_MAX));
+
+    if start > 0 {
+        return format!("\u{2026}{window}");
+    }
+
+    window
+}
+
+fn text_clean(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    assert!(!trimmed.starts_with(' '));
+    assert!(!trimmed.ends_with(' '));
+
+    Some(trimmed.to_owned())
+}
+
+fn transcript_file_is_blank(path: &Path) -> bool {
+    assert!(path.file_name().is_some());
+
+    let small =
+        fs::metadata(path).is_ok_and(|metadata| metadata.len() <= TRANSCRIPT_BLANK_BYTES_MAX);
+
+    if !small {
+        return false;
+    }
+
+    fs::read_to_string(path).is_ok_and(|raw| {
+        serde_json::from_str::<crate::transcription::types::Transcript>(&raw)
+            .is_ok_and(|transcript| transcript.text.trim().is_empty())
+    })
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::{JobMeta, ROOT_OVERRIDE};
+    use super::JobMeta;
     use std::fs;
     use std::path::PathBuf;
+    use std::thread;
 
     pub(crate) struct RootScope {
         path: PathBuf,
@@ -962,22 +1066,14 @@ pub(crate) mod test_support {
 
     impl Drop for RootScope {
         fn drop(&mut self) {
-            drop(ROOT_OVERRIDE.with(|root| root.borrow_mut().take()));
             drop(fs::remove_dir_all(&self.path));
         }
     }
 
-    pub(crate) fn root_scoped(name: &str) -> RootScope {
-        let path = std::env::temp_dir().join(format!("scribe-test-{}-{name}", std::process::id()));
-
-        drop(fs::remove_dir_all(&path));
-        fs::create_dir_all(&path).unwrap();
-        ROOT_OVERRIDE.with(|root| *root.borrow_mut() = Some(path.clone()));
-
-        RootScope { path }
-    }
-
     pub(crate) fn meta_with(id: &str, created_at_unix: i64) -> JobMeta {
+        assert_ne!(id, "");
+        assert!(created_at_unix > 0);
+
         JobMeta {
             id: id.to_owned(),
             source_path: "/tmp/source.wav".to_owned(),
@@ -994,6 +1090,27 @@ pub(crate) mod test_support {
             favourite: false,
         }
     }
+
+    pub(crate) fn root_override() -> Option<PathBuf> {
+        let path = root_of_thread();
+
+        path.is_dir().then_some(path)
+    }
+
+    pub(crate) fn root_scoped() -> RootScope {
+        let path = root_of_thread();
+
+        drop(fs::remove_dir_all(&path));
+        fs::create_dir_all(&path).unwrap();
+
+        RootScope { path }
+    }
+
+    fn root_of_thread() -> PathBuf {
+        let folder = format!("scribe-test-{}-{:?}", std::process::id(), thread::current().id());
+
+        std::env::temp_dir().join(folder)
+    }
 }
 
 #[cfg(test)]
@@ -1001,6 +1118,12 @@ mod tests {
     use super::test_support::{meta_with, root_scoped};
     use super::*;
     use crate::transcription::types::{Transcript, TranscriptSegment};
+
+    fn needle_of(query: &str) -> SearchNeedle {
+        assert_ne!(query.trim(), "");
+
+        SearchNeedle::of(query).unwrap()
+    }
 
     fn transcript_with(text: &str) -> Transcript {
         Transcript {
@@ -1015,7 +1138,7 @@ mod tests {
 
     #[test]
     fn the_data_folders_are_created_on_first_use() {
-        let _root = root_scoped("folders");
+        let _root = root_scoped();
         let jobs = jobs_directory().unwrap();
         let settings = root_file_path("settings.json").unwrap();
 
@@ -1027,7 +1150,7 @@ mod tests {
 
     #[test]
     fn metadata_survives_a_round_trip_through_its_job_folder() {
-        let _root = root_scoped("meta-round-trip");
+        let _root = root_scoped();
         let id = job_id_from_text("meta");
         let mut meta = meta_with(&id, 10);
 
@@ -1045,7 +1168,7 @@ mod tests {
         assert_eq!(loaded.title.as_deref(), Some("Kickoff"));
         assert_eq!(loaded.tags, vec!["weekly".to_owned()]);
         assert!(loaded.favourite);
-        assert!(meta_load("not-a-job-id").is_err());
+        assert_ne!(meta_load("not-a-job-id").unwrap_err().to_string(), "");
     }
 
     #[test]
@@ -1062,12 +1185,28 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_transcript_with_no_text_does_not_read_as_finished() {
+        let _root = root_scoped();
+        let id = job_id_from_text("blank");
+        let blank = Transcript { text: "  ".to_owned(), segments: Vec::new() };
+
+        meta_save(&meta_with(&id, 1)).unwrap();
+        transcript_save(&TranscriptSlot { engine_id: "remote-a", job_id: &id }, &blank).unwrap();
+
+        let listings = jobs_listing_all().unwrap();
+
+        assert_eq!(listings.len(), 1);
+        assert!(!listings[0].has_transcript);
+        assert_eq!(engines_for_job(&id).unwrap().len(), 0);
+    }
+
+    #[test]
     fn a_listing_serializes_its_metadata_flat_beside_the_derived_fields() {
         let listing = JobListing {
             meta: meta_with("abc", 1),
             has_transcript: true,
             has_notes: false,
-            duration_seconds: Some(1.5),
+            duration_seconds: Some(1.5_f64),
         };
 
         let value = serde_json::to_value(&listing).unwrap();
@@ -1075,58 +1214,84 @@ mod tests {
         assert_eq!(value["id"], "abc");
         assert_eq!(value["has_transcript"], true);
         assert_eq!(value["has_notes"], false);
-        assert_eq!(value["duration_seconds"], 1.5);
+        assert_eq!(value["duration_seconds"], 1.5_f64);
     }
 
     #[test]
     fn notes_survive_a_round_trip_and_missing_notes_read_as_none() {
-        let _root = root_scoped("notes-round-trip");
+        let _root = root_scoped();
         let id = job_id_from_text("notes");
 
         assert!(notes_load(&id).unwrap().is_none());
 
-        notes_save(&id, "# Notes\n\nCafé\n").unwrap();
+        notes_save(&id, "# Notes\n\nCaf\u{e9}\n".as_bytes()).unwrap();
 
-        assert_eq!(notes_load(&id).unwrap().as_deref(), Some("# Notes\n\nCafé\n"));
+        assert_eq!(notes_load(&id).unwrap().as_deref(), Some("# Notes\n\nCaf\u{e9}\n"));
 
-        let oversized = "a".repeat(NOTES_BYTES_MAX as usize + 1);
+        let oversized = "a".repeat(usize_of!(NOTES_BYTES_MAX) + 1);
 
-        assert!(notes_save(&id, &oversized).is_err());
-        assert_eq!(notes_load(&id).unwrap().as_deref(), Some("# Notes\n\nCafé\n"));
+        assert!(notes_save(&id, oversized.as_bytes()).is_err());
+        assert_eq!(notes_load(&id).unwrap().as_deref(), Some("# Notes\n\nCaf\u{e9}\n"));
     }
 
     #[test]
     fn a_transcript_is_stored_per_engine_and_listed_by_engines_for_job() {
-        let _root = root_scoped("transcript-round-trip");
+        let _root = root_scoped();
         let id = job_id_from_text("transcript");
 
         assert_eq!(engines_for_job(&id).unwrap().len(), 0);
-        assert!(transcript_load::<Transcript>(&id, "remote-a").unwrap().is_none());
 
-        transcript_save(&id, "remote-b", &transcript_with("second")).unwrap();
-        transcript_save(&id, "remote-a", &transcript_with("first")).unwrap();
-        notes_save(&id, "notes").unwrap();
+        assert!(
+            transcript_load::<Transcript>(&TranscriptSlot { engine_id: "remote-a", job_id: &id })
+                .unwrap()
+                .is_none()
+        );
+
+        transcript_save(
+            &TranscriptSlot { engine_id: "remote-b", job_id: &id },
+            &transcript_with("second"),
+        )
+        .unwrap();
+
+        transcript_save(
+            &TranscriptSlot { engine_id: "remote-a", job_id: &id },
+            &transcript_with("first"),
+        )
+        .unwrap();
+
+        notes_save(&id, b"notes").unwrap();
 
         let engines = engines_for_job(&id).unwrap();
-        let loaded = transcript_load::<Transcript>(&id, "remote-a").unwrap().expect("saved");
+
+        let loaded =
+            transcript_load::<Transcript>(&TranscriptSlot { engine_id: "remote-a", job_id: &id })
+                .unwrap()
+                .expect("saved");
 
         assert_eq!(engines, vec!["remote-a".to_owned(), "remote-b".to_owned()]);
         assert_eq!(loaded.text, "first");
         assert_eq!(loaded.segments.len(), 1);
-        assert!(engines_for_job("nope").is_err());
+        assert_ne!(engines_for_job("nope").unwrap_err().to_string(), "");
     }
 
     #[test]
     fn an_edited_transcript_replaces_the_stored_one_and_needs_one_to_replace() {
-        let _root = root_scoped("transcript-edited");
+        let _root = root_scoped();
         let id = job_id_from_text("edited");
 
         assert!(transcript_save_edited(&id, &transcript_with("orphan")).is_err());
 
-        transcript_save(&id, "imported", &transcript_with("before")).unwrap();
+        transcript_save(
+            &TranscriptSlot { engine_id: "imported", job_id: &id },
+            &transcript_with("before"),
+        )
+        .unwrap();
         transcript_save_edited(&id, &transcript_with("after")).unwrap();
 
-        let loaded = transcript_load::<Transcript>(&id, "imported").unwrap().expect("saved");
+        let loaded =
+            transcript_load::<Transcript>(&TranscriptSlot { engine_id: "imported", job_id: &id })
+                .unwrap()
+                .expect("saved");
 
         assert_eq!(loaded.text, "after");
         assert_eq!(engines_for_job(&id).unwrap(), vec!["imported".to_owned()]);
@@ -1134,9 +1299,10 @@ mod tests {
 
     #[test]
     fn a_transcript_path_keeps_an_unsafe_engine_id_inside_the_job_folder() {
-        let _root = root_scoped("transcript-path");
+        let _root = root_scoped();
         let id = job_id_from_text("path");
-        let path = job_transcript_path(&id, "../remote/x").unwrap();
+        let path =
+            job_transcript_path(&TranscriptSlot { engine_id: "../remote/x", job_id: &id }).unwrap();
 
         assert_eq!(path.file_name().unwrap(), "transcript-.._remote_x.json");
         assert_eq!(path.parent().unwrap(), jobs_directory().unwrap().join(&id));
@@ -1144,7 +1310,7 @@ mod tests {
 
     #[test]
     fn jobs_are_listed_newest_first_and_folders_without_readable_metadata_are_skipped() {
-        let _root = root_scoped("jobs-list");
+        let _root = root_scoped();
         let ids = ["old", "new", "middle"].map(job_id_from_text);
 
         meta_save(&meta_with(&ids[0], 100)).unwrap();
@@ -1164,16 +1330,24 @@ mod tests {
 
     #[test]
     fn a_listing_reports_transcript_notes_and_audio_duration_per_job() {
-        let _root = root_scoped("jobs-listing");
+        let _root = root_scoped();
         let full = job_id_from_text("full");
         let bare = job_id_from_text("bare");
-        let samples = vec![0.0_f32; 8000];
 
         meta_save(&meta_with(&full, 2)).unwrap();
         meta_save(&meta_with(&bare, 1)).unwrap();
-        transcript_save(&full, "imported", &transcript_with("hello")).unwrap();
-        notes_save(&full, "notes").unwrap();
-        notes_save(&bare, "").unwrap();
+
+        transcript_save(
+            &TranscriptSlot { engine_id: "imported", job_id: &full },
+            &transcript_with("hello"),
+        )
+        .unwrap();
+
+        notes_save(&full, b"notes").unwrap();
+        notes_save(&bare, b"").unwrap();
+
+        let samples = vec![0.0_f32; 8000];
+
         audio_wav_save(&samples, 16000, &job_audio_path(&full).unwrap()).unwrap();
         fs::write(job_audio_path(&bare).unwrap(), b"not a wav").unwrap();
 
@@ -1183,7 +1357,7 @@ mod tests {
         assert_eq!(listings[0].meta.id, full);
         assert!(listings[0].has_transcript);
         assert!(listings[0].has_notes);
-        assert!((listings[0].duration_seconds.unwrap() - 0.5).abs() < 1e-9);
+        assert!((listings[0].duration_seconds.unwrap() - 0.5).abs() < 1e-9_f64);
         assert_eq!(listings[1].meta.id, bare);
         assert!(!listings[1].has_transcript);
         assert!(!listings[1].has_notes);
@@ -1192,11 +1366,11 @@ mod tests {
 
     #[test]
     fn deleting_a_job_removes_its_folder_and_a_missing_one_is_not_an_error() {
-        let _root = root_scoped("job-delete");
+        let _root = root_scoped();
         let id = job_id_from_text("delete");
 
         meta_save(&meta_with(&id, 1)).unwrap();
-        notes_save(&id, "notes").unwrap();
+        notes_save(&id, b"notes").unwrap();
 
         let directory = jobs_directory().unwrap().join(&id);
 
@@ -1214,7 +1388,7 @@ mod tests {
 
     #[test]
     fn a_patch_updates_only_the_fields_it_carries_and_is_refused_for_a_foreign_folder() {
-        let _root = root_scoped("meta-patch");
+        let _root = root_scoped();
         let id = job_id_from_text("patch");
         let foreign = job_id_from_text("foreign");
         let mut meta = meta_with(&id, 1);
@@ -1227,7 +1401,7 @@ mod tests {
             title: Some("  After  ".to_owned()),
             tags: Some(vec![" weekly ".to_owned(), String::new()]),
             favourite: Some(true),
-            ..JobMetaPatch::default()
+            ..JobMetaPatch::empty()
         };
 
         let patched = meta_apply_patch(&id, patch).unwrap();
@@ -1240,13 +1414,20 @@ mod tests {
         assert_eq!(patched.tags, vec!["weekly".to_owned()]);
         assert!(patched.favourite);
         assert_eq!(meta_load(&id).unwrap().unwrap().title.as_deref(), Some("After"));
-        assert!(meta_apply_patch(&job_id_from_text("absent"), JobMetaPatch::default()).is_err());
-        assert!(meta_apply_patch(&foreign, JobMetaPatch::default()).is_err());
+
+        assert_ne!(
+            meta_apply_patch(&job_id_from_text("absent"), JobMetaPatch::empty())
+                .unwrap_err()
+                .to_string(),
+            "",
+        );
+
+        assert_ne!(meta_apply_patch(&foreign, JobMetaPatch::empty()).unwrap_err().to_string(), "");
     }
 
     #[test]
     fn a_search_reports_the_first_source_that_matches_per_job() {
-        let _root = root_scoped("jobs-search");
+        let _root = root_scoped();
         let titled = job_id_from_text("titled");
         let noted = job_id_from_text("noted");
         let spoken = job_id_from_text("spoken");
@@ -1256,16 +1437,24 @@ mod tests {
         meta_save(&meta).unwrap();
         meta_save(&meta_with(&noted, 2)).unwrap();
         meta_save(&meta_with(&spoken, 1)).unwrap();
-        notes_save(&noted, "Line one.\nThe rollout slipped.\n").unwrap();
-        transcript_save(&spoken, "imported", &transcript_with("we discussed the ROLLOUT")).unwrap();
-        transcript_save(&titled, "imported", &transcript_with("rollout again")).unwrap();
+        notes_save(&noted, b"Line one.\nThe rollout slipped.\n").unwrap();
+
+        transcript_save(
+            &TranscriptSlot { engine_id: "imported", job_id: &spoken },
+            &transcript_with("we discussed the ROLLOUT"),
+        )
+        .unwrap();
+
+        transcript_save(
+            &TranscriptSlot { engine_id: "imported", job_id: &titled },
+            &transcript_with("rollout again"),
+        )
+        .unwrap();
 
         let hits = jobs_search_all(" Rollout ").unwrap();
 
-        let found: Vec<(&str, &str)> = hits
-            .iter()
-            .map(|hit| (hit.job_id.as_str(), hit.source.as_str()))
-            .collect();
+        let found: Vec<(&str, &str)> =
+            hits.iter().map(|hit| (hit.job_id.as_str(), hit.source.as_str())).collect();
 
         let expected = [
             (titled.as_str(), "title"),
@@ -1280,7 +1469,7 @@ mod tests {
 
     #[test]
     fn an_atomic_write_replaces_the_file_in_place_and_leaves_no_temporary_behind() {
-        let _root = root_scoped("atomic-write");
+        let _root = root_scoped();
         let path = root().unwrap().join("nested").join("notes.md");
         let blocked = root().unwrap().join("blocked");
 
@@ -1297,11 +1486,18 @@ mod tests {
         assert_eq!(names, vec!["notes.md".to_owned()]);
         assert!(atomic_write(&blocked, b"x").is_err());
         assert!(!blocked.with_extension("tmp").exists());
+
+        let leftovers = fs::read_dir(root().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with("tmp"));
+
+        assert_eq!(leftovers.count(), 0);
     }
 
     #[test]
     fn audio_survives_a_round_trip_through_a_pcm16_wav_file() {
-        let _root = root_scoped("audio-round-trip");
+        let _root = root_scoped();
         let path = root().unwrap().join("audio.wav");
         let samples = [0.0_f32, 0.5, -0.5, 1.0, -1.0];
 
@@ -1312,7 +1508,7 @@ mod tests {
 
         assert_eq!(sample_rate, 8000);
         assert_eq!(loaded.len(), samples.len());
-        assert!((duration_seconds - 5.0 / 8000.0).abs() < 1e-9);
+        assert!((duration_seconds - 5.0 / 8000.0).abs() < 1e-9_f64);
 
         for (original, decoded) in samples.iter().zip(&loaded) {
             assert!((original - decoded).abs() < 1.0 / f32::from(i16::MAX));
@@ -1321,27 +1517,27 @@ mod tests {
 
     #[test]
     fn audio_past_the_length_gate_is_refused_and_a_non_wav_file_does_not_open() {
-        let _root = root_scoped("audio-gates");
+        let _root = root_scoped();
         let path = root().unwrap().join("audio.wav");
         let at_limit = vec![0.0_f32; usize::try_from(AUDIO_SECONDS_MAX).unwrap()];
         let past_limit = vec![0.0_f32; usize::try_from(AUDIO_SECONDS_MAX).unwrap() + 1];
 
         assert!(audio_wav_save(&past_limit, 1, &path).is_err());
-        assert!(audio_wav_save(&at_limit, 1, &path).is_ok());
-        assert!(wav_reader_open(&path).is_ok());
+        audio_wav_save(&at_limit, 1, &path).unwrap();
+        drop(wav_reader_open(&path).unwrap());
 
         fs::write(&path, b"RIFF but not really").unwrap();
 
         assert!(wav_reader_open(&path).is_err());
-        assert!(audio_wav_duration_seconds(&path).is_err());
-        assert!(audio_wav_load(&path).is_err());
+        assert_ne!(audio_wav_duration_seconds(&path).unwrap_err().to_string(), "");
+        assert_ne!(audio_wav_load(&path).unwrap_err().to_string(), "");
     }
 
     #[test]
     fn a_source_file_hashes_to_the_same_id_as_its_text() {
-        let _root = root_scoped("source-hash");
+        let _root = root_scoped();
         let path = root().unwrap().join("source.txt");
-        let multi_block = "x".repeat(HASH_BUFFER_BYTES as usize * 2 + 1);
+        let multi_block = "x".repeat(usize_of!(HASH_BUFFER_BYTES) * 2 + 1);
 
         fs::write(&path, b"hello").unwrap();
 
@@ -1354,15 +1550,19 @@ mod tests {
         fs::write(&path, &multi_block).unwrap();
 
         assert_eq!(job_id_from_source_content(&path).unwrap(), job_id_from_text(&multi_block));
-        assert!(job_id_from_source_content(&root().unwrap().join("missing")).is_err());
+
+        assert_ne!(
+            job_id_from_source_content(&root().unwrap().join("missing")).unwrap_err().to_string(),
+            "",
+        );
     }
 
     #[test]
     fn a_missing_file_is_an_error_and_an_empty_one_reads_as_empty() {
-        let _root = root_scoped("bounded-read");
+        let _root = root_scoped();
         let path = root().unwrap().join("empty.txt");
 
-        assert!(file_read_bounded(&path, 1).is_err());
+        assert_ne!(file_read_bounded(&path, 1).unwrap_err().to_string(), "");
 
         fs::write(&path, b"").unwrap();
 
@@ -1389,8 +1589,8 @@ mod tests {
 
     #[test]
     fn only_a_minted_job_id_shape_is_accepted_back() {
-        assert!(job_id_validate("2cf24dba5fb0a30e26e83b2ac5b9e29e").is_ok());
-        assert!(job_id_validate("2CF24DBA5FB0A30E26E83B2AC5B9E29E").is_ok());
+        job_id_validate("2cf24dba5fb0a30e26e83b2ac5b9e29e").unwrap();
+        job_id_validate("2CF24DBA5FB0A30E26E83B2AC5B9E29E").unwrap();
         assert!(job_id_validate("").is_err());
         assert!(job_id_validate("../../etc").is_err());
         assert!(job_id_validate("2cf24dba5fb0a30e26e83b2ac5b9e29").is_err());
@@ -1400,21 +1600,21 @@ mod tests {
     #[test]
     fn search_snippet_is_case_insensitive_and_line_scoped() {
         let haystack = "First line about hay.\nThe Rollout plan is on this line.\nThird line.";
-        let snippet = search_snippet(haystack, "rollout").expect("hit");
+        let snippet = search_snippet(haystack, &needle_of("rollout")).expect("hit");
 
         assert_eq!(snippet, "The Rollout plan is on this line.");
-        assert!(search_snippet(haystack, "missing").is_none());
+        assert!(search_snippet(haystack, &needle_of("missing")).is_none());
         assert_eq!(jobs_search_all("   ").expect("empty query").len(), 0);
     }
 
     #[test]
     fn a_long_line_is_windowed_around_the_match_on_character_boundaries() {
-        let haystack = format!("{}Rollout{}", "é".repeat(300), "ü".repeat(300));
-        let snippet = search_snippet(&haystack, "rollout").expect("hit");
+        let haystack = format!("{}Rollout{}", "\u{e9}".repeat(300), "\u{fc}".repeat(300));
+        let snippet = search_snippet(&haystack, &needle_of("rollout")).expect("hit");
 
         assert!(snippet.starts_with('\u{2026}'));
         assert!(snippet.contains("Rollout"));
-        assert!(snippet.chars().count() <= SNIPPET_CHARS_MAX as usize + 1);
+        assert!(snippet.chars().count() <= usize_of!(SNIPPET_CHARS_MAX) + 1);
     }
 
     #[test]
@@ -1438,7 +1638,7 @@ mod tests {
         fs::write(&path, b"0123456789").unwrap();
 
         assert_eq!(file_read_bounded(&path, 10).unwrap(), "0123456789");
-        assert!(file_read_bounded(&path, 9).is_err());
+        assert_ne!(file_read_bounded(&path, 9).unwrap_err().to_string(), "");
 
         fs::remove_file(&path).unwrap();
     }
@@ -1452,9 +1652,67 @@ mod tests {
 
     #[test]
     fn a_sample_is_scaled_into_the_symmetric_pcm16_range() {
-        assert_eq!(sample_to_pcm16(1.0), i16::MAX);
-        assert_eq!(sample_to_pcm16(-1.0), -i16::MAX);
-        assert_eq!(sample_to_pcm16(0.0), 0);
-        assert_eq!(sample_to_pcm16(2.0), i16::MAX);
+        let samples = [1.0, -1.0, 0.0, 2.0, -2.0, f32::NAN, f32::INFINITY];
+        let values: Vec<i16> = samples_to_pcm16(&samples).collect();
+
+        assert_eq!(values.len(), samples.len());
+        assert_eq!(values, vec![i16::MAX, -i16::MAX, 0, i16::MAX, -i16::MAX, 0, i16::MAX]);
+        assert!(values.iter().all(|value| *value > i16::MIN));
+    }
+
+    #[test]
+    fn metadata_without_an_id_is_an_error_and_leaves_the_listing_intact() {
+        let _root = root_scoped();
+        let blank = job_id_from_text("blank");
+        let intact = job_id_from_text("intact");
+        let raw = r#"{"id":"","source_path":"p","source_size_bytes":1,"created_at_unix":2}"#;
+
+        fs::write(job_meta_path(&blank).unwrap(), raw).unwrap();
+        meta_save(&meta_with(&intact, 1)).unwrap();
+
+        let listed: Vec<String> = jobs_list_all().unwrap().into_iter().map(|job| job.id).collect();
+
+        assert_ne!(meta_load(&blank).unwrap_err().to_string(), "");
+        assert_eq!(listed, vec![intact]);
+    }
+
+    #[test]
+    fn overlapping_atomic_writes_leave_one_whole_file_and_no_temporary() {
+        let _root = root_scoped();
+        let directory = root().unwrap();
+        let path = directory.join("notes.md");
+
+        thread::scope(|scope| {
+            for writer in 0_u8..8 {
+                let target = &path;
+
+                let _handle = scope.spawn(move || {
+                    let contents = vec![b'a' + writer; 64 * 1024];
+
+                    for _round in 0_u8..50 {
+                        atomic_write(target, &contents).unwrap();
+                    }
+                });
+            }
+        });
+
+        let written = fs::read(&path).unwrap();
+
+        assert_eq!(written.len(), 64 * 1024);
+        assert!(written.iter().all(|byte| *byte == written[0]));
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        assert!(written[0] >= b'a');
+        assert!(written[0] < b'a' + 8);
+        assert_eq!(fs::read_to_string(&path).unwrap().len(), written.len());
+    }
+
+    #[test]
+    fn a_clip_span_needs_a_start_at_or_past_zero_and_an_end_after_it() {
+        let span = ClipSpan::of(ClipStart(0.0), ClipEnd(1.0)).unwrap();
+
+        assert!(span.end_seconds > span.start_seconds);
+        assert_ne!(ClipSpan::of(ClipStart(1.0), ClipEnd(1.0)).unwrap_err().to_string(), "");
+        assert_ne!(ClipSpan::of(ClipStart(-1.0), ClipEnd(1.0)).unwrap_err().to_string(), "");
+        assert_ne!(ClipSpan::of(ClipStart(2.0), ClipEnd(1.0)).unwrap_err().to_string(), "");
     }
 }

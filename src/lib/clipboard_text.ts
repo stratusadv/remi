@@ -1,22 +1,29 @@
-export interface ClipboardNode {
-    attrs: Readonly<Record<string, unknown>>
-    content: { forEach(callback: (node: ClipboardNode) => void): void }
-    isText: boolean
-    text: string | undefined
-    textContent: string
-    type: { name: string }
+import { assert } from './assert'
+import type { Node } from '@tiptap/pm/model'
+
+
+export type ClipboardFragment = Record<'forEach', (callback: (node: ClipboardNode) => void) => void>
+
+export type ClipboardNode = Pick<Node, 'attrs' | 'isText' | 'text' | 'textContent'> & {
+    content: ClipboardFragment
+    type: Pick<Node['type'], 'name'>
 }
 
-interface Entry {
+interface Placement {
     indent: number
-    node: ClipboardNode
     prefix: string
+}
+
+interface Entry extends Placement {
+    node: ClipboardNode
 }
 
 const LIST_INDENT = 2
 const NODE_COUNT_MAX = 100_000
 
-export function clipboard_plain_text(fragment: ClipboardNode['content']): string {
+export function clipboard_plain_text(fragment: ClipboardFragment): string {
+    assert(typeof fragment.forEach === 'function')
+
     const blocks: string[] = []
 
     fragment.forEach((block) => {
@@ -29,26 +36,29 @@ export function clipboard_plain_text(fragment: ClipboardNode['content']): string
 }
 
 function block_lines(block: ClipboardNode): string[] {
+    assert(block.type.name.length > 0)
+
     const lines: string[] = []
     const stack: Entry[] = [{ node: block, indent: 0, prefix: '' }]
     let visited = 0
 
     while (visited < NODE_COUNT_MAX) {
         const entry = stack.pop()
-        if (!entry) break
+
+        if (entry === undefined) break
 
         visited += 1
 
-        const { node, indent, prefix } = entry
+        const { node, indent } = entry
 
         switch (node.type.name) {
             case 'paragraph':
             case 'heading':
-                lines.push(...text_lines(inline_text(node), indent, prefix))
+                lines.push(...text_lines(inline_text(node), entry))
 
                 break
             case 'codeBlock':
-                lines.push(...text_lines(node.textContent, indent, prefix))
+                lines.push(...text_lines(node.textContent, entry))
 
                 break
             case 'bulletList':
@@ -59,11 +69,11 @@ function block_lines(block: ClipboardNode): string[] {
                 break
             case 'listItem':
             case 'taskItem':
-                stack.push(...item_entries(node, indent, prefix).reverse())
+                stack.push(...item_entries(node, entry).reverse())
 
                 break
             case 'blockquote':
-                stack.push(...children_entries(node, indent, prefix).reverse())
+                stack.push(...children_entries(node, entry).reverse())
 
                 break
             case 'table':
@@ -73,17 +83,24 @@ function block_lines(block: ClipboardNode): string[] {
             case 'horizontalRule':
             case 'hardBreak':
                 break
+
             default:
                 if (node.textContent.length > 0) {
-                    lines.push(...text_lines(node.textContent, indent, prefix))
+                    lines.push(...text_lines(node.textContent, entry))
                 }
         }
     }
 
+    assert(visited <= NODE_COUNT_MAX)
+
     return lines
 }
 
-function children_entries(node: ClipboardNode, indent: number, prefix: string): Entry[] {
+function children_entries(node: ClipboardNode, placement: Placement): Entry[] {
+    assert(node.type.name.length > 0)
+    assert(placement.indent >= 0)
+
+    const { indent, prefix } = placement
     const entries: Entry[] = []
 
     node.content.forEach((child) => {
@@ -94,6 +111,9 @@ function children_entries(node: ClipboardNode, indent: number, prefix: string): 
 }
 
 function inline_text(node: ClipboardNode): string {
+    assert(node.type.name.length > 0)
+    assert(typeof node.textContent === 'string')
+
     let text = ''
 
     node.content.forEach((child) => {
@@ -109,11 +129,13 @@ function inline_text(node: ClipboardNode): string {
     return text
 }
 
-function item_entries(item: ClipboardNode, indent: number, prefix: string): Entry[] {
-    const marker = item.type.name === 'taskItem'
-        ? (item.attrs['checked'] === true ? '[x] ' : '[ ] ')
-        : prefix
+function item_entries(item: ClipboardNode, placement: Placement): Entry[] {
+    assert(item.type.name.length > 0)
+    assert(placement.indent >= 0)
 
+    const { indent, prefix } = placement
+    const task_marker = item.attrs['checked'] === true ? '[x] ' : '[ ] '
+    const marker = item.type.name === 'taskItem' ? task_marker : prefix
     const entries: Entry[] = []
 
     item.content.forEach((child) => {
@@ -130,6 +152,9 @@ function item_entries(item: ClipboardNode, indent: number, prefix: string): Entr
 }
 
 function list_entries(list: ClipboardNode, indent: number): Entry[] {
+    assert(list.type.name.length > 0)
+    assert(indent >= 0)
+
     const start = typeof list.attrs['start'] === 'number' ? list.attrs['start'] : 1
     const entries: Entry[] = []
 
@@ -144,6 +169,9 @@ function list_entries(list: ClipboardNode, indent: number): Entry[] {
 }
 
 function table_lines(table: ClipboardNode, indent: number): string[] {
+    assert(table.type.name.length > 0)
+    assert(indent >= 0)
+
     const pad = ' '.repeat(indent)
     const lines: string[] = []
 
@@ -166,9 +194,15 @@ function table_lines(table: ClipboardNode, indent: number): string[] {
     return lines
 }
 
-function text_lines(text: string, indent: number, prefix: string): string[] {
+function text_lines(text: string, placement: Placement): string[] {
+    assert(typeof text === 'string')
+    assert(placement.indent >= 0)
+
+    const { indent, prefix } = placement
     const pad = ' '.repeat(indent)
     const continuation = pad + ' '.repeat(prefix.length)
+
+    assert(continuation.length === indent + prefix.length)
 
     return text.split('\n').map((line, index) => (index === 0 ? pad + prefix : continuation) + line)
 }

@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ipc } from '../../src/lib/ipc'
 import { use_jobs } from '../../src/composables/use_jobs'
+import { ipc } from '../../src/lib/ipc'
 import { job_listing_build } from './fixtures'
 import type { Waveform } from '../../src/types'
 
 
 vi.mock('../../src/lib/ipc')
 
-const WAVEFORM: Waveform = { peaks: [0.2, 0.4], duration_seconds: 12 }
+const WAVEFORM = Object.freeze<Waveform>({ peaks: [0.2, 0.4], duration_seconds: 12 })
 const jobs_state = use_jobs()
 
 beforeEach(() => {
@@ -92,8 +92,11 @@ describe('waveform_load', () => {
     it('asks the backend for one hundred and ten bars and caches the answer', async () => {
         vi.mocked(ipc.job_waveform_get).mockResolvedValue(WAVEFORM)
 
-        expect(await jobs_state.waveform_load('job-2')).toEqual(WAVEFORM)
-        expect(await jobs_state.waveform_load('job-2')).toEqual(WAVEFORM)
+        const first = await jobs_state.waveform_load('job-2')
+        const second = await jobs_state.waveform_load('job-2')
+
+        expect(first).toEqual(WAVEFORM)
+        expect(second).toEqual(WAVEFORM)
         expect(ipc.job_waveform_get).toHaveBeenCalledTimes(1)
         expect(ipc.job_waveform_get).toHaveBeenCalledWith('job-2', 110)
     })
@@ -101,8 +104,11 @@ describe('waveform_load', () => {
     it('caches a null answer so a missing waveform is not requested twice', async () => {
         vi.mocked(ipc.job_waveform_get).mockResolvedValue(null)
 
-        expect(await jobs_state.waveform_load('job-3')).toBeNull()
-        expect(await jobs_state.waveform_load('job-3')).toBeNull()
+        const first = await jobs_state.waveform_load('job-3')
+        const second = await jobs_state.waveform_load('job-3')
+
+        expect(first).toBeNull()
+        expect(second).toBeNull()
         expect(ipc.job_waveform_get).toHaveBeenCalledTimes(1)
     })
 

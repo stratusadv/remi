@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import { assert } from '../lib/assert'
 
 
 export type DialogKind = 'info' | 'warning' | 'error'
@@ -16,6 +17,11 @@ export interface DialogMessageOptions {
     ok_label?: string
 }
 
+export interface DialogPromptOptions {
+    title?: string
+    ok_label?: string
+}
+
 interface DialogFields {
     id: string
     title: string
@@ -24,54 +30,65 @@ interface DialogFields {
     ok_label: string
     cancel_label: string | null
     danger: boolean
+    input_shown: boolean
 }
 
 interface DialogState extends DialogFields {
     resolve: (value: boolean) => void
 }
 
-const TITLE_DEFAULT = 'scribe'
-const OK_LABEL_DEFAULT = 'OK'
 const CANCEL_LABEL_DEFAULT = 'Cancel'
+const OK_LABEL_DEFAULT = 'OK'
+const TITLE_DEFAULT = 'scribe'
 const current = ref<DialogState | null>(null)
+const input = ref('')
+const api = Object.freeze({ current, input, confirm, message, prompt, close })
 
 
-function show(fields: DialogFields): Promise<boolean> {
-    const previous = current.value
+export function use_dialog(): typeof api {
+    assert(Object.isFrozen(api))
+    assert(current.value === null || current.value.id.length > 0)
 
-    if (previous) previous.resolve(false)
-
-    return new Promise<boolean>((resolve) => {
-        current.value = { ...fields, resolve }
-    })
+    return api
 }
 
-function close(value: boolean) {
+function close(value: boolean): void {
+    assert(typeof value === 'boolean')
+
     const state = current.value
 
-    if (!state) return
+    if (state === null) return
+
+    assert(typeof state.resolve === 'function')
 
     current.value = null
 
     state.resolve(value)
 }
 
-function confirm(message: string, options?: DialogConfirmOptions): Promise<boolean> {
+async function confirm(text: string, options?: DialogConfirmOptions): Promise<boolean> {
+    assert(typeof text === 'string')
+    assert(options === undefined || typeof options === 'object')
+
     const kind = options?.kind ?? 'warning'
 
     return show({
         id: crypto.randomUUID(),
         title: options?.title ?? TITLE_DEFAULT,
-        message,
+        message: text,
         kind,
         ok_label: options?.ok_label ?? OK_LABEL_DEFAULT,
         cancel_label: options?.cancel_label ?? CANCEL_LABEL_DEFAULT,
         danger: kind === 'warning' || kind === 'error',
+        input_shown: false,
     })
 }
 
 async function message(text: string, options?: DialogMessageOptions): Promise<void> {
-    await show({
+    assert(typeof text === 'string')
+    assert(options === undefined || typeof options === 'object')
+
+    const shown = show({
         id: crypto.randomUUID(),
         title: options?.title ?? TITLE_DEFAULT,
         message: text,
@@ -79,9 +96,53 @@ async function message(text: string, options?: DialogMessageOptions): Promise<vo
         ok_label: options?.ok_label ?? OK_LABEL_DEFAULT,
         cancel_label: null,
         danger: false,
+        input_shown: false,
     })
+
+    return shown.then(() => undefined)
 }
 
-export function use_dialog() {
-    return { current, confirm, message, close }
+async function prompt(
+    text: string,
+    initial: string,
+    options?: DialogPromptOptions,
+): Promise<string | null> {
+    assert(typeof text === 'string')
+    assert(typeof initial === 'string')
+    assert(options === undefined || typeof options === 'object')
+
+    input.value = initial
+
+    const shown = show({
+        id: crypto.randomUUID(),
+        title: options?.title ?? TITLE_DEFAULT,
+        message: text,
+        kind: 'info',
+        ok_label: options?.ok_label ?? OK_LABEL_DEFAULT,
+        cancel_label: CANCEL_LABEL_DEFAULT,
+        danger: false,
+        input_shown: true,
+    })
+
+    return shown.then(prompt_answer)
+}
+
+function prompt_answer(confirmed: boolean): string | null {
+    assert(typeof confirmed === 'boolean')
+    assert(typeof input.value === 'string')
+
+    return confirmed ? input.value : null
+}
+
+async function show(fields: DialogFields): Promise<boolean> {
+    assert(fields.id.length > 0)
+    assert(fields.ok_label.length > 0)
+
+    const previous = current.value
+
+    if (previous !== null) previous.resolve(false)
+
+    return new Promise<boolean>((resolve) => {
+        current.value = { ...fields, resolve }
+    })
 }

@@ -1,13 +1,14 @@
 import { ref, watch } from 'vue'
+import { assert } from '../lib/assert'
 import { ipc } from '../lib/ipc'
+import { log_warn } from '../lib/log'
 import { use_notes_templates } from './use_notes_templates'
 import { use_settings } from './use_settings'
-import type { JobMeta, LineCorrection, Transcript, Waveform } from '../types'
+import type { JobID, JobMeta, LineCorrection, Transcript, Waveform } from '../types'
 
 
 export type View =
     | 'jobs'
-
     | 'transcribe'
     | 'import'
     | 'details'
@@ -15,6 +16,11 @@ export type View =
     | 'settings'
     | 'templates'
     | 'people'
+
+interface JobDocuments {
+    notes: string | null
+    transcript: Transcript | null
+}
 
 const WAVEFORM_BAR_COUNT_DEFAULT = 360
 const view_current = ref<View>('jobs')
@@ -33,23 +39,88 @@ watch(view_current, () => {
     view_reopen_count.value = 0
 })
 
-function view_set(view: View) {
-    if (view_current.value === view) return
+export function use_pipeline(): typeof api {
+    assert(Object.isFrozen(api))
+    assert(view_current.value.length > 0)
 
-    view_current.value = view
+    return api
 }
 
-function view_reopen(view: View) {
-    if (view_current.value === view) {
-        view_reopen_count.value += 1
+async function job_documents_load(id: JobID): Promise<JobDocuments> {
+    const engines = await ipc.job_transcript_engines_list(id)
+    const [engine_first] = engines
 
-        return
-    }
+    const [transcript_loaded, notes_loaded] = await Promise.all([
+        engine_first !== undefined ? ipc.job_transcript_load(id, engine_first) : null,
+        ipc.notes_load(id),
+    ])
 
-    view_set(view)
+    assert(notes_loaded === null || typeof notes_loaded === 'string')
+
+    return { notes: notes_loaded, transcript: transcript_loaded }
 }
 
-function pipeline_reset() {
+async function job_open(meta: JobMeta, view_target: View | null): Promise<void> {
+    assert(meta.id.length > 0)
+    assert(view_target === null || view_target.length > 0)
+
+    if (job_open_busy.value) return
+
+    job_open_busy.value = true
+
+    return job_documents_load(meta.id)
+        .then((documents) => {
+            job_open_commit(meta, view_target, documents)
+        })
+        .finally(() => {
+            job_open_busy.value = false
+        })
+}
+
+function job_open_commit(meta: JobMeta, view_target: View | null, documents: JobDocuments): void {
+    assert(meta.id.length > 0)
+    assert(view_target === null || view_target.length > 0)
+    assert(typeof documents === 'object')
+
+    job_id_current.value = meta.id
+    source_path.value = meta.source_path
+    meta_current.value = meta
+    transcript.value = documents.transcript
+    notes_markdown.value = documents.notes ?? ''
+    waveform_current.value = null
+
+    void waveform_refresh()
+
+    view_current.value = view_target ?? view_for_job_state()
+}
+
+function job_start_new(): void {
+    pipeline_reset()
+
+    view_current.value = 'transcribe'
+
+    assert(job_id_current.value === null)
+    assert(source_path.value === null)
+}
+
+async function meta_refresh(): Promise<void> {
+    const id = job_id_current.value
+
+    if (id === null) return
+
+    assert(typeof id === 'string')
+    assert(id.length > 0)
+
+    return ipc.job_meta_get(id)
+        .then((fresh) => {
+            if (fresh !== null) meta_current.value = fresh
+        })
+        .catch((error: unknown) => {
+            log_warn('[pipeline] meta refresh failed', id, error)
+        })
+}
+
+function pipeline_reset(): void {
     job_id_current.value = null
     source_path.value = null
     transcript.value = null
@@ -58,93 +129,30 @@ function pipeline_reset() {
     meta_current.value = null
     waveform_current.value = null
     view_current.value = 'jobs'
+
+    assert(view_current.value.length > 0)
+    assert(view_reopen_count.value >= 0)
 }
 
-function template_id_ensure() {
+function template_id_ensure(): void {
     const { templates } = use_notes_templates()
     const { settings } = use_settings()
     const candidate = template_id_selected.value ?? settings.value.notes_template_id_default
     const known = templates.value.some((template) => template.id === candidate)
 
     template_id_selected.value = known ? candidate : null
+
+    assert(template_id_selected.value === null || known)
+    assert(Array.isArray(templates.value))
 }
 
-async function job_open(meta: JobMeta, view_target: View | null) {
-    if (job_open_busy.value) return
+async function transcript_segments_text_set(corrections: LineCorrection[]): Promise<void> {
+    assert(Array.isArray(corrections))
+    assert(corrections.every((correction) => correction.index >= 0))
 
-    job_open_busy.value = true
-
-    try {
-        await job_open_commit(meta, view_target)
-    } finally {
-        job_open_busy.value = false
-    }
-}
-
-async function job_open_commit(meta: JobMeta, view_target: View | null) {
-    const engines = await ipc.job_transcript_engines_list(meta.id)
-    const [engine_first] = engines
-
-    const [transcript_loaded, notes_loaded] = await Promise.all([
-        engine_first ? ipc.job_transcript_load(meta.id, engine_first) : null,
-        ipc.notes_load(meta.id),
-    ])
-
-    job_id_current.value = meta.id
-    source_path.value = meta.source_path
-    meta_current.value = meta
-    transcript.value = transcript_loaded
-    notes_markdown.value = notes_loaded ?? ''
-    waveform_current.value = null
-
-    void waveform_refresh()
-
-    view_current.value = view_target ?? view_for_job_state()
-}
-
-function view_for_job_state(): View {
-    if (notes_markdown.value) return 'notes'
-    if (transcript.value) return 'details'
-
-    return 'transcribe'
-}
-
-async function waveform_refresh() {
-    const id = job_id_current.value
-
-    if (!id) {
-        waveform_current.value = null
-
-        return
-    }
-
-    try {
-        waveform_current.value = await ipc.job_waveform_get(id, WAVEFORM_BAR_COUNT_DEFAULT)
-    } catch (error) {
-        waveform_current.value = null
-
-        console.warn('[pipeline] waveform unavailable', id, error)
-    }
-}
-
-async function meta_refresh() {
-    const id = job_id_current.value
-
-    if (!id) return
-
-    try {
-        const fresh = await ipc.job_meta_get(id)
-
-        if (fresh) meta_current.value = fresh
-    } catch (error) {
-        console.warn('[pipeline] meta refresh failed', id, error)
-    }
-}
-
-async function transcript_segments_text_set(corrections: LineCorrection[]) {
     const current = transcript.value
 
-    if (!current) return
+    if (current === null) return
     if (corrections.length === 0) return
 
     const text_by_index = new Map(
@@ -166,34 +174,85 @@ async function transcript_segments_text_set(corrections: LineCorrection[]) {
 
     const id = job_id_current.value
 
-    if (id) await ipc.job_transcript_save(id, transcript.value)
+    if (id === null) return
+
+    return ipc.job_transcript_save(id, transcript.value)
 }
 
-function job_start_new() {
-    pipeline_reset()
-    view_current.value = 'transcribe'
+function view_for_job_state(): View {
+    assert(typeof notes_markdown.value === 'string')
+    assert(job_id_current.value !== null)
+
+    if (notes_markdown.value.length > 0) return 'notes'
+    if (transcript.value !== null) return 'details'
+
+    return 'transcribe'
 }
 
-export function use_pipeline() {
-    return {
-        view_current,
-        job_id_current,
-        source_path,
-        transcript,
-        notes_markdown,
-        template_id_selected,
-        meta_current,
-        waveform_current,
-        job_open_busy,
-        view_reopen,
-        view_reopen_count,
-        view_set,
-        pipeline_reset,
-        job_open,
-        job_start_new,
-        meta_refresh,
-        template_id_ensure,
-        transcript_segments_text_set,
-        waveform_refresh,
+function view_reopen(view: View): void {
+    assert(view.length > 0)
+    assert(view_reopen_count.value >= 0)
+
+    if (view_current.value === view) {
+        view_reopen_count.value += 1
+
+        return
     }
+
+    view_set(view)
+}
+
+function view_set(view: View): void {
+    assert(view.length > 0)
+
+    if (view_current.value === view) return
+
+    view_current.value = view
+
+    assert(view_reopen_count.value >= 0)
+}
+
+const api = Object.freeze({
+    view_current,
+    job_id_current,
+    source_path,
+    transcript,
+    notes_markdown,
+    template_id_selected,
+    meta_current,
+    waveform_current,
+    job_open_busy,
+    view_reopen,
+    view_reopen_count,
+    view_set,
+    pipeline_reset,
+    job_open,
+    job_start_new,
+    meta_refresh,
+    template_id_ensure,
+    transcript_segments_text_set,
+    waveform_refresh,
+})
+
+async function waveform_refresh(): Promise<void> {
+    const id = job_id_current.value
+
+    if (id === null) {
+        waveform_current.value = null
+
+        return
+    }
+
+    assert(typeof id === 'string')
+    assert(id.length > 0)
+
+    return ipc.job_waveform_get(id, WAVEFORM_BAR_COUNT_DEFAULT)
+        .then((waveform) => {
+            waveform_current.value = waveform
+        })
+        .catch((error: unknown) => {
+            waveform_current.value = null
+
+            log_warn('[pipeline] waveform unavailable', id, error)
+        })
 }

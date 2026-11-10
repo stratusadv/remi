@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ipc } from '../../src/lib/ipc'
 import { person_name_full, use_people } from '../../src/composables/use_people'
+import { ipc } from '../../src/lib/ipc'
 import { group_build, person_build } from './fixtures'
 
 

@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test'
+import { assert } from '../../src/lib/assert'
 import {
+    HAS_TEXT,
     RECORDING_TITLED,
     RECORDING_UNTITLED,
     app_open,
@@ -9,15 +11,21 @@ import {
     step_current,
     tiles,
 } from './helpers'
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 
 
-function people_field(page: Page, label: string) {
-    return page.locator('.step-field').filter({ has: page.getByText(label, { exact: true }) })
+function chips(page: Page, label: string): Locator {
+    assert(!page.isClosed())
+    assert(label.length > 0)
+
+    return people_field(page, label).locator('.tag-chip')
 }
 
-function chips(page: Page, label: string) {
-    return people_field(page, label).locator('.tag-chip')
+function people_field(page: Page, label: string): Locator {
+    assert(!page.isClosed())
+    assert(label.length > 0)
+
+    return page.locator('.step-field').filter({ has: page.getByText(label, { exact: true }) })
 }
 
 test.beforeEach(async ({ page }) => {
@@ -43,10 +51,12 @@ test('the existing meeting shows its people, template, and title', async ({ page
 
     await expect(page.getByLabel('Title')).toHaveValue(RECORDING_TITLED)
     await expect(page.getByLabel('Template')).toHaveValue('default-meeting-notes')
+
     await expect(chips(page, 'In the meeting')).toHaveText([
         'John Doe (Developer)',
         'Jane Doe (Product owner)',
     ])
+
     await expect(chips(page, 'Mentioned')).toHaveText(['Sam Smith (Client)'])
     await expect(page.getByText('These names are from before People existed')).toBeHidden()
 })
@@ -73,6 +83,7 @@ test('the picker adds people who were present, including a whole group', async (
     await picker.getByRole('button', { name: 'Done' }).click()
 
     await expect(picker).toBeHidden()
+
     await expect(chips(page, 'In the meeting')).toHaveText([
         'John Doe (Developer)',
         'Jane Doe (Product owner)',
@@ -85,7 +96,7 @@ test('the picker adds people who were present, including a whole group', async (
 
     await nav_to(page, 'Home')
 
-    const tile = tiles(page).filter({ hasText: RECORDING_UNTITLED })
+    const tile = tiles(page).filter({ [HAS_TEXT]: RECORDING_UNTITLED })
 
     await expect(tile.locator('.recording-tile-people')).toHaveText('Jane Doe, John Doe')
 })

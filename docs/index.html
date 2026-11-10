@@ -407,13 +407,14 @@
 
         @media (max-width: 900px) {
             .split {
-                grid-template-columns: 1fr;
+                grid-template-columns: minmax(0, 1fr);
             }
 
             .brand {
                 position: static;
                 min-height: 0;
                 padding: 40px 16px 0;
+                overflow-x: clip;
                 border-right: 0;
                 border-bottom: 1px solid var(--line);
             }
@@ -487,6 +488,7 @@
             <p class="tagline">scribe turns a meeting recording into a formatted document: transcribed, shaped by a template, edited in place, and exported to Word, Markdown, or PDF.</p>
             <p class="status mono" id="status"><span>Fetching the latest release&hellip;</span></p>
             <p class="links">
+                <a href="overview/">Documentation</a>
                 <a href="https://github.com/stratusadv/scribe">Source on GitHub</a>
                 <a href="https://github.com/stratusadv/scribe/releases">All releases</a>
             </p>

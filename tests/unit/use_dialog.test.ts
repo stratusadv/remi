@@ -52,7 +52,10 @@ describe('confirm', () => {
 
         dialog.close(true)
 
-        expect(await pending).toBe(true)
+        const answer = await pending
+
+
+        expect(answer).toBe(true)
         expect(dialog.current.value).toBeNull()
     })
 
@@ -61,19 +64,30 @@ describe('confirm', () => {
 
         dialog.close(false)
 
-        expect(await pending).toBe(false)
-    })
+        const answer = await pending
 
+
+        expect(answer).toBe(false)
+    })
+})
+
+describe('confirm', () => {
     it('resolves a superseded dialog with false when a new one opens', async () => {
         const first = dialog.confirm('First')
         const second = dialog.confirm('Second')
 
-        expect(await first).toBe(false)
+        const answer_first = await first
+
+
+        expect(answer_first).toBe(false)
         expect(dialog.current.value?.message).toBe('Second')
 
         dialog.close(true)
 
-        expect(await second).toBe(true)
+        const answer_second = await second
+
+
+        expect(answer_second).toBe(true)
     })
 })
 
@@ -110,6 +124,38 @@ describe('close', () => {
         expect(() => {
             dialog.close(true)
         }).not.toThrow()
+
         expect(dialog.current.value).toBeNull()
+    })
+})
+
+describe('use_dialog prompt', () => {
+    it('resolves to the edited text when the dialog is accepted', async () => {
+        const answer = dialog.prompt('Link URL', 'https://')
+
+        expect(dialog.current.value?.input_shown).toBe(true)
+        expect(dialog.input.value).toBe('https://')
+
+        dialog.input.value = 'https://example.com'
+        dialog.close(true)
+
+        await expect(answer).resolves.toBe('https://example.com')
+    })
+
+    it('resolves to null when the dialog is cancelled', async () => {
+        const answer = dialog.prompt('Link URL', 'https://')
+
+        dialog.input.value = 'https://example.com'
+        dialog.close(false)
+
+        await expect(answer).resolves.toBeNull()
+    })
+
+    it('hides the field on a plain confirmation', () => {
+        void dialog.confirm('Delete this?')
+
+        expect(dialog.current.value?.input_shown).toBe(false)
+
+        dialog.close(false)
     })
 })

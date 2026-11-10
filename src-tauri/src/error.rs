@@ -4,9 +4,6 @@ const ERROR_SOURCE_DEPTH_MAX: u32 = 8;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AppError {
-    #[error("api error: {0}")]
-    API(String),
-
     #[error("audio error: {0}")]
     Audio(String),
 
@@ -25,6 +22,9 @@ pub(crate) enum AppError {
     #[error("serde error: {0}")]
     Serde(#[from] serde_json::Error),
 
+    #[error("api error: {0}")]
+    Service(String),
+
     #[error("task error: {0}")]
     Task(String),
 
@@ -33,7 +33,10 @@ pub(crate) enum AppError {
 }
 
 impl Serialize for AppError {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    fn serialize<Output: Serializer>(
+        &self,
+        serializer: Output,
+    ) -> Result<Output::Ok, Output::Error> {
         serializer.serialize_str(&self.to_string())
     }
 }
@@ -59,8 +62,8 @@ pub(crate) fn error_chain_describe(error: &dyn std::error::Error) -> String {
         depth += 1;
     }
 
-    debug_assert!(depth <= ERROR_SOURCE_DEPTH_MAX);
-    debug_assert_ne!(described, "");
+    assert!(depth <= ERROR_SOURCE_DEPTH_MAX);
+    assert_ne!(described, "");
 
     described
 }
@@ -71,25 +74,16 @@ pub(crate) type AppResult<T> = Result<T, AppError>;
 mod tests {
     use super::*;
 
-    #[derive(Debug)]
+    #[derive(Debug, thiserror::Error)]
+    #[error("{text}")]
     struct Layered {
         text: &'static str,
         source: Option<Box<Self>>,
     }
 
-    impl std::fmt::Display for Layered {
-        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str(self.text)
-        }
-    }
-
-    impl std::error::Error for Layered {
-        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-            self.source.as_deref().map(|inner| -> &(dyn std::error::Error + 'static) { inner })
-        }
-    }
-
     fn layered(texts: &[&'static str]) -> Layered {
+        assert_ne!(texts.len(), 0);
+
         let mut error = Layered { text: texts[texts.len() - 1], source: None };
 
         for text in texts.iter().rev().skip(1) {
@@ -109,16 +103,15 @@ mod tests {
 
         assert_eq!(
             error_chain_describe(&chain),
-            "error sending request for url (x): sending body: connection reset by peer"
+            "error sending request for url (x): sending body: connection reset by peer",
         );
 
         let repeated = layered(&["timed out", "timed out"]);
 
         assert_eq!(error_chain_describe(&repeated), "timed out");
 
-        let deep = layered(&[
-            "l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9", "l10", "l11",
-        ]);
+        let deep =
+            layered(&["l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9", "l10", "l11"]);
 
         assert_eq!(error_chain_describe(&deep), "l0: l1: l2: l3: l4: l5: l6: l7: l8");
     }

@@ -1,252 +1,19 @@
 use crate::blocking;
+use crate::contract::JobID;
 use crate::convert;
 use crate::error::{AppError, AppResult};
 use crate::workspace;
-use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
-const PRINT_FILE_NAME: &str = "print.html";
-const PRINT_WINDOW_LABEL: &str = "print";
-const PRINT_WINDOW_WIDTH: f64 = 960.0;
-const PRINT_WINDOW_HEIGHT: f64 = 1100.0;
-const PAGE_BYTES_ESTIMATE: u32 = 1024;
 const EXPORT_EXTENSION_DOCX: &str = "docx";
 const EXPORT_EXTENSION_MARKDOWN: &str = "md";
-const TITLE_DEFAULT: &str = "Notes";
-
-fn notes_markdown_load(job_id: &str) -> AppResult<String> {
-    debug_assert_ne!(job_id, "");
-
-    let markdown = workspace::notes_load(job_id)?
-        .ok_or_else(|| AppError::Export(format!("no notes found for job {job_id}")))?;
-
-    if markdown.trim().is_empty() {
-        return Err(AppError::Export("notes are empty".into()));
-    }
-
-    let stripped = timestamps_strip(&markdown);
-
-    debug_assert!(stripped.len() <= markdown.len());
-
-    Ok(stripped)
-}
-
-fn timestamp_match_at(chars: &[char], index: usize) -> Option<usize> {
-    const INNER_LENGTH_MIN: u32 = 2;
-    const INNER_LENGTH_MAX: u32 = 24;
-
-    const _: () = assert!(INNER_LENGTH_MIN < INNER_LENGTH_MAX);
-
-    debug_assert!(index < chars.len());
-
-    let closer = match *chars.get(index)? {
-        '[' => ']',
-        '(' => ')',
-        _ => return None,
-    };
-
-    let inner_start = index + 1;
-    let mut has_colon = false;
-    let mut has_digit_or_marker = false;
-    let inner = chars.iter().enumerate().skip(inner_start).take(INNER_LENGTH_MAX as usize + 1);
-
-    for (offset, character) in inner {
-        if *character == closer {
-            if !has_colon {
-                return None;
-            }
-
-            if !has_digit_or_marker {
-                return None;
-            }
-
-            let inner_length = offset - inner_start;
-
-            if !(INNER_LENGTH_MIN as usize..=INNER_LENGTH_MAX as usize).contains(&inner_length) {
-                return None;
-            }
-
-            debug_assert!(offset + 1 > index);
-            debug_assert!(offset < chars.len());
-
-            return Some(offset + 1);
-        }
-
-        match *character {
-            ':' => has_colon = true,
-            'm' | 's' | 'h' | 'M' | 'S' | 'H' => has_digit_or_marker = true,
-            '-' | '\u{2013}' | '\u{2014}' | ',' | ' ' | '.' => {}
-            digit if digit.is_ascii_digit() => has_digit_or_marker = true,
-            _ => return None,
-        }
-    }
-
-    None
-}
-
-fn timestamps_strip(markdown: &str) -> String {
-    let chars: Vec<char> = markdown.chars().collect();
-    let mut without_timestamps = String::with_capacity(markdown.len());
-    let mut index = 0;
-
-    while let Some(&character) = chars.get(index) {
-        if let Some(end_index) = timestamp_match_at(&chars, index) {
-            debug_assert!(end_index > index);
-
-            let at_line_start = index == 0 || chars.get(index - 1) == Some(&'\n');
-
-            index = end_index;
-
-            if at_line_start {
-                while chars.get(index) == Some(&' ') {
-                    index += 1;
-                }
-
-                continue;
-            }
-
-            without_timestamps.push(' ');
-
-            continue;
-        }
-
-        without_timestamps.push(character);
-        index += 1;
-    }
-
-    debug_assert_eq!(index, chars.len());
-
-    let collapsed = timestamps_strip_spaces_collapse(&without_timestamps);
-    let tightened = timestamps_strip_punctuation_tighten(&collapsed);
-    let trimmed = timestamps_strip_line_ends(&tightened);
-
-    debug_assert!(trimmed.len() <= without_timestamps.len());
-
-    trimmed
-}
-
-fn timestamps_strip_spaces_collapse(text: &str) -> String {
-    let mut collapsed = String::with_capacity(text.len());
-    let mut space_horizontal_open = false;
-
-    for character in text.chars() {
-        if matches!(character, ' ' | '\t') {
-            if !space_horizontal_open {
-                collapsed.push(' ');
-            }
-
-            space_horizontal_open = true;
-
-            continue;
-        }
-
-        collapsed.push(character);
-        space_horizontal_open = false;
-    }
-
-    debug_assert!(collapsed.len() <= text.len());
-    debug_assert!(!collapsed.contains("  "));
-
-    collapsed
-}
-
-fn timestamps_strip_punctuation_tighten(text: &str) -> String {
-    const PUNCTUATION: &[char] = &['.', ',', ';', ':', '!', '?', ')', ']', '}'];
-    let mut tightened = String::with_capacity(text.len());
-    let mut remaining = text.chars().peekable();
-    let mut previous = '\n';
-
-    for _character_index in 0..text.len() {
-        let Some(character) = remaining.next() else {
-            break;
-        };
-
-        let space_before_punctuation = character == ' '
-            && remaining
-                .peek()
-                .is_some_and(|next| PUNCTUATION.contains(next));
-
-        if space_before_punctuation {
-            let task_marker_space = previous == '[' && remaining.peek() == Some(&']');
-
-            if task_marker_space {
-                tightened.push(character);
-            }
-        } else {
-            tightened.push(character);
-        }
-
-        previous = character;
-    }
-
-    debug_assert!(tightened.len() <= text.len());
-    debug_assert!(!tightened.contains(" ."));
-    debug_assert!(!tightened.contains(" ,"));
-
-    tightened
-}
-
-fn timestamps_strip_line_ends(text: &str) -> String {
-    let mut trimmed = String::with_capacity(text.len());
-
-    for line in text.split_inclusive('\n') {
-        let (body, newline) = line.strip_suffix('\n').map_or((line, ""), |rest| (rest, "\n"));
-
-        trimmed.push_str(body.trim_end_matches([' ', '\t']));
-        trimmed.push_str(newline);
-    }
-
-    debug_assert!(trimmed.len() <= text.len());
-    debug_assert_eq!(trimmed.matches('\n').count(), text.matches('\n').count());
-
-    trimmed
-}
-
-fn notes_export_write_blocking(job_id: &str, target_path: &Path) -> AppResult<()> {
-    let extension = target_path
-        .extension()
-        .map(|extension| extension.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-
-    let markdown = notes_markdown_load(job_id)?;
-
-    let bytes = match extension.as_str() {
-        EXPORT_EXTENSION_DOCX => convert::markdown_to_docx(&markdown)?,
-        EXPORT_EXTENSION_MARKDOWN => markdown.into_bytes(),
-        _ => {
-            return Err(AppError::Export(format!(
-                "target path must end with .{EXPORT_EXTENSION_DOCX} or .{EXPORT_EXTENSION_MARKDOWN}"
-            )));
-        }
-    };
-
-    debug_assert_ne!(bytes.len(), 0);
-
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    fs::write(target_path, &bytes)?;
-
-    debug_assert!(target_path.exists());
-
-    Ok(())
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub(crate) async fn notes_export(job_id: String, target_path: String) -> AppResult<String> {
-    let target_path_owned = PathBuf::from(&target_path);
-
-    blocking::run(move || {
-        notes_export_write_blocking(&job_id, &target_path_owned)?;
-
-        Ok(target_path_owned.to_string_lossy().into_owned())
-    })
-    .await
-}
+const INNER_LENGTH_MAX: u32 = 24;
+const INNER_LENGTH_MIN: u32 = 2;
+const PAGE_BYTES_ESTIMATE: u32 = 1024;
+const PRINT_FILE_NAME: &str = "print.html";
 
 const PRINT_PAGE_STYLE: &str = r#"
 :root { color-scheme: light; }
@@ -273,8 +40,173 @@ ul:has(> li > input[type=checkbox]) { list-style: none; padding-left: 0; }
 @media print { .banner { display: none; } body { padding: 0; max-width: none; } }
 "#;
 
-fn print_page_html(title: &str, body_html: &str) -> String {
-    let capacity = body_html.len() + PRINT_PAGE_STYLE.len() + PAGE_BYTES_ESTIMATE as usize;
+const PRINT_WINDOW_HEIGHT: f64 = 1100.0;
+const PRINT_WINDOW_LABEL: &str = "print";
+const PRINT_WINDOW_WIDTH: f64 = 960.0;
+const TIGHTENED_PUNCTUATION: &[char] = &['.', ',', ';', ':', '!', '?', ')', ']', '}'];
+const TITLE_DEFAULT: &str = "Notes";
+
+const _: () = assert!(INNER_LENGTH_MIN < INNER_LENGTH_MAX);
+
+struct PrintPage<'text> {
+    body_html: &'text str,
+    title: &'text str,
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub(crate) async fn notes_export(job_id: JobID, target_path: PathBuf) -> AppResult<String> {
+    blocking::run(move || {
+        notes_export_write_blocking(&job_id, &target_path)?;
+
+        Ok(target_path.to_string_lossy().into_owned())
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub(crate) async fn notes_print(app: AppHandle, job_id: JobID) -> AppResult<()> {
+    let page_path = blocking::run(move || notes_print_page_write_blocking(&job_id)).await?;
+
+    let url = tauri::Url::parse(&asset_url(&page_path))
+        .map_err(|error| AppError::Export(format!("print page url: {error}")))?;
+
+    assert_ne!(url.scheme(), "");
+
+    if let Some(existing) = app.get_webview_window(PRINT_WINDOW_LABEL) {
+        existing
+            .close()
+            .map_err(|error| AppError::Export(format!("could not close print window: {error}")))?;
+    }
+
+    let _window = WebviewWindowBuilder::new(&app, PRINT_WINDOW_LABEL, WebviewUrl::External(url))
+        .title("Print notes")
+        .inner_size(PRINT_WINDOW_WIDTH, PRINT_WINDOW_HEIGHT)
+        .on_page_load(|window, payload| {
+            if payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+
+            if let Err(error) = window.print() {
+                tracing::warn!("print dialog could not be opened: {}", error);
+            }
+        })
+        .build()
+        .map_err(|error| AppError::Export(format!("could not open print window: {error}")))?;
+
+    Ok(())
+}
+
+fn asset_url(path: &Path) -> String {
+    let path_text = path.to_string_lossy();
+
+    let encoded_bytes: Vec<String> = path_text
+        .bytes()
+        .map(|byte| {
+            let plain = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
+
+            if plain {
+                return char::from(byte).to_string();
+            }
+
+            format!("%{byte:02X}")
+        })
+        .collect();
+
+    let encoded = encoded_bytes.concat();
+
+    assert!(encoded.len() >= path_text.len());
+    assert!(!encoded.contains(' '));
+
+    if cfg!(windows) {
+        format!("http://asset.localhost/{encoded}")
+    } else {
+        format!("asset://localhost/{encoded}")
+    }
+}
+
+fn html_text_escape(text: &str) -> String {
+    let escaped = text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+
+    assert!(!escaped.contains('<'));
+    assert!(!escaped.contains('>'));
+
+    escaped
+}
+
+fn notes_export_write_blocking(job_id: &str, target_path: &Path) -> AppResult<()> {
+    let extension = target_path
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+
+    let markdown = notes_markdown_load(job_id)?;
+
+    let bytes = match extension.as_str() {
+        EXPORT_EXTENSION_DOCX => convert::markdown_to_docx(&markdown)?,
+        EXPORT_EXTENSION_MARKDOWN => markdown.into_bytes(),
+        _ => {
+            return Err(AppError::Export(format!(
+                "target path must end with .{EXPORT_EXTENSION_DOCX} or .{EXPORT_EXTENSION_MARKDOWN}"
+            )));
+        }
+    };
+
+    assert_ne!(bytes.len(), 0);
+
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    fs::write(target_path, &bytes)?;
+
+    Ok(())
+}
+
+fn notes_markdown_load(job_id: &str) -> AppResult<String> {
+    assert_ne!(job_id, "");
+
+    let markdown = workspace::notes_load(job_id)?
+        .ok_or_else(|| AppError::Export(format!("no notes found for job {job_id}")))?;
+
+    if markdown.trim().is_empty() {
+        return Err(AppError::Export("notes are empty".into()));
+    }
+
+    let stripped = timestamps_strip(&markdown);
+
+    assert!(stripped.len() <= markdown.len());
+
+    if stripped.is_empty() {
+        return Err(AppError::Export("notes are empty".into()));
+    }
+
+    Ok(stripped)
+}
+
+fn notes_print_page_write_blocking(job_id: &str) -> AppResult<PathBuf> {
+    let markdown = notes_markdown_load(job_id)?;
+    let body_html = convert::markdown_to_html(&markdown)?;
+
+    let title = workspace::meta_load(job_id)?
+        .and_then(|meta| meta.title)
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| TITLE_DEFAULT.to_owned());
+
+    let page = print_page_html(&PrintPage { body_html: &body_html, title: &title });
+    let path = workspace::job_directory(job_id)?.join(PRINT_FILE_NAME);
+
+    assert!(page.starts_with("<!doctype html>"));
+
+    workspace::atomic_write(&path, page.as_bytes())?;
+
+    assert!(path.ends_with(PRINT_FILE_NAME));
+
+    Ok(path)
+}
+
+fn print_page_html(page_parts: &PrintPage<'_>) -> String {
+    let PrintPage { body_html, title } = *page_parts;
+    let capacity = body_html.len() + PRINT_PAGE_STYLE.len() + usize_of!(PAGE_BYTES_ESTIMATE);
     let mut page = String::with_capacity(capacity);
 
     page.push_str("<!doctype html><html><head><meta charset=\"utf-8\"><title>");
@@ -289,100 +221,185 @@ fn print_page_html(title: &str, body_html: &str) -> String {
     page.push_str(body_html);
     page.push_str("</body></html>");
 
-    debug_assert!(page.len() > body_html.len());
-    debug_assert!(page.ends_with("</html>"));
+    assert!(page.len() > body_html.len());
+    assert!(page.ends_with("</html>"));
 
     page
 }
 
-fn html_text_escape(text: &str) -> String {
-    let escaped = text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+fn timestamp_match_at(chars: &[char], index: usize) -> Option<usize> {
+    assert!(index < chars.len());
 
-    debug_assert!(!escaped.contains('<'));
-    debug_assert!(!escaped.contains('>'));
+    if *chars.get(index)? != '[' {
+        return None;
+    }
 
-    escaped
+    let inner_start = index + 1;
+    let mut has_colon = false;
+    let mut has_digit_or_marker = false;
+    let inner = chars.iter().enumerate().skip(inner_start).take(usize_of!(INNER_LENGTH_MAX) + 1);
+
+    for (offset, character) in inner {
+        if *character == ']' {
+            if !has_colon {
+                return None;
+            }
+
+            if !has_digit_or_marker {
+                return None;
+            }
+
+            let inner_length = offset - inner_start;
+
+            if !(usize_of!(INNER_LENGTH_MIN)..=usize_of!(INNER_LENGTH_MAX)).contains(&inner_length)
+            {
+                return None;
+            }
+
+            assert!(offset + 1 > index);
+            assert!(offset < chars.len());
+
+            return Some(offset + 1);
+        }
+
+        match *character {
+            ':' => has_colon = true,
+            'm' | 's' | 'h' | 'M' | 'S' | 'H' => has_digit_or_marker = true,
+            '-' | '\u{2013}' | '\u{2014}' | ',' | ' ' | '.' => {}
+            digit if digit.is_ascii_digit() => has_digit_or_marker = true,
+            _ => return None,
+        }
+    }
+
+    None
 }
 
-fn notes_print_page_write_blocking(job_id: &str) -> AppResult<PathBuf> {
-    let markdown = notes_markdown_load(job_id)?;
-    let body_html = convert::markdown_to_html(&markdown)?;
+fn timestamps_strip(markdown: &str) -> String {
+    let chars: Vec<char> = markdown.chars().collect();
+    let mut without_timestamps = String::with_capacity(markdown.len());
+    let mut index = 0;
 
-    let title = workspace::meta_load(job_id)?
-        .and_then(|meta| meta.title)
-        .filter(|title| !title.trim().is_empty())
-        .unwrap_or_else(|| TITLE_DEFAULT.to_owned());
+    while let Some(&character) = chars.get(index) {
+        if let Some(end_index) = timestamp_match_at(&chars, index) {
+            assert!(end_index > index);
 
-    let page = print_page_html(&title, &body_html);
-    let path = workspace::job_directory(job_id)?.join(PRINT_FILE_NAME);
+            let at_line_start = index == 0 || chars.get(index - 1) == Some(&'\n');
 
-    debug_assert!(page.starts_with("<!doctype html>"));
+            index = end_index;
 
-    workspace::atomic_write(&path, page.as_bytes())?;
+            if at_line_start {
+                while chars.get(index) == Some(&' ') {
+                    index += 1;
+                }
 
-    debug_assert!(path.ends_with(PRINT_FILE_NAME));
-    debug_assert!(path.is_absolute());
+                continue;
+            }
 
-    Ok(path)
-}
-
-fn asset_url(path: &Path) -> String {
-    let mut encoded = String::with_capacity(path.as_os_str().len() * 3);
-
-    for byte in path.to_string_lossy().bytes() {
-        let plain = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
-
-        if plain {
-            encoded.push(char::from(byte));
+            without_timestamps.push(' ');
 
             continue;
         }
 
-        let _ = write!(encoded, "%{byte:02X}");
+        without_timestamps.push(character);
+        index += 1;
     }
 
-    debug_assert!(encoded.len() >= path.to_string_lossy().len());
-    debug_assert!(!encoded.contains(' '));
+    assert_eq!(index, chars.len());
 
-    // tigerstyle-ignore: TS035
-    if cfg!(windows) {
-        format!("http://asset.localhost/{encoded}")
-    } else {
-        format!("asset://localhost/{encoded}")
-    }
+    let collapsed = timestamps_strip_spaces_collapse(&without_timestamps);
+    let tightened = timestamps_strip_punctuation_tighten(&collapsed);
+    let trimmed = timestamps_strip_line_ends(&tightened);
+
+    assert!(trimmed.len() <= without_timestamps.len());
+
+    trimmed
 }
 
-#[tauri::command(rename_all = "snake_case")]
-pub(crate) async fn notes_print(app: AppHandle, job_id: String) -> AppResult<()> {
-    let page_path = blocking::run(move || notes_print_page_write_blocking(&job_id)).await?;
+fn timestamps_strip_line_ends(text: &str) -> String {
+    let mut trimmed = String::with_capacity(text.len());
 
-    debug_assert!(page_path.is_absolute());
+    for line in text.split_inclusive('\n') {
+        let (body, newline) = line.strip_suffix('\n').map_or((line, ""), |rest| (rest, "\n"));
 
-    let url = tauri::Url::parse(&asset_url(&page_path))
-        .map_err(|error| AppError::Export(format!("print page url: {error}")))?;
-
-    debug_assert_ne!(url.scheme(), "");
-
-    if let Some(existing) = app.get_webview_window(PRINT_WINDOW_LABEL) {
-        existing
-            .close()
-            .map_err(|error| AppError::Export(format!("could not close print window: {error}")))?;
+        trimmed.push_str(body.trim_end_matches([' ', '\t']));
+        trimmed.push_str(newline);
     }
 
-    WebviewWindowBuilder::new(&app, PRINT_WINDOW_LABEL, WebviewUrl::External(url))
-        .title("Print notes")
-        .inner_size(PRINT_WINDOW_WIDTH, PRINT_WINDOW_HEIGHT)
-        .on_page_load(|window, payload| {
-            if payload.event() == PageLoadEvent::Finished {
-                if let Err(error) = window.print() {
-                    tracing::warn!("print dialog could not be opened: {}", error);
-                }
-            }
-        })
-        .build()
-        .map_err(|error| AppError::Export(format!("could not open print window: {error}")))?;
+    assert!(trimmed.len() <= text.len());
+    assert_eq!(trimmed.matches('\n').count(), text.matches('\n').count());
 
-    Ok(())
+    trimmed
+}
+
+fn timestamps_strip_punctuation_tighten(text: &str) -> String {
+    let mut tightened = String::with_capacity(text.len());
+    let mut remaining = text.chars().peekable();
+    let mut previous = '\n';
+    let mut line_indent_open = true;
+
+    for _character_index in 0..text.len() {
+        let Some(character) = remaining.next() else {
+            break;
+        };
+
+        let space_before_punctuation = character == ' '
+            && !line_indent_open
+            && remaining.peek().is_some_and(|next| TIGHTENED_PUNCTUATION.contains(next));
+
+        if space_before_punctuation {
+            let task_marker_space = previous == '[' && remaining.peek() == Some(&']');
+
+            if task_marker_space {
+                tightened.push(character);
+            }
+        } else {
+            tightened.push(character);
+        }
+
+        line_indent_open =
+            character == '\n' || (line_indent_open && matches!(character, ' ' | '\t'));
+
+        previous = character;
+    }
+
+    assert!(tightened.len() <= text.len());
+    assert!(tightened.lines().all(|line| !line.trim_start().contains(" .")));
+    assert!(tightened.lines().all(|line| !line.trim_start().contains(" ,")));
+
+    tightened
+}
+
+fn timestamps_strip_spaces_collapse(text: &str) -> String {
+    let mut collapsed = String::with_capacity(text.len());
+    let mut line_indent_open = true;
+    let mut space_horizontal_open = false;
+
+    for character in text.chars() {
+        if !matches!(character, ' ' | '\t') {
+            collapsed.push(character);
+            line_indent_open = character == '\n';
+            space_horizontal_open = false;
+
+            continue;
+        }
+
+        if line_indent_open {
+            collapsed.push(character);
+
+            continue;
+        }
+
+        if !space_horizontal_open {
+            collapsed.push(' ');
+        }
+
+        space_horizontal_open = true;
+    }
+
+    assert!(collapsed.len() <= text.len());
+    assert!(collapsed.lines().all(|line| !line.trim_start().contains("  ")));
+
+    collapsed
 }
 
 #[cfg(test)]
@@ -395,7 +412,29 @@ mod tests {
         let stripped =
             timestamps_strip("Budget approved [1:23] by Dana (12:04).\nNext item [0:07] .\n");
 
-        assert_eq!(stripped, "Budget approved by Dana.\nNext item.\n");
+        assert_eq!(stripped, "Budget approved by Dana (12:04).\nNext item.\n");
+    }
+
+    #[test]
+    fn a_nested_list_keeps_its_nesting_in_an_export() {
+        let notes = "- Launch moves [1:23]\n  - Tell support\n    - Tell sales\n- Budget stays\n";
+
+        assert_eq!(
+            timestamps_strip(notes),
+            "- Launch moves\n  - Tell support\n    - Tell sales\n- Budget stays\n",
+        );
+
+        assert_eq!(
+            timestamps_strip("```\n    }\n    . dot\n```\n"),
+            "```\n    }\n    . dot\n```\n",
+        );
+    }
+
+    #[test]
+    fn a_real_time_or_ratio_in_round_brackets_survives_an_export() {
+        let notes = "The standup moves to (9:30) and the split stays (3:1).\n";
+
+        assert_eq!(timestamps_strip(notes), notes);
     }
 
     #[test]
@@ -420,6 +459,7 @@ mod tests {
         let long = format!("[{}:00] end", "1".repeat(40));
 
         assert_eq!(timestamps_strip(&long), long);
+
         let deep = "[1:00:00:00:00:00:00:00:00:00:00] x";
 
         assert_eq!(timestamps_strip(deep), deep);
@@ -433,12 +473,12 @@ mod tests {
     #[test]
     fn timestamps_of_every_supported_shape_are_removed_and_lookalikes_are_kept() {
         assert_eq!(timestamps_strip("a [1:02:03] b\n"), "a b\n");
-        assert_eq!(timestamps_strip("a (0:07) b\n"), "a b\n");
+        assert_eq!(timestamps_strip("a (0:07) b\n"), "a (0:07) b\n");
         assert_eq!(timestamps_strip("a [1:23\u{2013}1:45] b\n"), "a b\n");
         assert_eq!(timestamps_strip("a [1:23 - 1:45] b\n"), "a b\n");
         assert_eq!(timestamps_strip("a\t\t[1:00]\tb"), "a b");
         assert_eq!(timestamps_strip("## Recap [0:10]\n- [0:00] Hello\n"), "## Recap\n- Hello\n");
-        assert_eq!(timestamps_strip("é [1:00] ü"), "é ü");
+        assert_eq!(timestamps_strip("\u{e9} [1:00] \u{fc}"), "\u{e9} \u{fc}");
         assert_eq!(timestamps_strip("a [12m 30s] b\n"), "a [12m 30s] b\n");
         assert_eq!(timestamps_strip("a [a:b] b\n"), "a [a:b] b\n");
         assert_eq!(timestamps_strip("a [:] b\n"), "a [:] b\n");
@@ -448,7 +488,7 @@ mod tests {
 
     #[test]
     fn runs_of_horizontal_space_collapse_and_line_ends_are_trimmed() {
-        assert_eq!(timestamps_strip_spaces_collapse("a \t  b\n\n  c"), "a b\n\n c");
+        assert_eq!(timestamps_strip_spaces_collapse("a \t  b\n\n  c"), "a b\n\n  c");
         assert_eq!(timestamps_strip_spaces_collapse(""), "");
         assert_eq!(timestamps_strip_line_ends("a  \nb\t\n\nc "), "a\nb\n\nc");
         assert_eq!(timestamps_strip_line_ends("no newline  "), "no newline");
@@ -460,13 +500,13 @@ mod tests {
         assert_eq!(timestamps_strip_punctuation_tighten("a , b ; c ) d ? e !"), "a, b; c) d? e!");
         assert_eq!(timestamps_strip_punctuation_tighten("- [ ] todo"), "- [ ] todo");
         assert_eq!(timestamps_strip_punctuation_tighten("x ] y"), "x] y");
-        assert_eq!(timestamps_strip_punctuation_tighten("é ."), "é.");
+        assert_eq!(timestamps_strip_punctuation_tighten("\u{e9} ."), "\u{e9}.");
         assert_eq!(timestamps_strip_punctuation_tighten(""), "");
     }
 
     #[test]
     fn the_print_page_wraps_the_body_with_an_escaped_title() {
-        let page = print_page_html("A & <B>", "<h1>Body</h1>");
+        let page = print_page_html(&PrintPage { body_html: "<h1>Body</h1>", title: "A & <B>" });
 
         assert!(page.starts_with("<!doctype html>"));
         assert!(page.contains("<title>A &amp; &lt;B&gt;</title>"));
@@ -478,7 +518,7 @@ mod tests {
 
     #[test]
     fn an_asset_url_percent_encodes_every_byte_outside_the_unreserved_set() {
-        let url = asset_url(Path::new("/tmp/my notes/é~1.html"));
+        let url = asset_url(Path::new("/tmp/my notes/\u{e9}~1.html"));
         let prefix = if cfg!(windows) { "http://asset.localhost/" } else { "asset://localhost/" };
 
         assert_eq!(url, format!("{prefix}%2Ftmp%2Fmy%20notes%2F%C3%A9~1.html"));
@@ -487,13 +527,13 @@ mod tests {
 
     #[test]
     fn notes_export_writes_markdown_or_docx_by_extension_and_refuses_the_rest() {
-        let _root = root_scoped("notes-export");
+        let _root = root_scoped();
         let id = workspace::job_id_from_text("export");
         let target = workspace::root().unwrap().join("out");
 
         assert!(notes_export_write_blocking(&id, &target.join("notes.md")).is_err());
 
-        workspace::notes_save(&id, "Budget approved [1:23].\n").unwrap();
+        workspace::notes_save(&id, b"Budget approved [1:23].\n").unwrap();
         notes_export_write_blocking(&id, &target.join("notes.md")).unwrap();
         notes_export_write_blocking(&id, &target.join("notes.DOCX")).unwrap();
 
@@ -502,39 +542,54 @@ mod tests {
         assert!(notes_export_write_blocking(&id, &target.join("notes.pdf")).is_err());
         assert!(notes_export_write_blocking(&id, &target.join("notes")).is_err());
 
-        workspace::notes_save(&id, "  \n").unwrap();
+        workspace::notes_save(&id, b"  \n").unwrap();
 
         assert!(notes_export_write_blocking(&id, &target.join("notes.md")).is_err());
     }
 
     #[test]
+    fn notes_holding_nothing_but_a_timestamp_are_refused_rather_than_written_empty() {
+        let _root = root_scoped();
+        let id = workspace::job_id_from_text("timestamp-only");
+        let target = workspace::root().unwrap().join("out").join("notes.md");
+
+        workspace::notes_save(&id, b"[1:23]").unwrap();
+
+        assert!(notes_export_write_blocking(&id, &target).is_err());
+        assert!(!target.exists());
+    }
+
+    #[test]
     fn the_print_page_lands_in_the_job_folder_titled_from_its_metadata() {
-        let _root = root_scoped("notes-print");
+        let _root = root_scoped();
         let id = workspace::job_id_from_text("print");
-        let mut meta = meta_with(&id, 1);
 
-        assert!(notes_print_page_write_blocking(&id).is_err());
+        assert_ne!(notes_print_page_write_blocking(&id).unwrap_err().to_string(), "");
 
-        workspace::notes_save(&id, "# Agenda\n\nHello [0:01].\n").unwrap();
+        workspace::notes_save(&id, b"# Agenda\n\nHello [0:01].\n").unwrap();
 
         let path = notes_print_page_write_blocking(&id).unwrap();
         let untitled = fs::read_to_string(&path).unwrap();
+
+        assert_eq!(path, workspace::job_directory(&id).unwrap().join(PRINT_FILE_NAME));
+        assert!(untitled.contains("<title>Notes</title>"));
+        assert!(untitled.contains("Agenda"));
+        assert!(untitled.contains("Hello."));
+
+        let mut meta = meta_with(&id, 1);
 
         meta.title = Some("  ".to_owned());
         workspace::meta_save(&meta).unwrap();
 
         let blank = fs::read_to_string(notes_print_page_write_blocking(&id).unwrap()).unwrap();
 
+        assert!(blank.contains("<title>Notes</title>"));
+
         meta.title = Some("Q3 <Review>".to_owned());
         workspace::meta_save(&meta).unwrap();
 
         let titled = fs::read_to_string(notes_print_page_write_blocking(&id).unwrap()).unwrap();
 
-        assert_eq!(path, workspace::job_directory(&id).unwrap().join(PRINT_FILE_NAME));
-        assert!(untitled.contains("<title>Notes</title>"));
-        assert!(untitled.contains("Agenda"));
-        assert!(untitled.contains("Hello."));
-        assert!(blank.contains("<title>Notes</title>"));
         assert!(titled.contains("<title>Q3 &lt;Review&gt;</title>"));
     }
 }

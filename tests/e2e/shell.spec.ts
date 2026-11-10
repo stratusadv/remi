@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import {
+    HAS_TEXT,
     RECORDING_TITLED,
     RECORDING_UNTITLED,
     STREAM_TIMEOUT_MS,
@@ -65,7 +66,7 @@ test('the sidebar collapses and remembers the choice across a reload', async ({ 
 })
 
 test('going offline shows a banner that can be dismissed', async ({ context, page }) => {
-    const banner = page.getByRole('status').filter({ hasText: 'You appear to be offline.' })
+    const banner = page.getByRole('status').filter({ [HAS_TEXT]: 'You appear to be offline.' })
 
     await expect(banner).toHaveCount(0)
 

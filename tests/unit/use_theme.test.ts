@@ -1,34 +1,65 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { assert } from '../../src/lib/assert'
 import { THEME_STORAGE_KEY } from '../../src/lib/theme'
+import { ADD_EVENT_LISTENER } from './fixtures'
+import type { use_settings } from '../../src/composables/use_settings'
+import type { use_theme } from '../../src/composables/use_theme'
+import type { ipc as ipc_contract } from '../../src/lib/ipc'
 
 
 vi.mock('../../src/lib/ipc')
 
+const change_listeners = new Set<ChangeListener>()
+
+
 type ChangeListener = () => void
+type ThemeHarness = ReturnType<typeof use_settings> & ReturnType<typeof use_theme> & {
+    ipc: typeof ipc_contract
+}
 
-const change_listeners: ChangeListener[] = []
+interface MediaQueryMatches {
+    matches: boolean
+}
 
-function match_media_install(matches: boolean) {
-    const query = {
-        matches,
-        addEventListener: (_name: string, listener: ChangeListener) => {
-            change_listeners.push(listener)
-        },
-    }
+type MediaQueryStub = MediaQueryMatches
+    & Record<typeof ADD_EVENT_LISTENER, typeof change_listener_add>
+
+function change_listener_add(name: string, listener: ChangeListener): void {
+    assert(name === 'change')
+    assert(typeof listener === 'function')
+
+    change_listeners.add(listener)
+}
+
+async function flush(): Promise<void> {
+    assert(typeof setTimeout === 'function')
+    assert(change_listeners.size >= 0)
+
+    return new Promise((resolve) => {
+        setTimeout(resolve, 0)
+    })
+}
+
+function match_media_install(query: MediaQueryStub): void {
+    assert(typeof query.matches === 'boolean')
+    assert(typeof query.addEventListener === 'function')
 
     vi.stubGlobal('matchMedia', vi.fn(() => query))
-
-    return query
 }
 
-function flush() {
-    return new Promise((resolve) => setTimeout(resolve, 0))
+function media_query_stub(matches: boolean): MediaQueryStub {
+    assert(typeof matches === 'boolean')
+    assert(change_listeners.size >= 0)
+
+    return { matches, [ADD_EVENT_LISTENER]: change_listener_add }
 }
 
-async function theme_import() {
+async function theme_import(): Promise<ThemeHarness> {
+    assert(typeof vi.resetModules === 'function')
+
     vi.resetModules()
 
-    const [{ ipc }, { use_settings }, { use_theme }] = await Promise.all([
+    const [{ ipc }, settings_module, theme_module] = await Promise.all([
         import('../../src/lib/ipc'),
         import('../../src/composables/use_settings'),
         import('../../src/composables/use_theme'),
@@ -36,12 +67,14 @@ async function theme_import() {
 
     vi.mocked(ipc.settings_update).mockResolvedValue(undefined)
 
-    return { ipc, ...use_settings(), ...use_theme() }
+    assert(typeof ipc.settings_update === 'function')
+
+    return { ipc, ...settings_module.use_settings(), ...theme_module.use_theme() }
 }
 
 beforeEach(() => {
     localStorage.clear()
-    change_listeners.length = 0
+    change_listeners.clear()
     document.documentElement.className = ''
     document.documentElement.style.colorScheme = ''
     delete document.documentElement.dataset['palette']
@@ -53,7 +86,7 @@ afterEach(() => {
 
 describe('use_theme on load', () => {
     it('applies the system theme and the default palette immediately', async () => {
-        match_media_install(true)
+        match_media_install(media_query_stub(true))
 
         const theme = await theme_import()
 
@@ -65,7 +98,9 @@ describe('use_theme on load', () => {
     })
 
     it('follows a later system change while the choice is system', async () => {
-        const query = match_media_install(false)
+        const query = media_query_stub(false)
+
+        match_media_install(query)
         const theme = await theme_import()
 
         expect(theme.theme_effective.value).toBe('dark')
@@ -78,7 +113,9 @@ describe('use_theme on load', () => {
     })
 
     it('ignores a system change once an explicit theme is set', async () => {
-        const query = match_media_install(false)
+        const query = media_query_stub(false)
+
+        match_media_install(query)
         const theme = await theme_import()
 
         theme.theme_set('dark')
@@ -94,7 +131,7 @@ describe('use_theme on load', () => {
 
 describe('theme_set', () => {
     it('persists an explicit choice to the backend, the html and local storage', async () => {
-        match_media_install(true)
+        match_media_install(media_query_stub(true))
 
         const theme = await theme_import()
 
@@ -111,7 +148,7 @@ describe('theme_set', () => {
     })
 
     it('stores system as null and clears local storage', async () => {
-        match_media_install(true)
+        match_media_install(media_query_stub(true))
 
         const theme = await theme_import()
 
@@ -131,7 +168,7 @@ describe('theme_set', () => {
 
 describe('theme_toggle', () => {
     it('flips between light and dark from the effective theme', async () => {
-        match_media_install(true)
+        match_media_install(media_query_stub(true))
 
         const theme = await theme_import()
 
@@ -151,7 +188,7 @@ describe('theme_toggle', () => {
 
 describe('palette_set', () => {
     it('persists the palette and writes it to the html', async () => {
-        match_media_install(false)
+        match_media_install(media_query_stub(false))
 
         const theme = await theme_import()
 

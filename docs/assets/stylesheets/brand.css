@@ -1,0 +1,38 @@
+:root,
+[data-md-color-scheme="default"] {
+    --md-accent-fg-color: #9854f1;
+    --md-accent-fg-color--transparent: rgba(0, 113, 151, 0.1);
+    --md-code-bg-color: #e1e2e7;
+    --md-default-bg-color: #eff0f5;
+    --md-default-fg-color: #343b58;
+    --md-default-fg-color--light: #6172b0;
+    --md-default-fg-color--lighter: #848cb5;
+    --md-default-fg-color--lightest: #c4c8da;
+    --md-primary-fg-color: #007197;
+    --md-primary-fg-color--dark: #343b58;
+    --md-primary-fg-color--light: #2e7de9;
+    --md-typeset-a-color: #007197;
+}
+
+[data-md-color-scheme="slate"] {
+    --md-accent-fg-color: #7dcfff;
+    --md-accent-fg-color--transparent: rgba(122, 162, 247, 0.14);
+    --md-code-bg-color: #16161e;
+    --md-default-bg-color: #1a1b26;
+    --md-default-fg-color: #c0caf5;
+    --md-default-fg-color--light: #a9b1d6;
+    --md-default-fg-color--lighter: #565f89;
+    --md-default-fg-color--lightest: #292e42;
+    --md-primary-fg-color: #7aa2f7;
+    --md-primary-fg-color--dark: #bb9af7;
+    --md-primary-fg-color--light: #7dcfff;
+    --md-typeset-a-color: #7aa2f7;
+}
+
+[data-md-color-scheme="slate"] .md-logo img {
+    content: url("../scribe-mark-on-dark.svg");
+}
+
+.md-typeset {
+    letter-spacing: 0;
+}

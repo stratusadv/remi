@@ -1,0 +1,72 @@
+[project]
+site_name = "scribe"
+site_description = "A desktop app that turns a meeting recording into formatted notes."
+site_url = "https://stratusadv.github.io/scribe/"
+repo_name = "stratusadv/scribe"
+repo_url = "https://github.com/stratusadv/scribe"
+copyright = "Copyright (c) 2026 Stratus Advanced Technologies"
+extra_css = ["assets/stylesheets/brand.css"]
+nav = [
+    { "Overview" = "overview.md" },
+    { "Install" = "install.md" },
+    { "Setup" = "setup.md" },
+    { "Recording" = "recording.md" },
+    { "Notes" = "notes.md" },
+    { "Templates" = "templates.md" },
+    { "Exporting" = "exporting.md" },
+    { "Troubleshooting" = "troubleshooting.md" },
+]
+
+[project.theme]
+favicon = "assets/scribe-icon-32.png"
+features = [
+    "content.code.copy",
+    "content.tabs.link",
+    "navigation.footer",
+    "navigation.indexes",
+    "navigation.instant",
+    "navigation.instant.prefetch",
+    "navigation.path",
+    "navigation.sections",
+    "navigation.top",
+    "navigation.tracking",
+    "search.highlight",
+]
+language = "en"
+logo = "assets/scribe-mark-on-light.svg"
+
+[project.theme.font]
+code = "JetBrains Mono"
+text = "IBM Plex Sans"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "custom"
+accent = "custom"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "custom"
+accent = "custom"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+[project.markdown_extensions]
+admonition = {}
+attr_list = {}
+tables = {}
+toc.permalink = true
+pymdownx.details = {}
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.line_spans = "__span"
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.keys = {}
+pymdownx.snippets.base_path = ["."]
+pymdownx.snippets.check_paths = true
+pymdownx.superfences = {}
+pymdownx.tabbed.alternate_style = true

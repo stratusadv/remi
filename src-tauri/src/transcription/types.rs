@@ -42,31 +42,30 @@ pub(crate) struct TranscribeProgress {
 
 impl TranscribeProgress {
     pub(crate) fn cancel_clear(&self) {
-        debug_assert_ne!(self.stream_id, "");
+        assert_ne!(self.stream_id, "");
+        assert_eq!(self.app.config().identifier, crate::APP_DATA_FOLDER);
 
         self.app.state::<AppState>().cancellation.clear(&self.stream_id);
     }
 
     pub(crate) fn cancel_register(&self) -> Arc<AtomicBool> {
-        debug_assert_ne!(self.stream_id, "");
+        assert_ne!(self.stream_id, "");
+        assert_eq!(self.app.config().identifier, crate::APP_DATA_FOLDER);
 
         self.app.state::<AppState>().cancellation.register(&self.stream_id)
     }
 
     pub(crate) fn emit_stage(&self, stage: &str) {
-        debug_assert_ne!(stage, "");
-        debug_assert_ne!(self.stream_id, "");
+        assert_ne!(stage, "");
+        assert_ne!(self.stream_id, "");
 
-        let chunk = StageChunk {
-            stream_id: self.stream_id.clone(),
-            stage: stage.to_owned(),
-        };
+        let chunk = StageChunk { stream_id: self.stream_id.clone(), stage: stage.to_owned() };
 
         if let Err(error) = self.app.emit(EVENT_TRANSCRIPTION_STAGE, chunk) {
             tracing::warn!(
                 target: "scribe_lib::transcription",
                 "emit transcription_stage failed: {}",
-                error
+                error,
             );
         }
     }

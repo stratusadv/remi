@@ -1,3 +1,20 @@
+export type APIKey = string
+export type AudioPath = string
+export type EndpointID = string
+export type EngineID = string
+export type EventCallback = (payload: unknown) => void
+export type Instruction = string
+export type JobID = string
+export type Markdown = string
+export type RecordID = string
+export type SecondsEnd = number
+export type SecondsStart = number
+export type StreamID = string
+export type TargetPath = string
+export type TemplateID = string
+export type Title = string
+export type TranscriptText = string
+
 export interface TranscriptSegment {
     text: string
     start_seconds: number
@@ -123,7 +140,6 @@ export type JobsViewChoice = 'grid' | 'list'
 
 export type PaletteChoice =
     | 'graphite'
-
     | 'rose-pine'
     | 'catppuccin'
     | 'nord'
@@ -153,6 +169,12 @@ export interface NotesModels {
     model_default: string
 }
 
+export interface KeyStatus {
+    builtin: boolean
+    length: number
+    user: boolean
+}
+
 export interface SourceStatus {
     builtin: boolean
     user: boolean
@@ -160,8 +182,8 @@ export interface SourceStatus {
 
 export interface ServiceStatus {
     host: SourceStatus
-    notes: SourceStatus
-    transcription: SourceStatus
+    notes: KeyStatus
+    transcription: KeyStatus
 }
 
 export type JobSearchSource = 'title' | 'notes' | 'transcript'
@@ -181,3 +203,8 @@ export interface AIRewriteArgs {
 
 export type AIRewriteHandler = (args: AIRewriteArgs) => Promise<string>
 export type AIGenerateHandler = (description: string) => Promise<string>
+
+export interface WindowSize {
+    height: number
+    width: number
+}

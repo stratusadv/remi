@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test'
+import { assert } from '../../src/lib/assert'
 import {
+    HAS_TEXT,
     RECORDING_TITLED,
     RECORDING_UNTITLED,
     STREAM_TIMEOUT_MS,
@@ -14,44 +16,62 @@ import {
     tiles,
     transcript_rows,
 } from './helpers'
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 
 
 const MARKDOWN_SAMPLE = 'Alpha beta\n\nGamma delta'
 const LINE_FIRST = 'Alpha beta'
 const LINE_SECOND = 'Gamma delta'
 const EXPORT_PATH = '/home/you/Documents/notes.docx'
+const PRINT_STUB = 'window.print = () => { document.body.dataset.printed = "true" }'
 
-function toolbar_button(page: Page, title: string) {
-    return page.locator('.rich-editor-toolbar').getByTitle(title)
+const TITLE_SELECTION_COUNT = 'the selection count follows the selection '
+    + 'and resets when it is cleared'
+
+
+function ai_input(page: Page): Locator {
+    assert(!page.isClosed())
+    assert(page.url().length > 0)
+
+    return page.getByPlaceholder('Custom instruction (e.g. \'rewrite as bullet points\')')
 }
 
-function ai_panel(page: Page) {
+function ai_panel(page: Page): Locator {
+    assert(!page.isClosed())
+    assert(page.url().length > 0)
+
     return page.locator('.rich-editor-ai')
 }
 
-function ai_input(page: Page) {
-    return page.getByPlaceholder("Custom instruction (e.g. 'rewrite as bullet points')")
+async function generation_wait(page: Page): Promise<void> {
+    await expect(page.locator('.notes-stream-pane')).toBeVisible()
+    await expect(page.locator('.streaming-status')).toHaveText('Writing notes')
+    await expect(editor(page)).toBeVisible({ timeout: STREAM_TIMEOUT_MS })
+    await expect(editor(page).locator('h1')).toHaveText(RECORDING_TITLED)
 }
 
-async function notes_open(page: Page) {
-    await recording_open(page, RECORDING_TITLED)
-    await expect(editor(page)).toContainText(RECORDING_TITLED)
-    await editor_content_set(page, MARKDOWN_SAMPLE)
-}
+async function notes_empty_open(page: Page): Promise<void> {
+    assert(!page.isClosed())
 
-async function notes_empty_open(page: Page) {
     await recording_open(page, RECORDING_UNTITLED)
     await page.getByRole('button', { name: 'Next' }).click()
     await expect(step_current(page)).toHaveText('Notes')
     await expect(page.locator('.notes-empty')).toBeVisible()
 }
 
-async function generation_wait(page: Page) {
-    await expect(page.locator('.notes-stream-pane')).toBeVisible()
-    await expect(page.locator('.streaming-status')).toHaveText('Writing notes')
-    await expect(editor(page)).toBeVisible({ timeout: STREAM_TIMEOUT_MS })
-    await expect(editor(page).locator('h1')).toHaveText(RECORDING_TITLED)
+async function notes_open(page: Page): Promise<void> {
+    assert(!page.isClosed())
+
+    await recording_open(page, RECORDING_TITLED)
+    await expect(editor(page)).toContainText(RECORDING_TITLED)
+    await editor_content_set(page, MARKDOWN_SAMPLE)
+}
+
+function toolbar_button(page: Page, title: string): Locator {
+    assert(!page.isClosed())
+    assert(title.length > 0)
+
+    return page.locator('.rich-editor-toolbar').getByTitle(title)
 }
 
 test.beforeEach(async ({ page }) => {
@@ -74,7 +94,7 @@ test('Generate notes streams and lands in the editor', async ({ page }) => {
 
     await nav_to(page, 'Home')
 
-    const tile = tiles(page).filter({ hasText: RECORDING_UNTITLED })
+    const tile = tiles(page).filter({ [HAS_TEXT]: RECORDING_UNTITLED })
 
     await expect(tile.locator('.recording-tile-status')).toHaveText('Notes ready')
 })
@@ -97,6 +117,31 @@ test('Regenerate asks before overwriting', async ({ page }) => {
     await generation_wait(page)
 
     await expect(editor(page)).not.toContainText(LINE_FIRST)
+})
+
+test('Link asks for the address in the app and applies it to the selection', async ({ page }) => {
+    await notes_open(page)
+    await editor_line_select(page, LINE_SECOND)
+    await toolbar_button(page, 'Link').click()
+
+    const prompt = dialog(page, 'Add a link')
+
+    await prompt.getByRole('textbox').fill('https://example.com')
+    await prompt.getByRole('button', { name: 'OK' }).click()
+
+    await expect(editor(page).getByRole('link', { name: LINE_SECOND })).toHaveAttribute(
+        'href',
+        'https://example.com',
+    )
+})
+
+test('Cancelling the link prompt leaves the selection unlinked', async ({ page }) => {
+    await notes_open(page)
+    await editor_line_select(page, LINE_SECOND)
+    await toolbar_button(page, 'Link').click()
+    await dialog(page, 'Add a link').getByRole('button', { name: 'Cancel' }).click()
+
+    await expect(editor(page).getByRole('link')).toHaveCount(0)
 })
 
 test('Bold applies on the first click and removes on the second', async ({ page }) => {
@@ -185,7 +230,8 @@ test('the heading select changes the block type', async ({ page }) => {
     await heading.selectOption('')
 
     await expect(editor(page).locator('h1, h2, h3')).toHaveCount(0)
-    await expect(editor(page).locator('p').filter({ hasText: /\S/ }))
+
+    await expect(editor(page).locator('p').filter({ [HAS_TEXT]: /\S/ }))
         .toHaveText([LINE_FIRST, LINE_SECOND])
 })
 
@@ -205,6 +251,7 @@ test('bullet, numbered, and task lists toggle', async ({ page }) => {
 
     await expect(editor(page).locator('ol')).toHaveCount(0)
     await expect(editor(page).locator('ul[data-type="taskList"] li p')).toHaveText(LINE_SECOND)
+
     await expect(editor(page).locator('ul[data-type="taskList"] input[type="checkbox"]'))
         .toHaveCount(1)
 
@@ -371,7 +418,7 @@ test('the AI panel opens with the selection count and closes', async ({ page }) 
     await expect(ai_button).toHaveAttribute('aria-expanded', 'false')
 })
 
-test('the selection count follows the selection and resets when it is cleared', async ({ page }) => {
+test(TITLE_SELECTION_COUNT, async ({ page }) => {
     await notes_open(page)
     await editor_line_select(page, LINE_SECOND)
     await toolbar_button(page, 'Rewrite the selected text with AI').click()
@@ -400,6 +447,7 @@ test('a quick action rewrites only the selection', async ({ page }) => {
 
     await expect(editor(page))
         .toContainText(LINE_SECOND.toUpperCase(), { timeout: STREAM_TIMEOUT_MS })
+
     await expect(editor(page)).toContainText(LINE_FIRST)
     await expect(editor(page).locator('p')).toHaveText([LINE_FIRST, LINE_SECOND.toUpperCase()])
 })
@@ -421,6 +469,7 @@ test('a custom instruction rewrites only the selection', async ({ page }) => {
 
     await expect(editor(page))
         .toContainText(LINE_FIRST.toUpperCase(), { timeout: STREAM_TIMEOUT_MS })
+
     await expect(editor(page).locator('p')).toHaveText([LINE_FIRST.toUpperCase(), LINE_SECOND])
 })
 
@@ -498,11 +547,7 @@ test('Export as Word saves through the dialog and can open the file', async ({ p
 test('Export as PDF prints the notes', async ({ page }) => {
     await notes_open(page)
 
-    await page.evaluate(() => {
-        window.print = () => {
-            document.body.dataset['printed'] = 'true'
-        }
-    })
+    await page.evaluate(PRINT_STUB)
 
     await page.getByRole('button', { name: 'Export' }).click()
     await page.getByRole('menuitem', { name: 'PDF' }).click()

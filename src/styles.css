@@ -606,6 +606,23 @@
         text-rendering: optimizeLegibility;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
+        -webkit-user-select: none;
+        user-select: none;
+    }
+    input,
+    textarea,
+    [contenteditable="true"],
+    p.meta,
+    .app-dialog-message,
+    .app-dialog-title,
+    .banner > p,
+    .error,
+    .notes-stream-pane,
+    .rich-editor-ai-error,
+    .streaming-prose,
+    .welcome-problem {
+        -webkit-user-select: text;
+        user-select: text;
     }
     h1 {
         @apply leading-tight;
@@ -2281,6 +2298,9 @@
     }
     .app-dialog-message:has(+ .app-dialog-actions) {
         margin-bottom: 0;
+    }
+    .app-dialog-input {
+        width: 100%;
     }
     .app-dialog .app-dialog-actions {
         margin-top: 1.25rem;

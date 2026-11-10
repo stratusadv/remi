@@ -1,9 +1,11 @@
 import { computed, ref } from 'vue'
+import { assert } from '../lib/assert'
 import { ipc } from '../lib/ipc'
 import { path_file_name_short } from '../lib/paths'
 import { use_endpoints } from './use_endpoints'
 import { use_service } from './use_service'
 import { use_tasks } from './use_tasks'
+import type { AudioPath, TranscriptionResult } from '../types'
 
 
 type QueueStatus = 'pending' | 'running' | 'succeeded' | 'failed'
@@ -15,9 +17,10 @@ interface QueueEntry {
     job_id: string | null
 }
 
-const QUEUE_LENGTH_MAX = 256
 const MESSAGE_KEY_MISSING = 'Add your transcription key under Settings, then drop the files again.'
-const MESSAGE_QUEUE_FULL = `Drop at most ${QUEUE_LENGTH_MAX} files at a time.`
+const QUEUE_LENGTH_MAX = 256
+const MESSAGE_QUEUE_FULL = `Drop at most ${String(QUEUE_LENGTH_MAX)} files at a time.`
+const QUEUE_DRAIN_SLOTS = QUEUE_LENGTH_MAX * 16
 const queue = ref<QueueEntry[]>([])
 const running = ref(false)
 const error_message_last = ref<string | null>(null)
@@ -30,27 +33,28 @@ const running_count = computed(
     () => queue.value.filter((entry) => entry.status === 'running').length,
 )
 
+const api = Object.freeze({
+    queue,
+    running,
+    pending_count,
+    running_count,
+    error_message_last,
+    enqueue,
+    entries_clear_finished,
+})
 
-function entry_replace(path: string, patch: Partial<QueueEntry>) {
-    queue.value = queue.value.map((entry) =>
-        entry.path === path ? { ...entry, ...patch } : entry,
-    )
+
+export function use_batch_transcribe(): typeof api {
+    assert(Object.isFrozen(api))
+    assert(queue.value.length <= QUEUE_LENGTH_MAX)
+
+    return api
 }
 
-function entry_pending_next(): QueueEntry | undefined {
-    return queue.value.find((entry) => entry.status === 'pending')
-}
+async function enqueue(paths: string[]): Promise<void> {
+    assert(Array.isArray(paths))
+    assert(queue.value.length <= QUEUE_LENGTH_MAX)
 
-function transcription_configured(): boolean {
-    const { endpoints_by_purpose } = use_endpoints()
-    const { transcription_ready } = use_service()
-
-    if (!transcription_ready.value) return false
-
-    return endpoints_by_purpose('transcription').length > 0
-}
-
-async function enqueue(paths: string[]) {
     error_message_last.value = null
 
     if (!transcription_configured()) {
@@ -78,65 +82,119 @@ async function enqueue(paths: string[]) {
 
     running.value = true
 
-    try {
-        await queue_drain()
-    } finally {
+    return queue_drain().finally(() => {
         running.value = false
-    }
+    })
 }
 
-async function queue_drain() {
-    let next = entry_pending_next()
+function entries_clear_finished(): void {
+    assert(queue.value.length <= QUEUE_LENGTH_MAX)
 
-    while (next) {
-        await transcribe_one(next.path)
+    const queue_size = queue.value.length
 
-        next = entry_pending_next()
-    }
+    queue.value = queue.value.filter(
+        (entry) => entry.status !== 'succeeded' && entry.status !== 'failed',
+    )
+
+    assert(queue.value.length <= queue_size)
 }
 
-async function transcribe_one(path: string) {
+function entry_pending_next(): QueueEntry | undefined {
+    assert(queue.value.length <= QUEUE_LENGTH_MAX)
+
+    const next = queue.value.find((entry) => entry.status === 'pending')
+
+    assert((next?.error_message ?? null) === null)
+
+    return next
+}
+
+function entry_replace(path: AudioPath, patch: Partial<QueueEntry>): void {
+    assert(typeof path === 'string')
+    assert(patch.path === undefined)
+
+    queue.value = queue.value.map((entry) =>
+        entry.path === path ? { ...entry, ...patch } : entry)
+
+    assert(queue.value.length <= QUEUE_LENGTH_MAX)
+}
+
+async function queue_drain(): Promise<void> {
+    assert(running.value)
+    assert(queue.value.length <= QUEUE_LENGTH_MAX)
+
+    let chain = Promise.resolve()
+
+    for (let slot = 0; slot < QUEUE_DRAIN_SLOTS; slot += 1) {
+        chain = chain.then(transcribe_next)
+    }
+
+    return chain
+}
+
+async function transcribe_next(): Promise<void> {
+    assert(running.value)
+
+    const next = entry_pending_next()
+
+    if (next === undefined) return
+
+    return transcribe_one(next.path)
+}
+
+async function transcribe_one(path: AudioPath): Promise<void> {
+    assert(typeof path === 'string')
+    assert(queue.value.some((entry) => entry.path === path))
+
     const { endpoints_by_purpose } = use_endpoints()
     const { task_run } = use_tasks()
 
     entry_replace(path, { status: 'running' })
 
-    try {
-        const endpoint_id = endpoints_by_purpose('transcription')[0]?.id ?? null
+    const endpoint_id = endpoints_by_purpose('transcription')[0]?.id ?? null
 
-        await task_run({
-            kind: 'transcribe',
-            label: path_file_name_short(path),
-            async runner() {
-                if (!endpoint_id) throw new Error(MESSAGE_KEY_MISSING)
+    const finished = task_run({
+        kind: 'transcribe',
+        label: path_file_name_short(path),
+        async runner() {
+            assert(typeof path === 'string')
 
-                return await ipc.transcription_remote(path, endpoint_id, null, true)
-            },
-            on_success(result, task) {
-                task.job_id = result.job_id
+            if (endpoint_id === null) throw new Error(MESSAGE_KEY_MISSING)
 
-                entry_replace(path, { status: 'succeeded', job_id: result.job_id })
-            },
-        })
-    } catch (error) {
+            assert(typeof endpoint_id === 'string')
+
+            return ipc.transcription_remote(path, endpoint_id, null, true)
+        },
+        job_id_of: transcription_job_id,
+        on_success(result: TranscriptionResult) {
+            assert(typeof result.job_id === 'string')
+            assert(typeof path === 'string')
+
+            entry_replace(path, { status: 'succeeded', job_id: result.job_id })
+        },
+    })
+
+    return finished.then(() => undefined).catch((error: unknown) => {
         entry_replace(path, { status: 'failed', error_message: String(error) })
-    }
+    })
 }
 
-function entries_clear_finished() {
-    queue.value = queue.value.filter(
-        (entry) => entry.status !== 'succeeded' && entry.status !== 'failed',
-    )
+function transcription_configured(): boolean {
+    assert(queue.value.length <= QUEUE_LENGTH_MAX)
+
+    const { endpoints_by_purpose } = use_endpoints()
+    const { transcription_ready } = use_service()
+
+    assert(typeof transcription_ready.value === 'boolean')
+
+    if (!transcription_ready.value) return false
+
+    return endpoints_by_purpose('transcription').length > 0
 }
 
-export function use_batch_transcribe() {
-    return {
-        queue,
-        running,
-        pending_count,
-        running_count,
-        error_message_last,
-        enqueue,
-        entries_clear_finished,
-    }
+function transcription_job_id(result: TranscriptionResult): string {
+    assert(typeof result.job_id === 'string')
+    assert(typeof result.cached === 'boolean')
+
+    return result.job_id
 }

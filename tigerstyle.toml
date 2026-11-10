@@ -1,27 +1,64 @@
-include = ["src-tauri/src/**/*.rs", "src/**/*.ts"]
-exclude = ["src/vite-env.d.ts"]
-line_length_max = 100
-function_lines_max = 70
-
-extend-select = [
-    "TS004",
-    "TS014",
-    "TS017",
-    "TS018",
-    "TS026",
-    "TS027",
-    "TS031",
-    "TS032",
-    "TS034",
-    "TS035",
-    "TS037",
-    "TS040",
-    "TS042",
-    "TS043",
-    "TS044",
-    "TS045",
-    "TS047",
-    "TS048",
-    "TS049",
-    "TS050",
+extend-exclude = ["design/**", "dist/**", "public/**", "src-tauri/gen/**", "src-tauri/target/**"]
+ignore = ["TS016", "TS035"]
+parameter-exempt-types = [
+    "APIEndpointPurpose",
+    "APIKey",
+    "APIResponse",
+    "AppHandle",
+    "BarCount",
+    "ClipEnd",
+    "ClipStart",
+    "EndpointID",
+    "EngineID",
+    "Group",
+    "Instruction",
+    "JobID",
+    "JobMetaPatch",
+    "Markdown",
+    "MediaStream",
+    "MicrophoneRate",
+    "NonZeroU32",
+    "NotesTemplate",
+    "Option<&AtomicBool>",
+    "Option<&JobMeta>",
+    "Option<&TranscribeProgress>",
+    "Option<&str>",
+    "Option<JobID>",
+    "Option<JobMeta>",
+    "Option<StreamID>",
+    "Option<String>",
+    "Option<TemplateID>",
+    "Option<TranscribeProgress>",
+    "Output",
+    "Page",
+    "PathBuf",
+    "Person",
+    "RecordID",
+    "Request<'_>",
+    "SearchQuery",
+    "Settings",
+    "State<'_, AppState>",
+    "StreamID",
+    "TemplateID",
+    "TextRaw",
+    "Title",
+    "Transcript",
+    "TranscriptReuse",
+    "TranscriptText",
+    "Vec<ChunkPayload>",
+    "Vec<String>",
+    "docmux::Error",
+    "reqwest::Error",
+    "reqwest::Response",
+    "std::io::Error",
+    "tokio::task::JoinError",
+    "unknown",
 ]
+preview = true
+select = ["ALL"]
+
+[per-file-ignores]
+"eslint.config.ts" = ["TS025", "TS032", "TS037"]
+"playwright.config.ts" = ["TS032", "TS037"]
+"src/lib/assert.ts" = ["TS004", "TS022"]
+"vite.config.ts" = ["TS032"]

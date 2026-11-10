@@ -1,0 +1,97 @@
+name: ci
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+
+permissions:
+    contents: read
+
+jobs:
+    backend:
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-latest, windows-latest]
+        runs-on: ${{ matrix.os }}
+        defaults:
+            run:
+                working-directory: src-tauri
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: dtolnay/rust-toolchain@nightly
+              with:
+                  components: rustfmt
+
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: clippy
+
+            - name: Install packages
+              if: runner.os == 'Linux'
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y \
+                      librsvg2-dev \
+                      libwebkit2gtk-4.1-dev \
+                      patchelf
+
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  workspaces: src-tauri
+
+            - name: Format
+              run: cargo +nightly fmt --all --check
+
+            - name: Lint
+              run: cargo clippy --workspace --all-targets -- -D warnings
+
+            - name: Test
+              run: cargo test --workspace
+
+    e2e:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: oven-sh/setup-bun@v2
+
+            - name: Install
+              run: bun install --frozen-lockfile
+
+            - name: Install Playwright
+              run: bunx playwright install --with-deps chromium
+
+            - name: Test
+              env:
+                  CI: true
+              run: bun run test:e2e
+
+            - if: failure()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: playwright-report
+                  path: playwright-report
+                  retention-days: 7
+
+    frontend:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: oven-sh/setup-bun@v2
+
+            - name: Install
+              run: bun install --frozen-lockfile
+
+            - name: Typecheck
+              run: bun run typecheck
+
+            - name: Lint
+              run: bun run lint
+
+            - name: Test
+              run: bun run test

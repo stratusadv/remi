@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ipc } from '../../src/lib/ipc'
 import { use_settings } from '../../src/composables/use_settings'
+import { ipc } from '../../src/lib/ipc'
 import type { Settings } from '../../src/types'
 
 
 vi.mock('../../src/lib/ipc')
 
-const SETTINGS_EMPTY: Settings = {
+const SETTINGS_EMPTY = Object.freeze<Settings>({
     notes_template_id_default: null,
     theme: null,
     palette: null,
@@ -15,7 +15,7 @@ const SETTINGS_EMPTY: Settings = {
     notes_thinking: null,
     api_host: null,
     jobs_view: null,
-}
+})
 
 const settings_state = use_settings()
 

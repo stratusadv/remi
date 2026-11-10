@@ -1,190 +1,51 @@
-use super::types::{APIEndpoint, APIEndpointPurpose, ServiceStatus, SourceStatus};
+use super::types::{APIEndpoint, APIEndpointPurpose, KeyStatus, ServiceStatus, SourceStatus};
 use crate::error::{AppError, AppResult};
 use crate::secrets::{protected_delete, protected_read, protected_write};
 use crate::settings::{Settings, settings_load};
 use crate::workspace;
 use std::collections::HashMap;
 
-pub(crate) const ENDPOINT_ID_TRANSCRIPTION: &str = "builtin-transcription";
-pub(crate) const ENDPOINT_ID_NOTES: &str = "builtin-notes";
-pub(crate) const MODEL_TRANSCRIPTION: &str = "stratus.listen";
-pub(crate) const MODEL_NOTES: &str = "stratus.thinking";
-const TRANSCRIBE_CHUNK_SECONDS: u32 = 120;
-const KEYS_FILE: &str = "endpoint_keys.bin";
-const API_KEY_CHARS_MAX: u32 = 1024;
-const API_KEY_BUILTIN_TRANSCRIPTION: Option<&str> = option_env!("SCRIBE_API_KEY_TRANSCRIPTION");
-const API_KEY_BUILTIN_NOTES: Option<&str> = option_env!("SCRIBE_API_KEY_NOTES");
 const API_HOST_BUILTIN: Option<&str> = option_env!("SCRIBE_API_HOST");
+const API_KEY_BUILTIN_NOTES: Option<&str> = option_env!("SCRIBE_API_KEY_NOTES");
+const API_KEY_BUILTIN_TRANSCRIPTION: Option<&str> = option_env!("SCRIBE_API_KEY_TRANSCRIPTION");
+const API_KEY_CHARS_MAX: u32 = 1024;
+pub(crate) const ENDPOINT_ID_NOTES: &str = "builtin-notes";
+pub(crate) const ENDPOINT_ID_TRANSCRIPTION: &str = "builtin-transcription";
+const KEYS_FILE: &str = "endpoint_keys.bin";
+pub(crate) const MODEL_NOTES: &str = "stratus.thinking";
+pub(crate) const MODEL_TRANSCRIPTION: &str = "stratus.listen";
+const TRANSCRIBE_CHUNK_SECONDS: u32 = 120;
 
 const _: () = assert!(TRANSCRIBE_CHUNK_SECONDS > 0);
 
-fn keys_load() -> AppResult<HashMap<String, String>> {
-    let path = workspace::root_file_path(KEYS_FILE)?;
-
-    let Some(payload) = protected_read(&path)? else {
-        return Ok(HashMap::new());
-    };
-
-    let keys = serde_json::from_str(&payload).unwrap_or_else(|error| {
-        tracing::warn!(
-            target: "scribe_lib::endpoints",
-            "the key store could not be read and will be replaced on the next save: {}",
-            error
-        );
-
-        HashMap::new()
-    });
-
-    Ok(keys)
+struct EndpointSeed {
+    id: &'static str,
+    model: &'static str,
+    name: &'static str,
+    purpose: APIEndpointPurpose,
 }
 
-fn keys_save(keys: &HashMap<String, String>) -> AppResult<()> {
-    let path = workspace::root_file_path(KEYS_FILE)?;
+pub(crate) fn api_key_set(purpose: APIEndpointPurpose, api_key: &str) -> AppResult<()> {
+    let id = endpoint_id_for(purpose);
+    let trimmed = api_key.trim();
 
-    if keys.is_empty() {
-        return protected_delete(&path);
+    if trimmed.chars().count() > usize_of!(API_KEY_CHARS_MAX) {
+        return Err(AppError::Config(format!(
+            "the key is too long; a key is under {API_KEY_CHARS_MAX} characters",
+        )));
     }
 
-    let payload = serde_json::to_string(keys)?;
+    let mut keys = keys_load()?;
 
-    debug_assert!(payload.starts_with('{'));
-
-    protected_write(&path, &payload)
-}
-
-const fn endpoint_id_for(purpose: APIEndpointPurpose) -> &'static str {
-    match purpose {
-        APIEndpointPurpose::Transcription => ENDPOINT_ID_TRANSCRIPTION,
-        APIEndpointPurpose::Notes => ENDPOINT_ID_NOTES,
-    }
-}
-
-fn api_key_builtin(id: &str) -> Option<&'static str> {
-    let key = match id {
-        ENDPOINT_ID_TRANSCRIPTION => API_KEY_BUILTIN_TRANSCRIPTION,
-        ENDPOINT_ID_NOTES => API_KEY_BUILTIN_NOTES,
-        _ => None,
-    };
-
-    let usable = key.map(str::trim).filter(|key| !key.is_empty());
-
-    debug_assert!(usable.is_none_or(|key| !key.is_empty()));
-    debug_assert!(usable.is_none_or(|key| key.trim() == key));
-
-    usable
-}
-
-fn api_key_user<'a>(id: &str, keys: &'a HashMap<String, String>) -> Option<&'a str> {
-    keys.get(id).map(String::as_str).filter(|key| !key.is_empty())
-}
-
-fn api_key_resolve(id: &str, keys: &HashMap<String, String>) -> String {
-    api_key_user(id, keys)
-        .or_else(|| api_key_builtin(id))
-        .unwrap_or_default()
-        .to_owned()
-}
-
-fn api_key_status(id: &str, keys: &HashMap<String, String>) -> SourceStatus {
-    SourceStatus {
-        builtin: api_key_builtin(id).is_some(),
-        user: api_key_user(id, keys).is_some(),
-    }
-}
-
-fn host_builtin() -> Option<&'static str> {
-    API_HOST_BUILTIN.map(str::trim).filter(|host| !host.is_empty())
-}
-
-fn host_user(settings: &Settings) -> Option<&str> {
-    settings.api_host.as_deref().map(str::trim).filter(|host| !host.is_empty())
-}
-
-fn host_resolve(settings: &Settings) -> String {
-    let host = host_user(settings).map_or_else(
-        || host_builtin().unwrap_or_default().to_owned(),
-        str::to_owned,
-    );
-
-    debug_assert_eq!(host.trim(), host);
-
-    host
-}
-
-fn host_status(settings: &Settings) -> SourceStatus {
-    SourceStatus { builtin: host_builtin().is_some(), user: host_user(settings).is_some() }
-}
-
-fn host_validate(host: &str) -> AppResult<()> {
-    if host.is_empty() {
-        return Err(AppError::Config(
-            "No API address has been set. Enter one under Settings, AI.".into(),
-        ));
+    if trimmed.is_empty() {
+        drop(keys.remove(id));
+    } else {
+        drop(keys.insert(id.to_owned(), trimmed.to_owned()));
     }
 
-    let parsed = reqwest::Url::parse(host).map_err(|error| {
-        AppError::Config(format!("The API address {host} is not a valid web address ({error})."))
-    })?;
+    assert!(keys.get(id).map_or(trimmed.is_empty(), |stored| stored == trimmed));
 
-    if matches!(parsed.scheme(), "http" | "https") {
-        return Ok(());
-    }
-
-    Err(AppError::Config(format!(
-        "The API address {host} must start with https:// or http://."
-    )))
-}
-
-fn builtin(id: &str, name: &str, purpose: APIEndpointPurpose, model: &str) -> APIEndpoint {
-    debug_assert_ne!(id, "");
-    debug_assert_ne!(model, "");
-
-    let transcribe = purpose == APIEndpointPurpose::Transcription;
-
-    APIEndpoint {
-        id: id.to_owned(),
-        name: name.to_owned(),
-        purpose,
-        host: String::new(),
-        api_key: String::new(),
-        model: model.to_owned(),
-        temperature: None,
-        output_tokens_max: None,
-        api_path_chat: None,
-        api_path_transcribe: None,
-        transcribe_verbose: transcribe.then_some(false),
-        transcribe_chunk_seconds: transcribe.then_some(TRANSCRIBE_CHUNK_SECONDS),
-        reasoning_effort: None,
-        has_api_key: false,
-    }
-}
-
-fn builtins() -> [APIEndpoint; 2] {
-    [
-        builtin(
-            ENDPOINT_ID_TRANSCRIPTION,
-            "Transcription",
-            APIEndpointPurpose::Transcription,
-            MODEL_TRANSCRIPTION,
-        ),
-        builtin(ENDPOINT_ID_NOTES, "Notes", APIEndpointPurpose::Notes, MODEL_NOTES),
-    ]
-}
-
-pub(crate) fn endpoints_load_all() -> AppResult<Vec<APIEndpoint>> {
-    let keys = keys_load()?;
-    let settings = settings_load()?;
-    let mut result = builtins().to_vec();
-
-    for endpoint in &mut result {
-        endpoint.host = host_resolve(&settings);
-        endpoint.has_api_key = !api_key_resolve(&endpoint.id, &keys).is_empty();
-    }
-
-    debug_assert_eq!(result.len(), builtins().len());
-    debug_assert!(result.iter().all(|endpoint| endpoint.api_key.is_empty()));
-
-    Ok(result)
+    keys_save(&keys)
 }
 
 pub(crate) fn endpoint_load(id: &str) -> AppResult<APIEndpoint> {
@@ -212,10 +73,33 @@ pub(crate) fn endpoint_load(id: &str) -> AppResult<APIEndpoint> {
             .filter(|effort| !effort.is_empty());
     }
 
-    debug_assert_eq!(endpoint.id, id);
-    debug_assert_ne!(endpoint.host, "");
+    assert_eq!(endpoint.id, id);
+    assert_ne!(endpoint.host, "");
 
     Ok(endpoint)
+}
+
+const fn endpoint_id_for(purpose: APIEndpointPurpose) -> &'static str {
+    match purpose {
+        APIEndpointPurpose::Transcription => ENDPOINT_ID_TRANSCRIPTION,
+        APIEndpointPurpose::Notes => ENDPOINT_ID_NOTES,
+    }
+}
+
+pub(crate) fn endpoints_load_all() -> AppResult<Vec<APIEndpoint>> {
+    let keys = keys_load()?;
+    let settings = settings_load()?;
+    let mut result = builtins().to_vec();
+
+    for endpoint in &mut result {
+        endpoint.host = host_resolve(&settings);
+        endpoint.has_api_key = !api_key_resolve(&endpoint.id, &keys).is_empty();
+    }
+
+    assert_eq!(result.len(), builtins().len());
+    assert!(result.iter().all(|endpoint| endpoint.api_key.is_empty()));
+
+    Ok(result)
 }
 
 pub(crate) fn service_status_load() -> AppResult<ServiceStatus> {
@@ -229,28 +113,151 @@ pub(crate) fn service_status_load() -> AppResult<ServiceStatus> {
     })
 }
 
-pub(crate) fn api_key_set(purpose: APIEndpointPurpose, api_key: &str) -> AppResult<()> {
-    let id = endpoint_id_for(purpose);
-    let trimmed = api_key.trim();
+fn api_key_builtin(id: &str) -> Option<&'static str> {
+    let key = match id {
+        ENDPOINT_ID_TRANSCRIPTION => API_KEY_BUILTIN_TRANSCRIPTION,
+        ENDPOINT_ID_NOTES => API_KEY_BUILTIN_NOTES,
+        _ => None,
+    };
 
-    if trimmed.chars().count() > API_KEY_CHARS_MAX as usize {
-        return Err(AppError::Config(format!(
-            "the key is too long; a key is under {API_KEY_CHARS_MAX} characters"
-        )));
+    let usable = key.map(str::trim).filter(|text| !text.is_empty());
+
+    assert!(usable.is_none_or(|text| !text.is_empty()));
+    assert!(usable.is_none_or(|text| text.trim() == text));
+
+    usable
+}
+
+fn api_key_resolve(id: &str, keys: &HashMap<String, String>) -> String {
+    api_key_user(id, keys).or_else(|| api_key_builtin(id)).unwrap_or_default().to_owned()
+}
+
+fn api_key_status(id: &str, keys: &HashMap<String, String>) -> KeyStatus {
+    let length = api_key_resolve(id, keys).chars().count();
+
+    KeyStatus {
+        builtin: api_key_builtin(id).is_some(),
+        length: u32::try_from(length).unwrap_or(API_KEY_CHARS_MAX),
+        user: api_key_user(id, keys).is_some(),
+    }
+}
+
+fn api_key_user<'keys>(id: &str, keys: &'keys HashMap<String, String>) -> Option<&'keys str> {
+    keys.get(id).map(String::as_str).filter(|key| !key.is_empty())
+}
+
+fn builtin(seed: &EndpointSeed) -> APIEndpoint {
+    assert_ne!(seed.id, "");
+    assert_ne!(seed.model, "");
+
+    let transcribe = seed.purpose == APIEndpointPurpose::Transcription;
+
+    APIEndpoint {
+        id: seed.id.to_owned(),
+        name: seed.name.to_owned(),
+        purpose: seed.purpose,
+        host: String::new(),
+        api_key: String::new(),
+        model: seed.model.to_owned(),
+        temperature: None,
+        output_tokens_max: None,
+        api_path_chat: None,
+        api_path_transcribe: None,
+        transcribe_verbose: transcribe.then_some(false),
+        transcribe_chunk_seconds: transcribe.then_some(TRANSCRIBE_CHUNK_SECONDS),
+        reasoning_effort: None,
+        has_api_key: false,
+    }
+}
+
+fn builtins() -> [APIEndpoint; 2] {
+    [
+        builtin(&EndpointSeed {
+            id: ENDPOINT_ID_TRANSCRIPTION,
+            model: MODEL_TRANSCRIPTION,
+            name: "Transcription",
+            purpose: APIEndpointPurpose::Transcription,
+        }),
+        builtin(&EndpointSeed {
+            id: ENDPOINT_ID_NOTES,
+            model: MODEL_NOTES,
+            name: "Notes",
+            purpose: APIEndpointPurpose::Notes,
+        }),
+    ]
+}
+
+fn host_builtin() -> Option<&'static str> {
+    API_HOST_BUILTIN.map(str::trim).filter(|host| !host.is_empty())
+}
+
+fn host_resolve(settings: &Settings) -> String {
+    let host = host_user(settings)
+        .map_or_else(|| host_builtin().unwrap_or_default().to_owned(), str::to_owned);
+
+    assert_eq!(host.trim(), host);
+
+    host
+}
+
+fn host_status(settings: &Settings) -> SourceStatus {
+    SourceStatus { builtin: host_builtin().is_some(), user: host_user(settings).is_some() }
+}
+
+fn host_user(settings: &Settings) -> Option<&str> {
+    settings.api_host.as_deref().map(str::trim).filter(|host| !host.is_empty())
+}
+
+fn host_validate(host: &str) -> AppResult<()> {
+    if host.is_empty() {
+        return Err(AppError::Config(
+            "No API address has been set. Enter one under Settings, AI.".into(),
+        ));
     }
 
-    let mut keys = keys_load()?;
+    let parsed = reqwest::Url::parse(host).map_err(|error| {
+        AppError::Config(format!("The API address {host} is not a valid web address ({error})."))
+    })?;
 
-    if trimmed.is_empty() {
-        drop(keys.remove(id));
-    } else {
-        drop(keys.insert(id.to_owned(), trimmed.to_owned()));
+    if matches!(parsed.scheme(), "http" | "https") {
+        return Ok(());
     }
 
-    debug_assert!(keys.get(id).map_or(trimmed.is_empty(), |stored| stored == trimmed));
-    debug_assert!(keys.len() <= builtins().len());
+    Err(AppError::Config(format!("The API address {host} must start with https:// or http://.")))
+}
 
-    keys_save(&keys)
+fn keys_load() -> AppResult<HashMap<String, String>> {
+    let path = workspace::root_file_path(KEYS_FILE)?;
+
+    let Some(payload) = protected_read(&path)? else {
+        return Ok(HashMap::new());
+    };
+
+    let keys = serde_json::from_str(&payload).unwrap_or_else(|error| {
+        tracing::warn!(
+            target: "scribe_lib::endpoints",
+            "the key store could not be read and will be replaced on the next save: {}",
+            error,
+        );
+
+        HashMap::new()
+    });
+
+    Ok(keys)
+}
+
+fn keys_save(keys: &HashMap<String, String>) -> AppResult<()> {
+    let path = workspace::root_file_path(KEYS_FILE)?;
+
+    if keys.is_empty() {
+        return protected_delete(&path);
+    }
+
+    let payload = serde_json::to_string(keys)?;
+
+    assert!(payload.starts_with('{'));
+
+    protected_write(&path, &payload)
 }
 
 #[cfg(test)]
@@ -281,7 +288,7 @@ mod tests {
 
     #[test]
     fn host_user_overrides_builtin_and_a_blank_one_falls_through() {
-        let mut settings = Settings::default();
+        let mut settings = Settings::initial();
 
         assert_eq!(host_resolve(&settings), host_builtin().unwrap_or_default());
         assert!(!host_status(&settings).user);
@@ -296,8 +303,9 @@ mod tests {
 
     #[test]
     fn a_host_must_be_a_web_address() {
-        assert!(host_validate("https://example.test").is_ok());
-        assert!(host_validate("http://localhost:8000").is_ok());
+        host_validate("https://example.test").unwrap();
+        host_validate("http://localhost:8000").unwrap();
+
         assert!(host_validate("").is_err());
         assert!(host_validate("example.test").is_err());
         assert!(host_validate("ftp://example.test").is_err());
@@ -331,7 +339,7 @@ mod tests {
 
     #[test]
     fn a_saved_key_is_trimmed_reported_and_removed_again_with_its_file() {
-        let _root = root_scoped("endpoint-keys");
+        let _root = root_scoped();
         let path = workspace::root_file_path(KEYS_FILE).unwrap();
 
         api_key_set(APIEndpointPurpose::Notes, "  user-key  ").unwrap();
@@ -342,23 +350,30 @@ mod tests {
         assert_eq!(keys.get(ENDPOINT_ID_NOTES).map(String::as_str), Some("user-key"));
         assert!(path.exists());
         assert!(status.notes.user);
+        assert_eq!(usize::try_from(status.notes.length).unwrap(), "user-key".len());
         assert!(!status.transcription.user);
         assert!(!status.host.user);
 
         api_key_set(APIEndpointPurpose::Notes, "   ").unwrap();
 
+        let removed = service_status_load().unwrap();
+        let builtin_length =
+            api_key_builtin(ENDPOINT_ID_NOTES).map_or(0, |key| key.chars().count());
+
         assert_eq!(keys_load().unwrap().len(), 0);
         assert!(!path.exists());
-        assert!(!service_status_load().unwrap().notes.user);
+        assert!(!removed.notes.user);
+        assert_eq!(usize::try_from(removed.notes.length).unwrap(), builtin_length);
     }
 
     #[test]
     fn a_key_past_its_length_is_refused_and_length_is_counted_in_characters() {
-        let _root = root_scoped("endpoint-key-length");
-        let at_limit = "é".repeat(API_KEY_CHARS_MAX as usize);
-        let past_limit = "k".repeat(API_KEY_CHARS_MAX as usize + 1);
+        let _root = root_scoped();
+        let at_limit = "\u{e9}".repeat(usize_of!(API_KEY_CHARS_MAX));
+        let past_limit = "k".repeat(usize_of!(API_KEY_CHARS_MAX) + 1);
 
-        assert!(api_key_set(APIEndpointPurpose::Transcription, &at_limit).is_ok());
+        api_key_set(APIEndpointPurpose::Transcription, &at_limit).unwrap();
+
         assert!(api_key_set(APIEndpointPurpose::Transcription, &past_limit).is_err());
         assert_eq!(keys_load().unwrap().get(ENDPOINT_ID_TRANSCRIPTION), Some(&at_limit));
     }
@@ -366,7 +381,7 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn an_unreadable_key_store_is_treated_as_empty_rather_than_fatal() {
-        let _root = root_scoped("endpoint-keys-broken");
+        let _root = root_scoped();
         let path = workspace::root_file_path(KEYS_FILE).unwrap();
 
         std::fs::write(&path, b"{ not json").unwrap();
@@ -380,43 +395,45 @@ mod tests {
 
     #[test]
     fn a_loaded_notes_endpoint_takes_the_user_host_model_and_thinking_from_settings() {
-        let _root = root_scoped("endpoint-load");
+        let _root = root_scoped();
 
         let settings = Settings {
             api_host: Some(" https://api.example.test/ ".to_owned()),
             notes_model: Some("custom-model".to_owned()),
             notes_thinking: Some("high".to_owned()),
-            ..Settings::default()
+            ..Settings::initial()
         };
 
         settings_save(&settings).unwrap();
         api_key_set(APIEndpointPurpose::Notes, "k").unwrap();
 
         let notes = endpoint_load(ENDPOINT_ID_NOTES).unwrap();
-        let transcription = endpoint_load(ENDPOINT_ID_TRANSCRIPTION).unwrap();
-        let transcription_builtin_key = api_key_builtin(ENDPOINT_ID_TRANSCRIPTION);
 
         assert_eq!(notes.host, "https://api.example.test/");
         assert_eq!(notes.model, "custom-model");
         assert_eq!(notes.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(notes.api_key, "k");
         assert!(notes.has_api_key);
+
+        let transcription = endpoint_load(ENDPOINT_ID_TRANSCRIPTION).unwrap();
+        let transcription_builtin_key = api_key_builtin(ENDPOINT_ID_TRANSCRIPTION);
+
         assert_eq!(transcription.host, "https://api.example.test/");
         assert_eq!(transcription.model, MODEL_TRANSCRIPTION);
         assert!(transcription.reasoning_effort.is_none());
         assert_eq!(transcription.api_key.is_empty(), transcription_builtin_key.is_none());
-        assert!(endpoint_load("unknown").is_err());
+        assert_ne!(endpoint_load("unknown").unwrap_err().to_string(), "");
     }
 
     #[test]
     fn blank_model_and_thinking_settings_fall_back_to_the_builtin_values() {
-        let _root = root_scoped("endpoint-load-blank");
+        let _root = root_scoped();
 
         let settings = Settings {
             api_host: Some("https://api.example.test".to_owned()),
             notes_model: Some("   ".to_owned()),
             notes_thinking: Some(String::new()),
-            ..Settings::default()
+            ..Settings::initial()
         };
 
         settings_save(&settings).unwrap();
@@ -429,12 +446,12 @@ mod tests {
 
     #[test]
     fn a_thinking_setting_is_trimmed_and_whitespace_alone_counts_as_unset() {
-        let _root = root_scoped("endpoint-load-thinking-trim");
+        let _root = root_scoped();
 
         let settings = Settings {
             api_host: Some("https://api.example.test".to_owned()),
             notes_thinking: Some("  high ".to_owned()),
-            ..Settings::default()
+            ..Settings::initial()
         };
 
         settings_save(&settings).unwrap();
@@ -450,21 +467,21 @@ mod tests {
 
     #[test]
     fn without_a_user_host_an_endpoint_loads_only_when_a_builtin_host_exists() {
-        let _root = root_scoped("endpoint-load-no-host");
+        let _root = root_scoped();
 
         assert_eq!(endpoint_load(ENDPOINT_ID_NOTES).is_ok(), host_builtin().is_some());
 
-        settings_save(&Settings { api_host: Some("ftp://x".to_owned()), ..Settings::default() })
+        settings_save(&Settings { api_host: Some("ftp://x".to_owned()), ..Settings::initial() })
             .unwrap();
 
-        assert!(endpoint_load(ENDPOINT_ID_NOTES).is_err());
+        assert_ne!(endpoint_load(ENDPOINT_ID_NOTES).unwrap_err().to_string(), "");
     }
 
     #[test]
     fn every_listed_endpoint_reports_its_key_without_carrying_it() {
-        let _root = root_scoped("endpoints-list");
+        let _root = root_scoped();
         let host = Some("https://h.test".to_owned());
-        let settings = Settings { api_host: host, ..Settings::default() };
+        let settings = Settings { api_host: host, ..Settings::initial() };
 
         api_key_set(APIEndpointPurpose::Notes, "k").unwrap();
         settings_save(&settings).unwrap();
@@ -472,10 +489,8 @@ mod tests {
         let endpoints = endpoints_load_all().unwrap();
         let notes = endpoints.iter().find(|endpoint| endpoint.id == ENDPOINT_ID_NOTES).unwrap();
 
-        let transcription = endpoints
-            .iter()
-            .find(|endpoint| endpoint.id == ENDPOINT_ID_TRANSCRIPTION)
-            .unwrap();
+        let transcription =
+            endpoints.iter().find(|endpoint| endpoint.id == ENDPOINT_ID_TRANSCRIPTION).unwrap();
 
         assert_eq!(endpoints.len(), 2);
         assert!(notes.has_api_key);

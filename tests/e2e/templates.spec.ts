@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
-import { app_open, dialog, editor, nav_to, row_menu_pick } from './helpers'
-import type { Page } from '@playwright/test'
+import { assert } from '../../src/lib/assert'
+import { HAS_TEXT, app_open, dialog, editor, nav_to, row_menu_pick } from './helpers'
+import type { Locator, Page } from '@playwright/test'
 
 
 const PLACEHOLDER_NAME = 'e.g. Meeting notes'
@@ -10,12 +11,19 @@ const DESCRIPTION_MEETING_NOTES = 'A summary, the decisions, and who does what n
 const PLACEHOLDER_AI = 'Describe the document, e.g. weekly team meeting: decisions, who does '
     + 'what by when, problems to watch'
 
-function rows(page: Page) {
-    return page.locator('.list-divider > li')
+
+function row(page: Page, name: string): Locator {
+    assert(!page.isClosed())
+    assert(name.length > 0)
+
+    return rows(page).filter({ has: page.getByText(name, { exact: true }) })
 }
 
-function row(page: Page, name: string) {
-    return rows(page).filter({ has: page.getByText(name, { exact: true }) })
+function rows(page: Page): Locator {
+    assert(!page.isClosed())
+    assert(page.url().length > 0)
+
+    return page.locator('.list-divider > li')
 }
 
 test.beforeEach(async ({ page }) => {
@@ -83,6 +91,7 @@ test('the row menu edits the template', async ({ page }) => {
     await row_menu_pick(page, 'Meeting notes', 'Edit')
 
     await expect(page.getByPlaceholder(PLACEHOLDER_NAME)).toHaveValue('Meeting notes')
+
     await expect(page.getByPlaceholder(PLACEHOLDER_DESCRIPTION))
         .toHaveValue(DESCRIPTION_MEETING_NOTES)
 })
@@ -114,7 +123,7 @@ test('deleting the default template clears the default', async ({ page }) => {
 
     await nav_to(page, 'Settings')
 
-    await expect(page.getByRole('combobox').filter({ hasText: 'Ask each time' })).toHaveValue('')
+    await expect(page.getByRole('combobox').filter({ [HAS_TEXT]: 'Ask each time' })).toHaveValue('')
 })
 
 test('Make default moves the Default pill', async ({ page }) => {

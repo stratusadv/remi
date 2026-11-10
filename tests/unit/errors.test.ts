@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { error_dialog_show, error_friendly, error_text_extract } from '../../src/lib/errors'
 import { use_dialog } from '../../src/composables/use_dialog'
+import { assert } from '../../src/lib/assert'
+import { error_dialog_show, error_friendly, error_text_extract } from '../../src/lib/errors'
 
+
+function named_failure(): number {
+    const failure = Number.NaN
+
+    assert(Number.isNaN(failure))
+    assert(typeof failure === 'number')
+
+    return 0
+}
 
 describe('error_friendly', () => {
     it('explains a network error and keeps the detail in brackets', () => {
@@ -12,7 +22,7 @@ describe('error_friendly', () => {
 
         expect(friendly.message).toBe(
             'The server could not be reached. Check your internet connection and try again. '
-                + '(connection refused)',
+            + '(connection refused)',
         )
     })
 
@@ -26,7 +36,7 @@ describe('error_friendly', () => {
 
         expect(friendly.message).toBe(
             'The server stopped part-way through its reply. It may be busy; wait a minute and '
-                + 'try again. (error decoding response body: unexpected EOF)',
+            + 'try again. (error decoding response body: unexpected EOF)',
         )
     })
 
@@ -92,10 +102,6 @@ describe('error_text_extract', () => {
     })
 
     it('uses the name of a function', () => {
-        function named_failure() {
-            return 0
-        }
-
         expect(error_text_extract(named_failure)).toBe('named_failure')
     })
 

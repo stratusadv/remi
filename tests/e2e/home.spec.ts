@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test'
+import { assert } from '../../src/lib/assert'
 import {
+    HAS_TEXT,
     RECORDING_TITLED,
     RECORDING_UNTITLED,
     app_open,
@@ -10,22 +12,31 @@ import {
     step_current,
     tiles,
 } from './helpers'
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 
 
-const COLUMNS = ['Title', 'Participants', 'Date', 'Duration', 'Status']
+const COLUMNS = Object.freeze(['Title', 'Participants', 'Date', 'Duration', 'Status'])
 
-function column_header(page: Page, label: string) {
+
+function column_header(page: Page, label: string): Locator {
+    assert(!page.isClosed())
+    assert(label.length > 0)
+
     return page.locator('th').filter({ has: page.getByRole('button', { name: label }) })
 }
 
-function row_titles(page: Page) {
-    return page.locator('.recording-table-title')
-}
+async function list_view_open(page: Page): Promise<void> {
+    assert(!page.isClosed())
 
-async function list_view_open(page: Page) {
     await page.getByRole('button', { name: 'List' }).click()
     await expect(page.locator('.recording-table')).toBeVisible()
+}
+
+function row_titles(page: Page): Locator {
+    assert(!page.isClosed())
+    assert(page.url().length > 0)
+
+    return page.locator('.recording-table-title')
 }
 
 test.beforeEach(async ({ page }) => {
@@ -64,9 +75,9 @@ test('the layout switch toggles grid and list and survives navigation', async ({
 test('the list columns are unsorted by default', async ({ page }) => {
     await list_view_open(page)
 
-    for (const label of COLUMNS) {
+    await Promise.all(COLUMNS.map(async (label) => {
         await expect(column_header(page, label)).toHaveAttribute('aria-sort', 'none')
-    }
+    }))
 
     await expect(page.locator('.recording-table-sort-mark')).toHaveText(['', '', '', '', ''])
 })
@@ -339,14 +350,14 @@ test('a recording with only a transcript opens on the Meeting step', async ({ pa
 
 test('a recording opens from the list view too', async ({ page }) => {
     await list_view_open(page)
-    await page.locator('.recording-table-row').filter({ hasText: RECORDING_TITLED }).click()
+    await page.locator('.recording-table-row').filter({ [HAS_TEXT]: RECORDING_TITLED }).click()
 
     await expect(step_current(page)).toHaveText('Notes')
 })
 
 test('the tiles show duration and status', async ({ page }) => {
-    const titled = tiles(page).filter({ hasText: RECORDING_TITLED })
-    const untitled = tiles(page).filter({ hasText: RECORDING_UNTITLED })
+    const titled = tiles(page).filter({ [HAS_TEXT]: RECORDING_TITLED })
+    const untitled = tiles(page).filter({ [HAS_TEXT]: RECORDING_UNTITLED })
 
     await expect(titled.locator('.recording-tile-status')).toHaveText('Notes ready')
     await expect(titled.locator('.recording-tile-duration')).toHaveText('2:24')
