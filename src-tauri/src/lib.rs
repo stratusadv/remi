@@ -151,7 +151,6 @@ enum MenuEntry {
     Separator,
 }
 
-#[must_use]
 pub fn run() -> ExitCode {
     let data_folder = dirs::data_dir().map(|data_directory| data_folder_move(&data_directory));
 

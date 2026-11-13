@@ -75,14 +75,14 @@ pub(crate) fn api_key_set(purpose: APIEndpointPurpose, api_key: &str) -> AppResu
 
 pub(crate) fn embeddings_target_load() -> AppResult<Option<EmbeddingsTarget>> {
     let settings = settings_load()?;
-    let model = settings.embeddings_model.as_deref().map(str::trim).unwrap_or_default();
+    let model = settings.embeddings_model.as_deref().map_or_default(str::trim);
 
     if model.is_empty() {
         return Ok(None);
     }
 
     let host_shared = host_resolve(&settings);
-    let host_own = settings.embeddings_host.as_deref().map(str::trim).unwrap_or_default();
+    let host_own = settings.embeddings_host.as_deref().map_or_default(str::trim);
     let host = if host_own.is_empty() { host_shared.clone() } else { host_own.to_owned() };
 
     host_validate(&host)?;

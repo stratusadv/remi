@@ -55,8 +55,7 @@ mod linux {
             .extensions()
             .get::<reqwest::tls::TlsInfo>()
             .and_then(reqwest::tls::TlsInfo::peer_certificate)
-            .map(<[u8]>::to_vec)
-            .unwrap_or_default();
+            .map_or_default(<[u8]>::to_vec);
 
         if certificate.is_empty() {
             return Err(AppError::Service("Stripe's API presented no certificate".into()));

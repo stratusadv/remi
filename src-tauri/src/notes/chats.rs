@@ -224,9 +224,7 @@ fn chat_summary(chat: ChatStored) -> ChatSummary {
     assert!(chat.updated_at_unix_ms > 0);
 
     let ChatStored { exchanges, id, updated_at_unix_ms } = chat;
-
-    let title =
-        exchanges.0.into_iter().next().map(|exchange| exchange.question).unwrap_or_default();
+    let title = exchanges.0.into_iter().next().map_or_default(|exchange| exchange.question);
 
     assert_ne!(title.len(), 0);
 

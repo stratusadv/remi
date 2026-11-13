@@ -681,7 +681,7 @@ fn status_load() -> AppResult<SearchStatus> {
         .filter(|model| !model.is_empty());
 
     let connection = index_open()?;
-    let space = model.as_deref().map(space_of).unwrap_or_default();
+    let space = model.as_deref().map_or_default(space_of);
 
     let (passages, passages_embedded): (u32, u32) =
         connection.query_row(SQL_VECTOR_COUNTS, named_params! { ":space": space }, |row| {

@@ -509,21 +509,19 @@ fn prompt_build(parts: &PromptParts<'_>) -> String {
     let PromptParts { instructions, meta, people, transcript } = *parts;
     let title = meta.and_then(|record| record.title.as_deref()).unwrap_or("");
     let project = meta.and_then(|record| record.project.as_deref()).unwrap_or("");
+    let people_present = meta.map_or_default(|record| people_present_describe(record, people));
 
-    let people_present =
-        meta.map(|record| people_present_describe(record, people)).unwrap_or_default();
+    let people_mentioned =
+        meta.map_or_default(|record| people_describe(&record.person_ids_mentioned, people));
 
-    let people_mentioned = meta
-        .map(|record| people_describe(&record.person_ids_mentioned, people))
-        .unwrap_or_default();
-
-    let tags_joined = meta.map(|record| record.tags.join(", ")).unwrap_or_default();
+    let tags_joined = meta.map_or_default(|record| record.tags.join(", "));
 
     let recorded_on = meta
         .map(|record| record.recorded_at_unix.unwrap_or(record.created_at_unix))
         .and_then(|unix| chrono::DateTime::from_timestamp(unix, 0))
-        .map(|recorded| recorded.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
-        .unwrap_or_default();
+        .map_or_default(|recorded| {
+            recorded.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string()
+        });
 
     let details = [
         ("Title: ", title),

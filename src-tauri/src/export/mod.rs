@@ -155,8 +155,7 @@ pub(crate) fn export_last_lock(
 fn notes_export_write_blocking(job_id: &str, target_path: &Path) -> AppResult<()> {
     let extension = target_path
         .extension()
-        .map(|extension| extension.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
+        .map_or_default(|extension| extension.to_string_lossy().to_lowercase());
 
     let markdown = notes_markdown_load(job_id)?;
 

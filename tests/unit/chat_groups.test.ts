@@ -70,8 +70,8 @@ describe('chats_grouped', () => {
     })
 
     it('counts the 25 hour day the clocks fall back as one day', () => {
-        const now = new Date(2026, 10, 2, 0, 30)
-        const yesterday = new Date(2026, 10, 1, 0, 30)
+        const now = new Date(2025, 10, 3, 0, 30)
+        const yesterday = new Date(2025, 10, 2, 0, 30)
         const chats = [chat_at('before the change', yesterday)]
 
         expect(now.getTime() - yesterday.getTime()).toBe(25 * HOUR_MS)

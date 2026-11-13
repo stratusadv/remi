@@ -915,7 +915,7 @@ fn job_digest(files: &JobFiles, names: &[String]) -> Vec<u8> {
 }
 
 fn job_drafts(files: &JobFiles) -> AppResult<Vec<ChunkDraft>> {
-    let mut drafts = files.notes.as_deref().map(chunk::chunks_from_notes).unwrap_or_default();
+    let mut drafts = files.notes.as_deref().map_or_default(chunk::chunks_from_notes);
 
     if let Some(raw) = files.transcript.as_deref() {
         let transcript: Transcript = serde_json::from_str(raw)?;

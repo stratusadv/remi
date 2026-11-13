@@ -853,10 +853,8 @@ where
 }
 
 fn extension_temporary(path: &Path) -> String {
-    let existing = path
-        .extension()
-        .map(|extension| extension.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let existing =
+        path.extension().map_or_default(|extension| extension.to_string_lossy().into_owned());
 
     let extension = if existing.is_empty() { "tmp".to_owned() } else { format!("{existing}.tmp") };
 
