@@ -10,6 +10,20 @@ pub(crate) enum APIEndpointPurpose {
     Notes,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct EmbeddingsTarget {
+    pub(crate) api_key: String,
+    pub(crate) host: String,
+    pub(crate) model: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct KeyStatus {
+    pub(crate) builtin: bool,
+    pub(crate) length: u32,
+    pub(crate) user: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SourceStatus {
     pub(crate) builtin: bool,
@@ -19,8 +33,8 @@ pub(crate) struct SourceStatus {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ServiceStatus {
     pub(crate) host: SourceStatus,
-    pub(crate) notes: SourceStatus,
-    pub(crate) transcription: SourceStatus,
+    pub(crate) notes: KeyStatus,
+    pub(crate) transcription: KeyStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,16 +65,8 @@ pub(crate) struct APIEndpoint {
 }
 
 impl APIEndpoint {
-    pub(crate) fn host_resolved(&self) -> &str {
-        self.host.trim()
-    }
-
     pub(crate) fn api_key_resolved(&self) -> &str {
         self.api_key.trim()
-    }
-
-    pub(crate) fn model_resolved(&self) -> &str {
-        self.model.trim()
     }
 
     pub(crate) fn api_path_chat_resolved(&self) -> String {
@@ -70,21 +76,24 @@ impl APIEndpoint {
     pub(crate) fn api_path_transcribe_resolved(&self) -> String {
         api_path_resolve(self.api_path_transcribe.as_deref(), API_PATH_TRANSCRIBE_DEFAULT)
     }
+
+    pub(crate) fn host_resolved(&self) -> &str {
+        self.host.trim()
+    }
+
+    pub(crate) fn model_resolved(&self) -> &str {
+        self.model.trim()
+    }
 }
 
 fn api_path_resolve(path: Option<&str>, path_default: &str) -> String {
-    debug_assert!(path_default.starts_with('/'));
+    assert!(path_default.starts_with('/'));
 
-    let chosen = path.map(str::trim).filter(|path| !path.is_empty()).unwrap_or(path_default);
+    let chosen = path.map(str::trim).filter(|text| !text.is_empty()).unwrap_or(path_default);
+    let resolved = if chosen.starts_with('/') { chosen.to_owned() } else { format!("/{chosen}") };
 
-    let resolved = if chosen.starts_with('/') {
-        chosen.to_owned()
-    } else {
-        format!("/{chosen}")
-    };
-
-    debug_assert!(resolved.starts_with('/'));
-    debug_assert!(resolved.len() >= chosen.len());
+    assert!(resolved.starts_with('/'));
+    assert!(resolved.len() >= chosen.len());
 
     resolved
 }
@@ -105,12 +114,10 @@ mod tests {
     fn resolved_fields_are_trimmed_and_each_path_has_its_own_default() {
         let raw = concat!(
             r#"{"id":"i","name":"n","purpose":"transcription","host":" https://h.test ","#,
-            r#""api_key":" k ","model":" m ","api_path_transcribe":"audio"}"#
+            r#""api_key":" k ","model":" m ","api_path_transcribe":"audio"}"#,
         );
 
-        let raw_minimal = r#"{"id":"i","name":"n","purpose":"notes","host":"h","model":"m"}"#;
         let endpoint: APIEndpoint = serde_json::from_str(raw).unwrap();
-        let minimal: APIEndpoint = serde_json::from_str(raw_minimal).unwrap();
 
         assert_eq!(endpoint.purpose, APIEndpointPurpose::Transcription);
         assert_eq!(endpoint.host_resolved(), "https://h.test");
@@ -118,11 +125,18 @@ mod tests {
         assert_eq!(endpoint.model_resolved(), "m");
         assert_eq!(endpoint.api_path_transcribe_resolved(), "/audio");
         assert_eq!(endpoint.api_path_chat_resolved(), API_PATH_CHAT_DEFAULT);
+
+        let raw_minimal = r#"{"id":"i","name":"n","purpose":"notes","host":"h","model":"m"}"#;
+        let minimal: APIEndpoint = serde_json::from_str(raw_minimal).unwrap();
+
         assert_eq!(minimal.purpose, APIEndpointPurpose::Notes);
         assert_eq!(minimal.api_path_transcribe_resolved(), API_PATH_TRANSCRIBE_DEFAULT);
         assert_eq!(minimal.api_key, "");
         assert!(!minimal.has_api_key);
         assert!(minimal.temperature.is_none());
-        assert!(serde_json::from_str::<APIEndpointPurpose>(r#""Notes""#).is_err());
+
+        let refused = serde_json::from_str::<APIEndpointPurpose>(r#""Notes""#);
+
+        assert_ne!(refused.unwrap_err().to_string(), "");
     }
 }

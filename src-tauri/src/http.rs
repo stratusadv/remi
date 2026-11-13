@@ -6,10 +6,11 @@ use std::future::Future;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-pub(crate) const RETRY_ATTEMPTS_MAX: u32 = 3;
-pub(crate) const RETRY_BACKOFF_MS_BASE: u64 = 500;
-pub(crate) const RESPONSE_BYTES_MAX: u32 = 8 << 20;
+const RESPONSE_BYTES_MAX: u32 = 8 << 20;
 const RESPONSE_CHUNK_COUNT_MAX: u32 = 1 << 20;
+pub(crate) const RETRY_ATTEMPTS_MAX: u32 = 3;
+const RETRY_BACKOFF_MS_BASE: u64 = 500;
+const STATUS_CODE_CEILING: u16 = 1000;
 const STATUS_CODE_FIRST: u16 = 100;
 const STATUS_CODE_LAST: u16 = 599;
 const STATUS_CODE_SERVER_FIRST: u16 = 500;
@@ -20,6 +21,7 @@ const _: () = assert!(RETRY_BACKOFF_MS_BASE > 0);
 const _: () = assert!(RESPONSE_BYTES_MAX > 0);
 const _: () = assert!(STATUS_CODE_FIRST < STATUS_CODE_SERVER_FIRST);
 const _: () = assert!(STATUS_CODE_SERVER_FIRST <= STATUS_CODE_LAST);
+const _: () = assert!(STATUS_CODE_LAST < STATUS_CODE_CEILING);
 
 pub(crate) type ClientCell = LazyLock<Result<reqwest::Client, String>>;
 
@@ -30,33 +32,52 @@ pub(crate) struct ClientTimeouts {
     pub(crate) request: Duration,
 }
 
-fn crypto_provider_install() {
-    if rustls::crypto::CryptoProvider::get_default().is_some() { return; }
+#[derive(Deserialize)]
+struct OpenAIError {
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+}
 
-    let installed = rustls::crypto::ring::default_provider().install_default();
+#[derive(Deserialize)]
+struct OpenAIErrorEnvelope {
+    error: OpenAIError,
+}
 
-    if let Err(existing) = installed {
-        tracing::debug!(
-            target: "scribe_lib::http",
-            "a crypto provider was already installed: {existing:?}"
-        );
+pub(crate) fn api_status_code(message: &str) -> Option<u16> {
+    let head = message.split(':').next()?.trim();
+    let code = head.split_whitespace().next()?.parse::<u16>().ok()?;
+
+    if !(STATUS_CODE_FIRST..=STATUS_CODE_LAST).contains(&code) {
+        return None;
     }
 
-    debug_assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+    assert!(code >= STATUS_CODE_FIRST);
+    assert!(code <= STATUS_CODE_LAST);
+
+    Some(code)
+}
+
+pub(crate) fn body_error_message(body: &str) -> Option<String> {
+    let parsed: OpenAIErrorEnvelope = serde_json::from_str(body).ok()?;
+
+    parsed.error.message.filter(|message| !message.trim().is_empty())
 }
 
 pub(crate) fn client_build(timeouts: &ClientTimeouts) -> Result<reqwest::Client, String> {
-    debug_assert!(!timeouts.connect.is_zero());
-    debug_assert!(!timeouts.request.is_zero());
+    assert!(!timeouts.connect.is_zero());
+    assert!(!timeouts.request.is_zero());
 
     crypto_provider_install();
 
-    let mut builder = reqwest::Client::builder()
-        .timeout(timeouts.request)
-        .connect_timeout(timeouts.connect);
+    let mut builder =
+        reqwest::Client::builder().timeout(timeouts.request).connect_timeout(timeouts.connect);
 
     if let Some(read) = timeouts.read {
-        debug_assert!(read < timeouts.request);
+        assert!(read < timeouts.request);
 
         builder = builder.read_timeout(read);
     }
@@ -68,63 +89,74 @@ pub(crate) fn client_get(cell: &'static ClientCell) -> AppResult<&'static reqwes
     cell.as_ref().map_err(|message| AppError::Config(message.clone()))
 }
 
-pub(crate) async fn retry_run<T, Attempt, Work>(attempt_run: Attempt) -> AppResult<T>
-where
-    Attempt: Fn() -> Work,
-    Work: Future<Output = AppResult<T>>,
-{
-    for attempt in 0..RETRY_ATTEMPTS_MAX - 1 {
-        debug_assert!(attempt < RETRY_ATTEMPTS_MAX);
+pub(crate) fn crypto_provider_install() {
+    if rustls::crypto::CryptoProvider::get_default().is_some() {
+        return;
+    }
 
-        let error = match attempt_run().await {
-            Ok(value) => return Ok(value),
-            Err(error) => error,
+    let installed = rustls::crypto::ring::default_provider().install_default();
+
+    if let Err(existing) = installed {
+        tracing::debug!(
+            target: "remi_lib::http",
+            "a crypto provider was already installed: {existing:?}",
+        );
+    }
+
+    assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+}
+
+pub(crate) async fn response_ensure_ok(
+    response: reqwest::Response,
+    label: &str,
+) -> AppResult<reqwest::Response> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    let message_friendly = body_error_friendly(&body).unwrap_or(body);
+    let message = format!("{} {label}: {message_friendly}", status.as_u16());
+
+    Err(AppError::Service(message))
+}
+
+pub(crate) async fn response_json_bounded<T: DeserializeOwned>(
+    response: reqwest::Response,
+) -> AppResult<T> {
+    let declared =
+        response.content_length().filter(|length| *length > u64::from(RESPONSE_BYTES_MAX));
+
+    if let Some(length) = declared {
+        return Err(AppError::Service(format!(
+            "the response is {length} bytes, over the {RESPONSE_BYTES_MAX} bytes this app reads",
+        )));
+    }
+
+    let body_bytes_max = usize::try_from(RESPONSE_BYTES_MAX).unwrap_or(usize::MAX);
+    let mut body: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+
+    for _chunk_index in 0..RESPONSE_CHUNK_COUNT_MAX {
+        let Some(chunk) = stream.next().await else {
+            return Ok(serde_json::from_slice(&body)?);
         };
 
-        let transient = retry_is_transient(&error);
+        let bytes = chunk?;
 
-        if transient {
-            retry_run_backoff(attempt, &error).await;
-
-            continue;
+        if body.len() + bytes.len() > body_bytes_max {
+            return Err(AppError::Service(format!(
+                "the response ran past the {RESPONSE_BYTES_MAX} bytes this app reads",
+            )));
         }
 
-        return Err(error);
+        body.extend_from_slice(&bytes);
     }
 
-    attempt_run().await
-}
-
-async fn retry_run_backoff(attempt: u32, error: &AppError) {
-    debug_assert!(attempt + 1 < RETRY_ATTEMPTS_MAX);
-
-    let delay_ms = RETRY_BACKOFF_MS_BASE << attempt;
-
-    debug_assert!(delay_ms >= RETRY_BACKOFF_MS_BASE);
-
-    tracing::warn!(
-        target: "scribe_lib::http",
-        "retry attempt {} after {}ms: {}",
-        attempt + 1,
-        delay_ms,
-        error
-    );
-
-    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-}
-
-pub(crate) fn api_status_code(message: &str) -> Option<u16> {
-    let head = message.split(':').next()?.trim();
-    let code = head.split_whitespace().next()?.parse::<u16>().ok()?;
-
-    if !(STATUS_CODE_FIRST..=STATUS_CODE_LAST).contains(&code) {
-        return None;
-    }
-
-    debug_assert!(code >= STATUS_CODE_FIRST);
-    debug_assert!(code <= STATUS_CODE_LAST);
-
-    Some(code)
+    Err(AppError::Service(format!(
+        "the response arrived in more than {RESPONSE_CHUNK_COUNT_MAX} pieces without ending",
+    )))
 }
 
 pub(crate) fn retry_is_transient(error: &AppError) -> bool {
@@ -142,16 +174,54 @@ pub(crate) fn retry_is_transient(error: &AppError) -> bool {
                 return true;
             }
 
-            network
-                .status()
-                .is_some_and(|status| status_is_transient(status.as_u16()))
+            network.status().is_some_and(|status| status_is_transient(status.as_u16()))
         }
-        AppError::API(message) => api_status_code(message).is_some_and(status_is_transient),
-        _ => false,
+        AppError::Service(message) => api_status_code(message).is_some_and(status_is_transient),
+        AppError::Audio(_)
+        | AppError::Config(_)
+        | AppError::Export(_)
+        | AppError::Index(_)
+        | AppError::IO(_)
+        | AppError::Serde(_)
+        | AppError::Task(_)
+        | AppError::Transcription(_) => false,
     }
 }
 
-const fn status_is_transient(code: u16) -> bool {
+pub(crate) async fn retry_run<T, Attempt, Work>(attempt_run: Attempt) -> AppResult<T>
+where
+    Attempt: Fn() -> Work,
+    Work: Future<Output = AppResult<T>>,
+{
+    for attempt in 0..RETRY_ATTEMPTS_MAX - 1 {
+        let error = match attempt_run().await {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+
+        if !retry_is_transient(&error) {
+            return Err(error);
+        }
+
+        let delay = retry_delay(attempt);
+
+        tracing::warn!(
+            target: "remi_lib::http",
+            "retry attempt {} after {}ms: {}",
+            attempt + 1,
+            delay.as_millis(),
+            error,
+        );
+
+        tokio::time::sleep(delay).await;
+    }
+
+    attempt_run().await
+}
+
+pub(crate) const fn status_is_transient(code: u16) -> bool {
+    assert!(code < STATUS_CODE_CEILING);
+
     if code == STATUS_CODE_TOO_MANY_REQUESTS {
         return true;
     }
@@ -159,82 +229,7 @@ const fn status_is_transient(code: u16) -> bool {
     code >= STATUS_CODE_SERVER_FIRST && code <= STATUS_CODE_LAST
 }
 
-pub(crate) async fn response_ensure_ok(
-    response: reqwest::Response,
-    label: &str,
-) -> AppResult<reqwest::Response> {
-    debug_assert_ne!(label, "");
-
-    if response.status().is_success() {
-        return Ok(response);
-    }
-
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    let message_friendly = body_error_friendly(&body).unwrap_or(body);
-    let message = format!("{} {label}: {message_friendly}", status.as_u16());
-
-    debug_assert_eq!(api_status_code(&message), Some(status.as_u16()));
-
-    Err(AppError::API(message))
-}
-
-pub(crate) async fn response_json_bounded<T: DeserializeOwned>(
-    response: reqwest::Response,
-    size_bytes_max: u32,
-) -> AppResult<T> {
-    debug_assert!(size_bytes_max > 0);
-
-    if let Some(length) = response.content_length() {
-        if length > u64::from(size_bytes_max) {
-            return Err(AppError::API(format!(
-                "the response is {length} bytes, over the {size_bytes_max} bytes this app reads"
-            )));
-        }
-    }
-
-    let mut body: Vec<u8> = Vec::new();
-    let mut stream = response.bytes_stream();
-
-    for _chunk_index in 0..RESPONSE_CHUNK_COUNT_MAX {
-        let Some(chunk) = stream.next().await else {
-            debug_assert!(body.len() <= size_bytes_max as usize);
-
-            return Ok(serde_json::from_slice(&body)?);
-        };
-
-        let chunk = chunk?;
-
-        if body.len() + chunk.len() > size_bytes_max as usize {
-            return Err(AppError::API(format!(
-                "the response ran past the {size_bytes_max} bytes this app reads"
-            )));
-        }
-
-        body.extend_from_slice(&chunk);
-    }
-
-    Err(AppError::API(format!(
-        "the response arrived in more than {RESPONSE_CHUNK_COUNT_MAX} pieces without ending"
-    )))
-}
-
 fn body_error_friendly(body: &str) -> Option<String> {
-    #[derive(Deserialize)]
-    struct OpenAIErrorEnvelope {
-        error: OpenAIError,
-    }
-
-    #[derive(Deserialize)]
-    struct OpenAIError {
-        #[serde(default)]
-        message: Option<String>,
-        #[serde(default)]
-        code: Option<String>,
-        #[serde(default, rename = "type")]
-        kind: Option<String>,
-    }
-
     let parsed: OpenAIErrorEnvelope = serde_json::from_str(body).ok()?;
     let message = parsed.error.message.unwrap_or_default();
 
@@ -251,6 +246,16 @@ fn body_error_friendly(body: &str) -> Option<String> {
     }
 
     Some(message)
+}
+
+fn retry_delay(attempt: u32) -> Duration {
+    assert!(attempt + 1 < RETRY_ATTEMPTS_MAX);
+
+    let delay_ms = RETRY_BACKOFF_MS_BASE << attempt;
+
+    assert!(delay_ms >= RETRY_BACKOFF_MS_BASE);
+
+    Duration::from_millis(delay_ms)
 }
 
 #[cfg(test)]
@@ -287,9 +292,23 @@ mod tests {
         assert_eq!(body_error_friendly(typed), Some("bad (invalid_request_error)".to_owned()));
         assert_eq!(body_error_friendly(coded), Some("bad (c)".to_owned()));
         assert_eq!(body_error_friendly(r#"{"error":{"message":"bad"}}"#), Some("bad".to_owned()));
-        assert_eq!(body_error_friendly(r#"{"error":{"message":"é ü"}}"#), Some("é ü".to_owned()));
+
+        assert_eq!(
+            body_error_friendly("{\"error\":{\"message\":\"\u{e9} \u{fc}\"}}"),
+            Some("\u{e9} \u{fc}".to_owned()),
+        );
+
         assert_eq!(body_error_friendly(r#"{"message":"bad"}"#), None);
         assert_eq!(body_error_friendly(""), None);
+    }
+
+    #[test]
+    fn a_status_code_past_the_known_range_is_a_plain_failure_and_never_a_crash() {
+        let message = "700 chat completion: odd";
+
+        assert_eq!(api_status_code(message), None);
+        assert!(!retry_is_transient(&AppError::Service(message.into())));
+        assert!(!status_is_transient(999));
     }
 
     #[test]
@@ -298,8 +317,8 @@ mod tests {
 
         assert!(!retry_is_transient(&AppError::Serde(serde_error)));
         assert!(!retry_is_transient(&AppError::IO(std::io::Error::other("disk"))));
-        assert!(!retry_is_transient(&AppError::API("timed out without a status".into())));
-        assert!(retry_is_transient(&AppError::API("503 chat completion: busy".into())));
+        assert!(!retry_is_transient(&AppError::Service("timed out without a status".into())));
+        assert!(retry_is_transient(&AppError::Service("503 chat completion: busy".into())));
     }
 
     #[test]
@@ -310,7 +329,7 @@ mod tests {
             request: Duration::from_secs(3),
         };
 
-        assert!(client_build(&timeouts).is_ok());
+        drop(client_build(&timeouts).unwrap());
     }
 
     #[tokio::test]
@@ -318,9 +337,9 @@ mod tests {
         let attempts = AtomicU32::new(0);
 
         let result: AppResult<()> = retry_run(|| async {
-            attempts.fetch_add(1, Ordering::SeqCst);
+            let _previous = attempts.fetch_add(1, Ordering::SeqCst);
 
-            Err(AppError::API("400 chat completion: bad".into()))
+            Err(AppError::Service("400 chat completion: bad".into()))
         })
         .await;
 
@@ -336,7 +355,7 @@ mod tests {
             let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
 
             if attempt < 2 {
-                return Err(AppError::API("503 chat completion: busy".into()));
+                return Err(AppError::Service("503 chat completion: busy".into()));
             }
 
             Ok(attempt)
@@ -352,9 +371,9 @@ mod tests {
         let attempts = AtomicU32::new(0);
 
         let result: AppResult<()> = retry_run(|| async {
-            attempts.fetch_add(1, Ordering::SeqCst);
+            let _previous = attempts.fetch_add(1, Ordering::SeqCst);
 
-            Err(AppError::API("503 chat completion: busy".into()))
+            Err(AppError::Service("503 chat completion: busy".into()))
         })
         .await;
 
@@ -369,8 +388,8 @@ mod tests {
         assert!(!status_is_transient(400));
         assert!(!status_is_transient(404));
 
-        assert!(retry_is_transient(&AppError::API("429: slow down".into())));
-        assert!(!retry_is_transient(&AppError::API("400: bad request".into())));
+        assert!(retry_is_transient(&AppError::Service("429: slow down".into())));
+        assert!(!retry_is_transient(&AppError::Service("400: bad request".into())));
         assert!(!retry_is_transient(&AppError::Config("nope".into())));
     }
 
@@ -398,6 +417,6 @@ mod tests {
             request: Duration::from_secs(3),
         };
 
-        assert!(client_build(&timeouts).is_ok());
+        drop(client_build(&timeouts).unwrap());
     }
 }

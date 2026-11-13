@@ -1,11 +1,13 @@
 import { expect, test } from '@playwright/test'
 import {
+    HAS_TEXT,
     RECORDING_TITLED,
     RECORDING_UNTITLED,
     STREAM_TIMEOUT_MS,
     app_open,
     editor,
     nav_to,
+    network_set,
     recording_open,
     step_current,
     transcript_rows,
@@ -33,7 +35,7 @@ test('the sidebar navigates between the screens', async ({ page }) => {
 
 test('the brand button resets the pipeline and returns home', async ({ page }) => {
     await recording_open(page, RECORDING_TITLED)
-    await page.getByRole('button', { name: 'scribe', exact: true }).click()
+    await page.getByRole('button', { name: 'Remi', exact: true }).click()
 
     await expect(page.getByRole('heading', { name: 'Home' })).toBeVisible()
 })
@@ -64,12 +66,12 @@ test('the sidebar collapses and remembers the choice across a reload', async ({ 
     await expect(sidebar.getByText('Templates')).toBeVisible()
 })
 
-test('going offline shows a banner that can be dismissed', async ({ context, page }) => {
-    const banner = page.getByRole('status').filter({ hasText: 'You appear to be offline.' })
+test('going offline shows a banner that can be dismissed', async ({ page }) => {
+    const banner = page.getByRole('status').filter({ [HAS_TEXT]: 'You appear to be offline.' })
 
     await expect(banner).toHaveCount(0)
 
-    await context.setOffline(true)
+    await network_set(page, 'offline')
 
     await expect(banner).toBeVisible()
 
@@ -77,17 +79,17 @@ test('going offline shows a banner that can be dismissed', async ({ context, pag
 
     await expect(banner).toHaveCount(0)
 
-    await context.setOffline(false)
-    await context.setOffline(true)
+    await network_set(page, 'online')
+    await network_set(page, 'offline')
 
     await expect(banner).toBeVisible()
 
-    await context.setOffline(false)
+    await network_set(page, 'online')
 
     await expect(banner).toHaveCount(0)
 })
 
-test('offline disables transcription and note generation', async ({ context, page }) => {
+test('offline disables transcription and note generation', async ({ page }) => {
     await recording_open(page, RECORDING_UNTITLED)
     await page.getByRole('button', { name: 'Next' }).click()
 
@@ -95,11 +97,11 @@ test('offline disables transcription and note generation', async ({ context, pag
 
     await expect(generate).toBeEnabled()
 
-    await context.setOffline(true)
+    await network_set(page, 'offline')
 
     await expect(generate).toBeDisabled()
 
-    await context.setOffline(false)
+    await network_set(page, 'online')
 
     await expect(generate).toBeEnabled()
 })

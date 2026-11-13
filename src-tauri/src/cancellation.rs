@@ -1,9 +1,10 @@
+use crate::contract::StreamID;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
+use tauri::{AppHandle, Manager};
 
 const STREAM_COUNT_MAX: u32 = 64;
 
@@ -13,48 +14,58 @@ pub(crate) struct CancellationRegistry {
 }
 
 impl CancellationRegistry {
+    pub(crate) fn clear(&self, stream_id: &str) {
+        assert_ne!(stream_id, "");
+
+        let Ok(mut guard) = self.flags.lock() else {
+            return;
+        };
+
+        drop(guard.remove(stream_id));
+
+        assert!(!guard.contains_key(stream_id));
+    }
+
     pub(crate) fn new() -> Self {
         Self { flags: Mutex::new(HashMap::new()) }
     }
 
     pub(crate) fn register(&self, stream_id: &str) -> Arc<AtomicBool> {
-        debug_assert_ne!(stream_id, "");
+        assert_ne!(stream_id, "");
 
-        let flag = Arc::new(AtomicBool::new(false));
+        let Ok(mut guard) = self.flags.lock() else {
+            return Arc::new(AtomicBool::new(false));
+        };
 
-        if let Ok(mut guard) = self.flags.lock() {
-            debug_assert!(guard.len() < STREAM_COUNT_MAX as usize);
+        let held = guard.entry(stream_id.to_owned()).or_insert_with(Arc::default);
+        let flag = Arc::clone(held);
+        let count = guard.len();
 
-            let previous = guard.insert(stream_id.to_owned(), Arc::clone(&flag));
+        drop(guard);
 
-            debug_assert!(previous.is_none());
+        assert!(count >= 1);
+
+        if count > usize_of!(STREAM_COUNT_MAX) {
+            tracing::warn!("{count} streams are registered for cancellation at once");
         }
-
-        debug_assert!(!flag.load(Ordering::SeqCst));
 
         flag
     }
 
     pub(crate) fn trigger(&self, stream_id: &str) {
-        debug_assert_ne!(stream_id, "");
+        assert_ne!(stream_id, "");
 
-        if let Ok(guard) = self.flags.lock() {
-            if let Some(flag) = guard.get(stream_id) {
-                flag.store(true, Ordering::SeqCst);
+        let Ok(guard) = self.flags.lock() else {
+            return;
+        };
 
-                debug_assert!(flag.load(Ordering::SeqCst));
-            }
-        }
-    }
+        let Some(flag) = guard.get(stream_id) else {
+            return;
+        };
 
-    pub(crate) fn clear(&self, stream_id: &str) {
-        debug_assert_ne!(stream_id, "");
+        flag.store(true, Ordering::SeqCst);
 
-        if let Ok(mut guard) = self.flags.lock() {
-            drop(guard.remove(stream_id));
-
-            debug_assert!(!guard.contains_key(stream_id));
-        }
+        assert!(flag.load(Ordering::SeqCst));
     }
 }
 
@@ -71,9 +82,7 @@ pub(crate) fn stream_id_validate(stream_id: &str) -> AppResult<()> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub(crate) async fn task_cancel(app: tauri::AppHandle, stream_id: String) -> AppResult<()> {
-    stream_id_validate(&stream_id)?;
-
+pub(crate) async fn task_cancel(app: AppHandle, stream_id: StreamID) -> AppResult<()> {
     app.state::<AppState>().cancellation.trigger(&stream_id);
 
     Ok(())
@@ -104,7 +113,7 @@ mod tests {
     #[test]
     fn an_empty_stream_id_is_refused_at_the_boundary() {
         assert!(stream_id_validate("").is_err());
-        assert!(stream_id_validate("stream-a").is_ok());
+        stream_id_validate("stream-a").unwrap();
     }
 
     #[test]
@@ -165,6 +174,28 @@ mod tests {
 
         assert!(is_cancelled(&kept));
         assert!(!is_cancelled(&dropped));
+        assert!(!Arc::ptr_eq(&kept, &dropped));
+        assert_eq!(Arc::strong_count(&dropped), 1);
+    }
+
+    #[test]
+    fn a_live_stream_registered_again_shares_its_flag_so_an_early_cancel_still_lands() {
+        let registry = CancellationRegistry::new();
+        let early = registry.register("stream-a");
+
+        registry.trigger("stream-a");
+
+        let late = registry.register("stream-a");
+
+        assert!(Arc::ptr_eq(&early, &late));
+        assert!(is_cancelled(&late));
+
+        registry.clear("stream-a");
+
+        let fresh = registry.register("stream-a");
+
+        assert!(!Arc::ptr_eq(&late, &fresh));
+        assert!(!is_cancelled(&fresh));
     }
 
     #[test]

@@ -1,11 +1,13 @@
-use super::audio::{SAMPLE_RATE_WHISPER, load_for_whisper};
+use super::audio::{PreparePaths, prepare_for_whisper};
 use super::remote::transcribe_audio_file;
 use super::types::{TranscribeProgress, Transcript, TranscriptSegment};
+use crate::account::{ChargeJob, charge_apply};
+use crate::contract::TranscriptReuse;
 use crate::endpoints::storage::endpoint_load;
 use crate::error::{AppError, AppResult};
 use crate::notes::commands::title_generate;
 use crate::people::storage::{Person, people_load_all};
-use crate::workspace::{self, JobMeta};
+use crate::workspace::{self, JobMeta, TranscriptSlot};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -16,6 +18,12 @@ const LABEL_IMPORTED: &str = "Imported transcript";
 const SOURCE_PATH_IMPORTED: &str = "(imported transcript)";
 const SPELLING_HINT_CHARS_MAX: u32 = 600;
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TranscriptImport<'text> {
+    pub(crate) title: &'text str,
+    pub(crate) transcript_text: &'text str,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct TranscriptionResult {
     pub(crate) job_id: String,
@@ -24,33 +32,128 @@ pub(crate) struct TranscriptionResult {
 }
 
 pub(crate) fn audio_prepare_blocking(source_path: &Path) -> AppResult<(String, PathBuf)> {
+    let prepared_earlier =
+        if source_path.exists() { None } else { audio_prepared_find(source_path)? };
+
+    if let Some(prepared) = prepared_earlier {
+        return Ok(prepared);
+    }
+
     let job_id = workspace::job_id_from_source_content(source_path)?;
     let source_metadata = std::fs::metadata(source_path)?;
     let existing = workspace::meta_load(&job_id)?;
 
-    debug_assert_ne!(job_id, "");
+    assert_ne!(job_id, "");
 
-    let label = source_path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned());
+    let label = source_path.file_name().map(|name| name.to_string_lossy().into_owned());
 
     let meta = audio_prepare_meta(&job_id, source_path, &source_metadata, label, existing);
 
-    debug_assert_eq!(meta.id, job_id);
+    assert_eq!(meta.id, job_id);
 
     workspace::meta_save(&meta)?;
 
     let audio_path = workspace::job_audio_path(&job_id)?;
 
-    if !audio_path.exists() {
-        let samples = load_for_whisper(source_path)?;
-
-        workspace::audio_wav_save(&samples, SAMPLE_RATE_WHISPER, &audio_path)?;
+    if !workspace::audio_wav_is_prepared(&audio_path) {
+        prepare_for_whisper(&PreparePaths { prepared: &audio_path, source: source_path })?;
     }
 
-    debug_assert!(audio_path.exists());
-
     Ok((job_id, audio_path))
+}
+
+pub(crate) async fn transcribe_remote_async(
+    source_path: &Path,
+    endpoint_id: &str,
+    transcript_reuse: TranscriptReuse,
+    progress: Option<TranscribeProgress>,
+) -> AppResult<TranscriptionResult> {
+    let endpoint = endpoint_load(endpoint_id)?;
+    let engine_id = format!("{ENGINE_ID_REMOTE_PREFIX}{endpoint_id}");
+
+    stage_emit(progress.as_ref(), "preparing_audio");
+
+    let source_owned = source_path.to_path_buf();
+
+    let (job_id, audio_path) =
+        crate::blocking::run(move || audio_prepare_blocking(&source_owned)).await?;
+
+    let slot = TranscriptSlot { engine_id: &engine_id, job_id: &job_id };
+
+    let reusable = if transcript_reuse == TranscriptReuse::Allowed {
+        workspace::transcript_load::<Transcript>(&slot)?
+            .filter(|stored| !stored.text.trim().is_empty())
+    } else {
+        None
+    };
+
+    if let Some(cached) = reusable {
+        stage_emit(progress.as_ref(), "done");
+
+        return Ok(TranscriptionResult { job_id, transcript: cached, cached: true });
+    }
+
+    let charge = ChargeJob { audio_path: &audio_path, endpoint_id, job_id: &job_id };
+
+    charge_apply(&charge).await?;
+
+    stage_emit(progress.as_ref(), "transcribing");
+
+    let spelling_hint = transcribe_remote_spelling_hint();
+
+    let transcript =
+        transcribe_audio_file(&audio_path, &endpoint, &spelling_hint, progress.as_ref()).await?;
+
+    transcript_store(&slot, &transcript)?;
+
+    transcribe_remote_title_apply(&job_id, &transcript).await;
+
+    stage_emit(progress.as_ref(), "done");
+
+    Ok(TranscriptionResult { job_id, transcript, cached: false })
+}
+
+pub(crate) fn transcript_import_blocking(
+    import: &TranscriptImport<'_>,
+) -> AppResult<TranscriptionResult> {
+    let TranscriptImport { title, transcript_text } = *import;
+
+    if transcript_text.len() > usize_of!(IMPORT_TEXT_BYTES_MAX) {
+        return Err(AppError::Config(format!(
+            "the pasted transcript is {} bytes, over the {IMPORT_TEXT_BYTES_MAX} bytes this app \
+             imports",
+            transcript_text.len(),
+        )));
+    }
+
+    let trimmed = transcript_text.trim();
+
+    if trimmed.is_empty() {
+        return Err(AppError::Config("transcript text is empty".into()));
+    }
+
+    let job_id = workspace::job_id_from_text(trimmed);
+    let title_trimmed = title.trim();
+    let title_clean = if title_trimmed.is_empty() { None } else { Some(title_trimmed.to_owned()) };
+    let source_size_bytes = u64::try_from(trimmed.len()).unwrap_or(u64::MAX);
+    let existing = workspace::meta_load(&job_id)?;
+    let meta = transcript_import_meta(&job_id, source_size_bytes, title_clean, existing);
+
+    assert_eq!(meta.id, job_id);
+    assert_eq!(meta.source_size_bytes, source_size_bytes);
+
+    workspace::meta_save(&meta)?;
+
+    let transcript =
+        Transcript { text: trimmed.to_owned(), segments: transcript_import_segments(trimmed) };
+
+    assert_ne!(transcript.segments.len(), 0);
+
+    let slot = TranscriptSlot { engine_id: ENGINE_ID_IMPORTED, job_id: &job_id };
+
+    workspace::transcript_save(&slot, &transcript)?;
+
+    Ok(TranscriptionResult { job_id, transcript, cached: false })
 }
 
 fn audio_prepare_meta(
@@ -97,10 +200,25 @@ fn audio_prepare_meta(
         },
     };
 
-    debug_assert_eq!(meta.id, job_id);
-    debug_assert_eq!(meta.source_size_bytes, source_size_bytes);
+    assert_eq!(meta.id, job_id);
+    assert_eq!(meta.source_size_bytes, source_size_bytes);
 
     meta
+}
+
+fn audio_prepared_find(source_path: &Path) -> AppResult<Option<(String, PathBuf)>> {
+    let source_text = source_path.to_string_lossy();
+    let jobs = workspace::jobs_list_all()?;
+
+    for job in jobs.into_iter().filter(|job| job.source_path == source_text) {
+        let audio_path = workspace::job_audio_path(&job.id)?;
+
+        if workspace::audio_wav_is_prepared(&audio_path) {
+            return Ok(Some((job.id, audio_path)));
+        }
+    }
+
+    Ok(None)
 }
 
 fn metadata_recorded_at_unix(metadata: &std::fs::Metadata) -> Option<i64> {
@@ -108,86 +226,6 @@ fn metadata_recorded_at_unix(metadata: &std::fs::Metadata) -> Option<i64> {
     let elapsed = time.duration_since(std::time::UNIX_EPOCH).ok()?;
 
     i64::try_from(elapsed.as_secs()).ok()
-}
-
-pub(crate) async fn transcribe_remote_async(
-    source_path: &Path,
-    endpoint_id: &str,
-    transcript_reuse: bool,
-    progress: Option<TranscribeProgress>,
-) -> AppResult<TranscriptionResult> {
-    let endpoint = endpoint_load(endpoint_id)?;
-    let engine_id = format!("{ENGINE_ID_REMOTE_PREFIX}{endpoint_id}");
-
-    debug_assert_eq!(endpoint.id, endpoint_id);
-    debug_assert!(engine_id.len() > endpoint_id.len());
-
-    if let Some(progress) = progress.as_ref() {
-        progress.emit_stage("preparing_audio");
-    }
-
-    let source_owned = source_path.to_path_buf();
-
-    let (job_id, audio_path) =
-        crate::blocking::run(move || audio_prepare_blocking(&source_owned)).await?;
-
-    let cached = if transcript_reuse {
-        workspace::transcript_load::<Transcript>(&job_id, &engine_id)?
-    } else {
-        None
-    };
-
-    if let Some(cached) = cached {
-        if let Some(progress) = progress.as_ref() {
-            progress.emit_stage("done");
-        }
-
-        return Ok(TranscriptionResult {
-            job_id,
-            transcript: cached,
-            cached: true,
-        });
-    }
-
-    if let Some(progress) = progress.as_ref() {
-        progress.emit_stage("transcribing");
-    }
-
-    let spelling_hint = transcribe_remote_spelling_hint();
-
-    let transcript =
-        transcribe_audio_file(&audio_path, &endpoint, &spelling_hint, progress.as_ref()).await?;
-
-    debug_assert_ne!(job_id, "");
-
-    workspace::transcript_save(&job_id, &engine_id, &transcript)?;
-
-    transcribe_remote_title_apply(&job_id, &transcript.text).await;
-
-    if let Some(progress) = progress.as_ref() {
-        progress.emit_stage("done");
-    }
-
-    Ok(TranscriptionResult {
-        job_id,
-        transcript,
-        cached: false,
-    })
-}
-
-fn transcribe_remote_spelling_hint() -> String {
-    let hint = match people_load_all() {
-        Ok(people) => spelling_hint_build(&people),
-        Err(error) => {
-            tracing::warn!("people unavailable for the spelling hint: {error}");
-
-            String::new()
-        }
-    };
-
-    debug_assert!(hint.chars().count() <= SPELLING_HINT_CHARS_MAX as usize);
-
-    hint
 }
 
 fn spelling_hint_build(people: &[Person]) -> String {
@@ -203,7 +241,7 @@ fn spelling_hint_build(people: &[Person]) -> String {
         let separator_length = if hint.is_empty() { 0 } else { 2 };
         let hint_length_next = hint.chars().count() + separator_length + name.chars().count();
 
-        if hint_length_next > SPELLING_HINT_CHARS_MAX as usize {
+        if hint_length_next > usize_of!(SPELLING_HINT_CHARS_MAX) {
             break;
         }
 
@@ -214,16 +252,36 @@ fn spelling_hint_build(people: &[Person]) -> String {
         hint.push_str(&name);
     }
 
-    debug_assert!(hint.chars().count() <= SPELLING_HINT_CHARS_MAX as usize);
-    debug_assert!(!hint.ends_with(','));
+    assert!(hint.chars().count() <= usize_of!(SPELLING_HINT_CHARS_MAX));
 
     hint
 }
 
-async fn transcribe_remote_title_apply(job_id: &str, transcript_text: &str) {
-    debug_assert_ne!(job_id, "");
+fn stage_emit(progress: Option<&TranscribeProgress>, stage: &str) {
+    assert_ne!(stage, "");
 
-    let mut meta = match workspace::meta_load(job_id) {
+    if let Some(reporter) = progress {
+        reporter.emit_stage(stage);
+    }
+}
+
+fn transcribe_remote_spelling_hint() -> String {
+    let hint = match people_load_all() {
+        Ok(people) => spelling_hint_build(&people),
+        Err(error) => {
+            tracing::warn!("people unavailable for the spelling hint: {error}");
+
+            String::new()
+        }
+    };
+
+    assert!(hint.chars().count() <= usize_of!(SPELLING_HINT_CHARS_MAX));
+
+    hint
+}
+
+async fn transcribe_remote_title_apply(job_id: &str, transcript: &Transcript) {
+    let meta = match workspace::meta_load(job_id) {
         Ok(Some(meta)) => meta,
         Ok(None) => {
             tracing::warn!("no meta for job {job_id}; the recording stays untitled");
@@ -237,11 +295,11 @@ async fn transcribe_remote_title_apply(job_id: &str, transcript_text: &str) {
         }
     };
 
-    if meta.title.as_deref().is_some_and(|title| !title.trim().is_empty()) {
+    if meta.title.as_deref().is_some_and(|existing| !existing.trim().is_empty()) {
         return;
     }
 
-    let title = match title_generate(transcript_text).await {
+    let title = match title_generate(&transcript.text).await {
         Ok(title) => title,
         Err(error) => {
             tracing::warn!("title generation failed for job {job_id}: {error}");
@@ -250,10 +308,10 @@ async fn transcribe_remote_title_apply(job_id: &str, transcript_text: &str) {
         }
     };
 
-    debug_assert_ne!(title, "");
+    assert_ne!(title, "");
 
-    meta = match workspace::meta_load(job_id) {
-        Ok(Some(meta)) => meta,
+    let mut latest = match workspace::meta_load(job_id) {
+        Ok(Some(reloaded)) => reloaded,
         Ok(None) => return,
         Err(error) => {
             tracing::warn!("meta for job {job_id} unreadable after titling: {error}");
@@ -262,81 +320,26 @@ async fn transcribe_remote_title_apply(job_id: &str, transcript_text: &str) {
         }
     };
 
-    if meta.title.as_deref().is_some_and(|title| !title.trim().is_empty()) {
+    if latest.title.as_deref().is_some_and(|existing| !existing.trim().is_empty()) {
         return;
     }
 
-    meta.title = Some(title);
+    latest.title = Some(title);
 
-    if let Err(error) = workspace::meta_save(&meta) {
+    if let Err(error) = workspace::meta_save(&latest) {
         tracing::warn!("title for job {job_id} could not be saved: {error}");
     }
 }
 
-pub(crate) fn transcript_import_blocking(
-    title: &str,
-    transcript_text: &str,
-) -> AppResult<TranscriptionResult> {
-    if transcript_text.len() > IMPORT_TEXT_BYTES_MAX as usize {
-        return Err(AppError::Config(format!(
-            "the pasted transcript is {} bytes, over the {IMPORT_TEXT_BYTES_MAX} bytes this app \
-             imports",
-            transcript_text.len()
-        )));
-    }
-
-    let trimmed = transcript_text.trim();
-
-    if trimmed.is_empty() {
-        return Err(AppError::Config("transcript text is empty".into()));
-    }
-
-    let job_id = workspace::job_id_from_text(trimmed);
-    let title_trimmed = title.trim();
-
-    let title_clean = if title_trimmed.is_empty() {
-        None
-    } else {
-        Some(title_trimmed.to_owned())
-    };
-
-    let existing = workspace::meta_load(&job_id)?;
-    let meta = transcript_import_meta(&job_id, trimmed, title_clean, existing);
-
-    debug_assert_eq!(meta.id, job_id);
-    debug_assert_eq!(meta.source_size_bytes, trimmed.len() as u64);
-
-    workspace::meta_save(&meta)?;
-
-    let transcript = Transcript {
-        text: trimmed.to_owned(),
-        segments: transcript_import_segments(trimmed),
-    };
-
-    debug_assert_ne!(transcript.segments.len(), 0);
-
-    workspace::transcript_save(&job_id, ENGINE_ID_IMPORTED, &transcript)?;
-
-    Ok(TranscriptionResult {
-        job_id,
-        transcript,
-        cached: false,
-    })
-}
-
 fn transcript_import_meta(
     job_id: &str,
-    trimmed: &str,
+    source_size_bytes: u64,
     title_clean: Option<String>,
     existing: Option<JobMeta>,
 ) -> JobMeta {
-    debug_assert_ne!(trimmed, "");
+    assert!(source_size_bytes > 0);
 
-    let source_size_bytes = trimmed.len() as u64;
-
-    let label = title_clean
-        .clone()
-        .or_else(|| Some(LABEL_IMPORTED.to_owned()));
+    let label = title_clean.clone().or_else(|| Some(LABEL_IMPORTED.to_owned()));
 
     let meta = match existing {
         None => JobMeta {
@@ -371,14 +374,14 @@ fn transcript_import_meta(
         },
     };
 
-    debug_assert_eq!(meta.id, job_id);
-    debug_assert!(meta.label.is_some());
+    assert_eq!(meta.id, job_id);
+    assert!(meta.label.is_some());
 
     meta
 }
 
 fn transcript_import_segments(trimmed: &str) -> Vec<TranscriptSegment> {
-    debug_assert_ne!(trimmed, "");
+    assert_ne!(trimmed, "");
 
     let segments: Vec<TranscriptSegment> = trimmed
         .split('\n')
@@ -399,17 +402,38 @@ fn transcript_import_segments(trimmed: &str) -> Vec<TranscriptSegment> {
         }];
     }
 
-    debug_assert!(segments.iter().all(|segment| !segment.text.is_empty()));
+    assert!(segments.iter().all(|segment| !segment.text.is_empty()));
 
     segments
+}
+
+fn transcript_store(slot: &TranscriptSlot<'_>, transcript: &Transcript) -> AppResult<()> {
+    if transcript.text.trim().is_empty() {
+        return Err(AppError::Transcription(
+            "no speech came back for this recording, so no transcript was saved".into(),
+        ));
+    }
+
+    workspace::transcript_save(slot, transcript)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transcription::audio::SAMPLE_RATE_WHISPER;
     use crate::workspace::test_support::{meta_with, root_scoped};
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
 
-    fn person_named(name_first: &str, name_last: &str) -> Person {
+    fn import_of(fields: &[&str; 2]) -> AppResult<TranscriptionResult> {
+        let [title, transcript_text] = *fields;
+
+        transcript_import_blocking(&TranscriptImport { title, transcript_text })
+    }
+
+    fn person_named(names: &[&str; 2]) -> Person {
+        let [name_first, name_last] = *names;
+
         Person {
             id: name_first.to_owned(),
             name_first: name_first.to_owned(),
@@ -421,19 +445,26 @@ mod tests {
 
     #[test]
     fn the_spelling_hint_lists_names_and_stops_at_its_limit() {
-        let people = vec![person_named("Brayden", "Carlson"), person_named("Jane", "Doe")];
+        let people = vec![person_named(&["Brayden", "Carlson"]), person_named(&["Jane", "Doe"])];
 
         assert_eq!(spelling_hint_build(&people), "Brayden Carlson, Jane Doe");
         assert_eq!(spelling_hint_build(&[]), "");
 
-        let many: Vec<Person> = (0..200)
-            .map(|index| person_named(&format!("Name{index}"), "Long"))
+        let many: Vec<Person> = (0_i32..200_i32)
+            .map(|index| person_named(&[&format!("Name{index}"), "Long"]))
             .collect();
 
         let hint = spelling_hint_build(&many);
 
-        assert!(hint.chars().count() <= SPELLING_HINT_CHARS_MAX as usize);
+        assert!(hint.chars().count() <= usize_of!(SPELLING_HINT_CHARS_MAX));
         assert!(!hint.ends_with(','));
+    }
+
+    #[test]
+    fn a_name_ending_in_a_comma_keeps_the_hint_and_never_crashes() {
+        let people = vec![person_named(&["Doe,", ""])];
+
+        assert_eq!(spelling_hint_build(&people), "Doe,");
     }
 
     #[test]
@@ -454,16 +485,16 @@ mod tests {
 
     #[test]
     fn an_import_past_the_size_limit_is_refused_before_it_is_hashed() {
-        let oversized = "a".repeat(IMPORT_TEXT_BYTES_MAX as usize + 1);
+        let oversized = "a".repeat(usize_of!(IMPORT_TEXT_BYTES_MAX) + 1);
 
-        assert!(transcript_import_blocking("", &oversized).is_err());
-        assert!(transcript_import_blocking("", "   \n  ").is_err());
+        assert_ne!(import_of(&["", &oversized]).unwrap_err().to_string(), "");
+        assert_ne!(import_of(&["", "   \n  "]).unwrap_err().to_string(), "");
     }
 
     #[test]
     fn a_fresh_file_reports_a_recorded_time_near_now() {
-        let path = std::env::temp_dir()
-            .join(format!("scribe-recorded-at-test-{}.wav", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("remi-recorded-at-test-{}.wav", std::process::id()));
 
         std::fs::write(&path, b"x").unwrap();
 
@@ -477,20 +508,16 @@ mod tests {
 
     #[test]
     fn a_person_without_any_name_is_left_out_of_the_spelling_hint() {
-        let people = vec![person_named("", ""), person_named("Jane", "")];
+        let people = vec![person_named(&["", ""]), person_named(&["Jane", ""])];
 
         assert_eq!(spelling_hint_build(&people), "Jane");
     }
 
     #[test]
     fn an_imported_transcript_gets_a_job_with_metadata_and_one_segment_per_line() {
-        let _root = root_scoped("import");
-        let result = transcript_import_blocking("  Kickoff  ", "  first\n\nsecond  ").unwrap();
+        let _root = root_scoped();
+        let result = import_of(&["  Kickoff  ", "  first\n\nsecond  "]).unwrap();
         let meta = workspace::meta_load(&result.job_id).unwrap().expect("meta");
-
-        let stored = workspace::transcript_load::<Transcript>(&result.job_id, ENGINE_ID_IMPORTED)
-            .unwrap()
-            .expect("transcript");
 
         assert_eq!(result.job_id, workspace::job_id_from_text("first\n\nsecond"));
         assert_eq!(meta.title.as_deref(), Some("Kickoff"));
@@ -499,19 +526,24 @@ mod tests {
         assert_eq!(meta.source_size_bytes, 13);
         assert!(meta.recorded_at_unix.is_none());
         assert_eq!(result.transcript.text, "first\n\nsecond");
+
+        let slot = TranscriptSlot { engine_id: ENGINE_ID_IMPORTED, job_id: &result.job_id };
+        let stored = workspace::transcript_load::<Transcript>(&slot).unwrap().expect("transcript");
+
         assert_eq!(stored.text, "first\n\nsecond");
         assert_eq!(stored.segments.len(), 2);
         assert_eq!(stored.segments[1].text, "second");
+
         assert_eq!(
             workspace::engines_for_job(&result.job_id).unwrap(),
-            vec![ENGINE_ID_IMPORTED.to_owned()]
+            vec![ENGINE_ID_IMPORTED.to_owned()],
         );
     }
 
     #[test]
     fn re_importing_the_same_text_keeps_the_first_title_and_creation_time() {
-        let _root = root_scoped("import-twice");
-        let first = transcript_import_blocking("", "same words").unwrap();
+        let _root = root_scoped();
+        let first = import_of(&["", "same words"]).unwrap();
         let mut meta = workspace::meta_load(&first.job_id).unwrap().expect("meta");
 
         assert_eq!(meta.label.as_deref(), Some(LABEL_IMPORTED));
@@ -521,7 +553,7 @@ mod tests {
         meta.title = Some("Kept".to_owned());
         workspace::meta_save(&meta).unwrap();
 
-        let second = transcript_import_blocking("New title", "same words").unwrap();
+        let second = import_of(&["New title", "same words"]).unwrap();
         let reloaded = workspace::meta_load(&second.job_id).unwrap().expect("meta");
 
         assert_eq!(second.job_id, first.job_id);
@@ -532,7 +564,7 @@ mod tests {
 
     #[test]
     fn preparing_metadata_keeps_the_previous_record_and_only_refreshes_the_source() {
-        let _root = root_scoped("prepare-meta");
+        let _root = root_scoped();
         let source = root_path().join("meeting.wav");
 
         std::fs::write(&source, b"abc").unwrap();
@@ -560,7 +592,7 @@ mod tests {
 
     #[test]
     fn preparing_a_recording_writes_a_16k_mono_copy_into_its_job_folder_once() {
-        let _root = root_scoped("prepare-audio");
+        let _root = root_scoped();
         let source = root_path().join("meeting.wav");
         let samples = vec![0.25_f32; 8000];
 
@@ -570,19 +602,68 @@ mod tests {
         let (prepared, sample_rate) = workspace::audio_wav_load(&audio_path).unwrap();
         let meta = workspace::meta_load(&job_id).unwrap().expect("meta");
 
-        std::fs::write(&audio_path, b"kept").unwrap();
-
-        let (job_id_again, audio_path_again) = audio_prepare_blocking(&source).unwrap();
-
         assert_eq!(job_id, workspace::job_id_from_source_content(&source).unwrap());
         assert_eq!(audio_path, workspace::job_audio_path(&job_id).unwrap());
         assert_eq!(sample_rate, SAMPLE_RATE_WHISPER);
         assert!(prepared.len().abs_diff(16000) <= 1);
         assert_eq!(meta.label.as_deref(), Some("meeting.wav"));
         assert_eq!(meta.source_size_bytes, std::fs::metadata(&source).unwrap().len());
+
+        std::fs::write(&audio_path, b"kept").unwrap();
+
+        let (job_id_again, audio_path_again) = audio_prepare_blocking(&source).unwrap();
+
         assert_eq!(job_id_again, job_id);
         assert_eq!(std::fs::read(&audio_path_again).unwrap(), b"kept");
-        assert!(audio_prepare_blocking(&root_path().join("missing.wav")).is_err());
+
+        assert_ne!(
+            audio_prepare_blocking(&root_path().join("missing.wav")).unwrap_err().to_string(),
+            "",
+        );
+    }
+
+    #[test]
+    fn a_half_written_audio_copy_is_prepared_again_from_the_original() {
+        let _root = root_scoped();
+        let source = root_path().join("meeting.wav");
+
+        workspace::audio_wav_save(&vec![0.25_f32; 8000], 8000, &source).unwrap();
+
+        let (_job_id, audio_path) = audio_prepare_blocking(&source).unwrap();
+
+        workspace::audio_wav_save(&[], SAMPLE_RATE_WHISPER, &audio_path).unwrap();
+
+        drop(audio_prepare_blocking(&source).unwrap());
+
+        assert!(workspace::audio_wav_duration_seconds(&audio_path).unwrap() > 0.9_f64);
+    }
+
+    #[test]
+    fn a_recording_with_no_text_is_refused_and_leaves_no_transcript() {
+        let _root = root_scoped();
+        let id = workspace::job_id_from_text("silence");
+        let slot = TranscriptSlot { engine_id: "remote-a", job_id: &id };
+        let blank = Transcript { text: " ".to_owned(), segments: Vec::new() };
+
+        assert_ne!(transcript_store(&slot, &blank).unwrap_err().to_string(), "");
+        assert!(workspace::transcript_load::<Transcript>(&slot).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_recording_whose_original_is_gone_prepares_from_its_stored_audio() {
+        let _root = root_scoped();
+        let source = root_path().join("meeting.wav");
+
+        workspace::audio_wav_save(&vec![0.25_f32; 8000], 8000, &source).unwrap();
+
+        let (job_id, audio_path) = audio_prepare_blocking(&source).unwrap();
+
+        std::fs::remove_file(&source).unwrap();
+
+        let (job_id_again, audio_path_again) = audio_prepare_blocking(&source).unwrap();
+
+        assert_eq!(job_id_again, job_id);
+        assert_eq!(audio_path_again, audio_path);
     }
 
     fn root_path() -> PathBuf {
@@ -590,33 +671,32 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual: hits the configured transcription endpoint with SCRIBE_MANUAL_AUDIO"]
+    #[ignore = "manual: hits the configured transcription endpoint with REMI_MANUAL_AUDIO"]
     fn manual_remote_transcription_of_a_local_file() {
-        let audio = std::env::var("SCRIBE_MANUAL_AUDIO").expect("SCRIBE_MANUAL_AUDIO");
-        let endpoint_id = std::env::var("SCRIBE_MANUAL_ENDPOINT").expect("SCRIBE_MANUAL_ENDPOINT");
+        let audio = std::env::var("REMI_MANUAL_AUDIO").expect("REMI_MANUAL_AUDIO");
+        let endpoint_id = std::env::var("REMI_MANUAL_ENDPOINT").expect("REMI_MANUAL_ENDPOINT");
         let runtime = tokio::runtime::Runtime::new().unwrap();
 
-        tracing_subscriber::fmt()
-            .with_env_filter("scribe_lib=debug,info")
-            .with_ansi(false)
-            .init();
+        let filter = crate::log_filter_of(Some("remi_lib=debug,info"));
+
+        tracing_subscriber::fmt().with_ansi(false).finish().with(filter).init();
 
         let started = std::time::Instant::now();
 
-        let result = runtime.block_on(transcribe_remote_async(
+        let outcome = runtime.block_on(transcribe_remote_async(
             Path::new(&audio),
             &endpoint_id,
-            false,
+            TranscriptReuse::Refused,
             None,
         ));
 
-        match result {
+        match outcome {
             Ok(result) => println!(
                 "MANUAL_OK job={} segments={} chars={} seconds={}",
                 result.job_id,
                 result.transcript.segments.len(),
                 result.transcript.text.chars().count(),
-                started.elapsed().as_secs()
+                started.elapsed().as_secs(),
             ),
             Err(error) => println!("MANUAL_ERROR after {}s: {error}", started.elapsed().as_secs()),
         }

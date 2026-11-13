@@ -1,11 +1,24 @@
-import { ref } from 'vue'
+import { isRef, ref } from 'vue'
+import { assert } from '../lib/assert'
+import type { Ref } from 'vue'
 
 
 const online = ref(navigator.onLine)
 
 
-function online_set(value: boolean) {
+export function use_network(): { online: Ref<boolean> } {
+    assert(isRef(online))
+    assert(typeof online.value === 'boolean')
+
+    return { online }
+}
+
+function online_set(value: boolean): void {
+    assert(typeof value === 'boolean')
+
     online.value = value
+
+    assert(online.value === value)
 }
 
 window.addEventListener('online', () => {
@@ -15,7 +28,3 @@ window.addEventListener('online', () => {
 window.addEventListener('offline', () => {
     online_set(false)
 })
-
-export function use_network() {
-    return { online }
-}

@@ -1,23 +1,32 @@
 import { expect, test } from '@playwright/test'
+import { assert } from '../../src/lib/assert'
 import {
+    HAS_TEXT,
     RECORDING_TITLED,
     RECORDING_UNTITLED,
     app_open,
     dialog,
+    folder_item,
     nav_to,
     recording_open,
     step_current,
     tiles,
 } from './helpers'
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 
 
-function people_field(page: Page, label: string) {
-    return page.locator('.step-field').filter({ has: page.getByText(label, { exact: true }) })
+function chips(page: Page, label: string): Locator {
+    assert(!page.isClosed())
+    assert(label.length > 0)
+
+    return people_field(page, label).locator('.tag-chip')
 }
 
-function chips(page: Page, label: string) {
-    return people_field(page, label).locator('.tag-chip')
+function people_field(page: Page, label: string): Locator {
+    assert(!page.isClosed())
+    assert(label.length > 0)
+
+    return page.locator('.step-field').filter({ has: page.getByText(label, { exact: true }) })
 }
 
 test.beforeEach(async ({ page }) => {
@@ -37,16 +46,43 @@ test('the title autosaves and shows on the home tile', async ({ page }) => {
     await expect(tiles(page).locator('.recording-tile-title')).toContainText(['Discovery call'])
 })
 
+test('the folder field files the meeting and can make a new folder', async ({ page }) => {
+    await recording_open(page, RECORDING_UNTITLED)
+
+    const folder = page.getByLabel('Folder', { exact: true })
+
+    await expect(folder).toHaveValue('')
+    await expect(folder.locator('option')).toHaveText(['No folder', 'Remi'])
+
+    await folder.selectOption('Remi')
+
+    await expect(folder_item(page, 'Remi')).toContainText('2')
+
+    const prompt = dialog(page, 'New folder')
+
+    await page.locator('main').getByRole('button', { name: 'New folder' }).click()
+    await expect(prompt.getByRole('textbox', { name: 'Folder name' })).toBeFocused()
+    await page.keyboard.type('Acme Mining')
+    await page.keyboard.press('Enter')
+
+    await expect(folder).toHaveValue('Acme Mining')
+    await expect(folder.locator('option')).toHaveText(['No folder', 'Acme Mining', 'Remi'])
+    await expect(folder_item(page, 'Acme Mining')).toContainText('1')
+    await expect(folder_item(page, 'Remi')).toContainText('1')
+})
+
 test('the existing meeting shows its people, template, and title', async ({ page }) => {
     await recording_open(page, RECORDING_TITLED)
     await page.getByRole('button', { name: 'Meeting' }).click()
 
     await expect(page.getByLabel('Title')).toHaveValue(RECORDING_TITLED)
     await expect(page.getByLabel('Template')).toHaveValue('default-meeting-notes')
+
     await expect(chips(page, 'In the meeting')).toHaveText([
         'John Doe (Developer)',
         'Jane Doe (Product owner)',
     ])
+
     await expect(chips(page, 'Mentioned')).toHaveText(['Sam Smith (Client)'])
     await expect(page.getByText('These names are from before People existed')).toBeHidden()
 })
@@ -73,6 +109,7 @@ test('the picker adds people who were present, including a whole group', async (
     await picker.getByRole('button', { name: 'Done' }).click()
 
     await expect(picker).toBeHidden()
+
     await expect(chips(page, 'In the meeting')).toHaveText([
         'John Doe (Developer)',
         'Jane Doe (Product owner)',
@@ -85,7 +122,7 @@ test('the picker adds people who were present, including a whole group', async (
 
     await nav_to(page, 'Home')
 
-    const tile = tiles(page).filter({ hasText: RECORDING_UNTITLED })
+    const tile = tiles(page).filter({ [HAS_TEXT]: RECORDING_UNTITLED })
 
     await expect(tile.locator('.recording-tile-people')).toHaveText('Jane Doe, John Doe')
 })

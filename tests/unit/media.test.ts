@@ -24,6 +24,32 @@ describe('MEDIA_EXTENSIONS', () => {
 })
 
 describe('path_is_media', () => {
+    it('rejects each format the decoder refused in a real run', () => {
+        const refused = [
+            'ac3',
+            'aif',
+            'aiff',
+            'amr',
+            'avi',
+            'caf',
+            'flv',
+            'm2ts',
+            'mpeg',
+            'mpg',
+            'mts',
+            'opus',
+            'spx',
+            'ts',
+            'vob',
+            'wma',
+            'wmv',
+        ]
+
+        for (const extension of refused) {
+            expect(path_is_media(`/tmp/clip.${extension}`)).toBe(false)
+        }
+    })
+
     it('accepts every listed audio and video extension', () => {
         for (const extension of MEDIA_EXTENSIONS) {
             expect(path_is_media(`/tmp/clip.${extension}`)).toBe(true)

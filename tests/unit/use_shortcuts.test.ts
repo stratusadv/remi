@@ -1,37 +1,60 @@
+import { KeepAlive, defineComponent, h, nextTick, ref } from 'vue'
 import { mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { KeepAlive, defineComponent, h, nextTick, ref } from 'vue'
 import { use_shortcuts } from '../../src/composables/use_shortcuts'
+import { assert } from '../../src/lib/assert'
+import { ALT_KEY, ATTACH_TO, CTRL_KEY, META_KEY, SHIFT_KEY } from './fixtures'
+import type { ComponentOptions, DefineComponent, Ref, VNode } from 'vue'
 import type { VueWrapper } from '@vue/test-utils'
+
+
+const KEY_A = 'a'
+const KEY_S = 's'
+const mounted = new Set<VueWrapper>()
 
 
 type Handler = (event: KeyboardEvent) => void
 
-const mounted: VueWrapper[] = []
+function div_render(): VNode {
+    assert(typeof h === 'function')
+    assert(mounted.size >= 0)
 
-function shortcut_component(shortcuts: Record<string, Handler>) {
-    return defineComponent({
-        setup() {
-            use_shortcuts(shortcuts)
-
-            return () => h('div')
-        },
-    })
+    return h('div')
 }
 
-function mount_shortcuts(shortcuts: Record<string, Handler>) {
-    const wrapper = mount(shortcut_component(shortcuts), { attachTo: document.body })
+function element_attach<Target extends HTMLElement>(element: Target): Target {
+    assert(element instanceof HTMLElement)
 
-    mounted.push(wrapper)
+    document.body.appendChild(element)
 
-    return wrapper
+    assert(element.isConnected)
+
+    return element
+}
+
+function keep_alive_host(child: DefineComponent, shown: Ref<boolean>): ComponentOptions {
+    assert(typeof child === 'object')
+    assert(typeof shown.value === 'boolean')
+
+    return {
+        render() {
+            assert(typeof shown.value === 'boolean')
+            assert(typeof child === 'object')
+
+            return h(KeepAlive, null, () => (shown.value ? h(child) : null))
+        },
+    }
 }
 
 function key_press(
     key: string,
     modifiers: Partial<Pick<KeyboardEvent, 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey'>> = {},
     target: EventTarget = window,
-) {
+): KeyboardEvent {
+    assert(key.length > 0)
+    assert(typeof modifiers === 'object')
+    assert(typeof target.dispatchEvent === 'function')
+
     const init = { key, bubbles: true, cancelable: true, ...modifiers }
     const event = new KeyboardEvent('keydown', init)
 
@@ -40,16 +63,36 @@ function key_press(
     return event
 }
 
-function element_attach<T extends HTMLElement>(element: T): T {
-    document.body.appendChild(element)
+function mount_shortcuts(shortcuts: Record<string, Handler>): VueWrapper {
+    assert(typeof shortcuts === 'object')
+    assert(mounted.size >= 0)
 
-    return element
+    const wrapper = mount(shortcut_component(shortcuts), { [ATTACH_TO]: document.body })
+
+    mounted.add(wrapper)
+
+    return wrapper
+}
+
+function shortcut_component(shortcuts: Record<string, Handler>): DefineComponent {
+    assert(typeof shortcuts === 'object')
+    assert(Object.keys(shortcuts).length > 0)
+
+    return defineComponent({
+        setup() {
+            assert(typeof shortcuts === 'object')
+            assert(Object.keys(shortcuts).length > 0)
+
+            use_shortcuts(shortcuts)
+        },
+        render: div_render,
+    })
 }
 
 afterEach(() => {
     for (const wrapper of mounted) wrapper.unmount()
 
-    mounted.length = 0
+    mounted.clear()
     document.body.innerHTML = ''
 })
 
@@ -57,7 +100,7 @@ describe('use_shortcuts', () => {
     it('runs the handler for a plain key and prevents the default', () => {
         const handler = vi.fn()
 
-        mount_shortcuts({ s: handler })
+        mount_shortcuts({ [KEY_S]: handler })
 
         const event = key_press('S')
 
@@ -69,7 +112,7 @@ describe('use_shortcuts', () => {
         const handler = vi.fn()
 
         mount_shortcuts({ 'ctrl+shift+alt+k': handler })
-        key_press('k', { ctrlKey: true, shiftKey: true, altKey: true })
+        key_press('k', { [CTRL_KEY]: true, [SHIFT_KEY]: true, [ALT_KEY]: true })
 
         expect(handler).toHaveBeenCalledTimes(1)
     })
@@ -78,7 +121,7 @@ describe('use_shortcuts', () => {
         const handler = vi.fn()
 
         mount_shortcuts({ 'ctrl+n': handler })
-        key_press('n', { metaKey: true })
+        key_press('n', { [META_KEY]: true })
 
         expect(handler).toHaveBeenCalledTimes(1)
     })
@@ -93,7 +136,7 @@ describe('use_shortcuts', () => {
     })
 
     it('leaves an unregistered key untouched', () => {
-        mount_shortcuts({ s: vi.fn() })
+        void mount_shortcuts({ [KEY_S]: vi.fn() })
 
         const event = key_press('x')
 
@@ -103,7 +146,7 @@ describe('use_shortcuts', () => {
     it('ignores plain keys typed into text inputs, textareas and editable elements', () => {
         const handler = vi.fn()
 
-        mount_shortcuts({ s: handler })
+        mount_shortcuts({ [KEY_S]: handler })
 
         const input = element_attach(document.createElement('input'))
         const textarea = element_attach(document.createElement('textarea'))
@@ -117,7 +160,9 @@ describe('use_shortcuts', () => {
 
         expect(handler).not.toHaveBeenCalled()
     })
+})
 
+describe('use_shortcuts', () => {
     it('still fires a ctrl combo from inside a text input', () => {
         const handler = vi.fn()
 
@@ -125,7 +170,7 @@ describe('use_shortcuts', () => {
 
         const input = element_attach(document.createElement('input'))
 
-        key_press('s', { ctrlKey: true }, input)
+        key_press('s', { [CTRL_KEY]: true }, input)
 
         expect(handler).toHaveBeenCalledTimes(1)
     })
@@ -133,7 +178,7 @@ describe('use_shortcuts', () => {
     it('fires a plain key from a non-text input such as a checkbox', () => {
         const handler = vi.fn()
 
-        mount_shortcuts({ s: handler })
+        mount_shortcuts({ [KEY_S]: handler })
 
         const checkbox = element_attach(document.createElement('input'))
 
@@ -147,9 +192,9 @@ describe('use_shortcuts', () => {
         const first = vi.fn()
         const second = vi.fn()
 
-        mount_shortcuts({ s: first })
+        mount_shortcuts({ [KEY_S]: first })
 
-        const wrapper_second = mount_shortcuts({ s: second })
+        const wrapper_second = mount_shortcuts({ [KEY_S]: second })
 
         key_press('s')
 
@@ -157,25 +202,23 @@ describe('use_shortcuts', () => {
         expect(second).toHaveBeenCalledTimes(1)
 
         wrapper_second.unmount()
-        mounted.pop()
+
+        void mounted.delete(wrapper_second)
+
         key_press('s')
 
         expect(first).toHaveBeenCalledTimes(1)
         expect(second).toHaveBeenCalledTimes(1)
     })
+})
 
+describe('use_shortcuts', () => {
     it('unregisters while deactivated in KeepAlive and re-registers on activation', async () => {
         const handler = vi.fn()
         const shown = ref(true)
-        const Child = shortcut_component({ s: handler })
+        const child = shortcut_component({ [KEY_S]: handler })
 
-        const host = {
-            setup() {
-                return () => h(KeepAlive, null, { default: () => (shown.value ? h(Child) : null) })
-            },
-        }
-
-        mounted.push(mount(host, { attachTo: document.body }))
+        mounted.add(mount(keep_alive_host(child, shown), { [ATTACH_TO]: document.body }))
         key_press('s')
 
         expect(handler).toHaveBeenCalledTimes(1)
@@ -191,5 +234,44 @@ describe('use_shortcuts', () => {
         key_press('s')
 
         expect(handler).toHaveBeenCalledTimes(2)
+    })
+})
+
+describe('select all', () => {
+    it('is held back outside text fields so the page never highlights as a whole', () => {
+        const button = element_attach(document.createElement('button'))
+        const checkbox = element_attach(document.createElement('input'))
+
+        checkbox.type = 'checkbox'
+
+        const on_button = key_press(KEY_A, { [CTRL_KEY]: true }, button)
+        const on_checkbox = key_press(KEY_A, { [META_KEY]: true }, checkbox)
+        const on_window = key_press(KEY_A, { [CTRL_KEY]: true })
+
+        expect(on_button.defaultPrevented).toBe(true)
+        expect(on_checkbox.defaultPrevented).toBe(true)
+        expect(on_window.defaultPrevented).toBe(true)
+    })
+
+    it('still selects the text of inputs, text areas, and editable regions', () => {
+        const editable = element_attach(document.createElement('div'))
+        const input = element_attach(document.createElement('input'))
+        const textarea = element_attach(document.createElement('textarea'))
+
+        editable.contentEditable = 'true'
+
+        const fields = [input, textarea, editable]
+        const events = fields.map((field) => key_press(KEY_A, { [CTRL_KEY]: true }, field))
+
+        expect(events.map((event) => event.defaultPrevented)).toEqual([false, false, false])
+    })
+
+    it('leaves other combinations on the same key alone', () => {
+        const button = element_attach(document.createElement('button'))
+        const shifted = key_press(KEY_A, { [CTRL_KEY]: true, [SHIFT_KEY]: true }, button)
+        const plain = key_press(KEY_A, {}, button)
+
+        expect(shifted.defaultPrevented).toBe(false)
+        expect(plain.defaultPrevented).toBe(false)
     })
 })

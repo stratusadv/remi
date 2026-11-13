@@ -3,625 +3,1280 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>scribe</title>
-    <meta name="description" content="Download scribe, a desktop app that turns a meeting recording into formatted notes.">
-    <link rel="icon" href="https://raw.githubusercontent.com/stratusadv/scribe/main/src-tauri/icons/32x32.png">
+    <title>Remi Remembers: your meetings, remembered</title>
+    <meta name="description" content="Remi remembers every meeting you record. Ask what was decided, and it shows you the meeting it came from. It also writes up the notes in your team’s format.">
+    <meta name="theme-color" content="#07090d">
+    <link rel="icon" href="assets/remi-icon-32.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" id="fonts" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-    <script>document.documentElement.classList.add('loading');</script>
-    <style>
-        :root {
-            --bg: #e1e2e7;
-            --surface: #d5d6db;
-            --raised: #eff0f5;
-            --line: #c4c8da;
-            --ink: #343b58;
-            --ink-soft: #6172b0;
-            --muted: #848cb5;
-            --blue: #2e7de9;
-            --cyan: #007197;
-            --magenta: #9854f1;
-            --ring: rgba(52, 59, 88, 0.16);
-            --lift: 0 1px 2px rgba(52, 59, 88, 0.08), 0 14px 32px -12px rgba(52, 59, 88, 0.32), 0 40px 80px -32px rgba(52, 59, 88, 0.4);
-            --radius: 14px;
-            color-scheme: light;
-        }
-
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --bg: #1a1b26;
-                --surface: #16161e;
-                --raised: #1f2335;
-                --line: #292e42;
-                --ink: #c0caf5;
-                --ink-soft: #a9b1d6;
-                --muted: #565f89;
-                --blue: #7aa2f7;
-                --cyan: #7dcfff;
-                --magenta: #bb9af7;
-                --ring: rgba(192, 202, 245, 0.14);
-                --lift: 0 1px 2px rgba(0, 0, 0, 0.4), 0 14px 32px -12px rgba(0, 0, 0, 0.6), 0 40px 80px -32px rgba(0, 0, 0, 0.75);
-                color-scheme: dark;
-            }
-        }
-
-        @property --gx {
-            syntax: "<percentage>";
-            inherits: true;
-            initial-value: 85%;
-        }
-
-        @property --gy {
-            syntax: "<percentage>";
-            inherits: true;
-            initial-value: 0%;
-        }
-
-        * {
-            box-sizing: border-box;
-        }
-
-        html {
-            -webkit-font-smoothing: antialiased;
-        }
-
-        body {
-            margin: 0;
-            background: var(--bg);
-            color: var(--ink);
-            font: 16px/1.55 "IBM Plex Sans", system-ui, sans-serif;
-            transition: opacity 240ms ease;
-        }
-
-        html.loading body {
-            opacity: 0;
-        }
-
-        a {
-            color: var(--blue);
-            text-decoration: none;
-        }
-
-        a:hover {
-            text-decoration: underline;
-            text-underline-offset: 3px;
-        }
-
-        :focus-visible {
-            outline: 2px solid var(--blue);
-            outline-offset: 3px;
-        }
-
-        .mono {
-            font-family: "JetBrains Mono", ui-monospace, monospace;
-            font-size: 0.8125rem;
-        }
-
-        .split {
-            display: grid;
-            grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-            min-height: 100vh;
-        }
-
-        .brand {
-            position: sticky;
-            top: 0;
-            display: flex;
-            flex-direction: column;
-            min-height: 100vh;
-            padding: clamp(32px, 6vh, 56px) 48px 0;
-            background: var(--surface);
-            border-right: 1px solid var(--line);
-        }
-
-        .lockup {
-            display: block;
-            width: 160px;
-            height: auto;
-        }
-
-        .shot {
-            display: grid;
-            flex: 1 1 0;
-            align-items: center;
-            justify-items: start;
-            min-height: 120px;
-            margin: clamp(24px, 4.5vh, 40px) 0 0;
-            container-type: size;
-            perspective: 1400px;
-        }
-
-        .frame {
-            --rx: 9deg;
-            --ry: 16deg;
-            position: relative;
-            width: min(100cqw, 143.28cqh, 46rem);
-            aspect-ratio: 2880 / 2010;
-            overflow: hidden;
-            border-radius: 10px;
-            box-shadow: var(--lift);
-            transform: translateY(0) rotateX(var(--rx)) rotateY(var(--ry));
-            transition-property: transform, --gx, --gy;
-            transition-duration: 600ms;
-            transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
-        }
-
-        .frame::before,
-        .frame::after {
-            position: absolute;
-            inset: 0;
-            border-radius: inherit;
-            content: "";
-            pointer-events: none;
-        }
-
-        .frame::before {
-            background: radial-gradient(circle at var(--gx) var(--gy), rgba(255, 255, 255, 0.35), transparent 60%);
-            mix-blend-mode: soft-light;
-        }
-
-        .frame::after {
-            box-shadow: inset 0 0 0 1px var(--ring);
-        }
-
-        .frame img {
-            display: block;
-            width: 100%;
-            height: 100%;
-        }
-
-        html:not(.loading) .frame {
-            animation: tilt-in 1200ms 120ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
-        }
-
-        @keyframes tilt-in {
-            from { opacity: 0; transform: translateY(48px) rotateX(32deg) rotateY(28deg); }
-        }
-
-        h2 {
-            margin: 0 0 4px;
-            font-size: 1.5rem;
-            font-weight: 600;
-            letter-spacing: -0.01em;
-        }
-
-        .lede {
-            margin: 0 0 24px;
-            color: var(--muted);
-        }
-
-        h1 {
-            margin: clamp(24px, 4.5vh, 48px) 0 16px;
-            font-size: clamp(2rem, 3.6vw, 3rem);
-            font-weight: 600;
-            line-height: 1.1;
-            letter-spacing: -0.02em;
-        }
-
-        h1 span {
-            color: var(--cyan);
-        }
-
-        .tagline {
-            max-width: 30em;
-            margin: 0 0 40px;
-            color: var(--ink-soft);
-            font-size: 1.0625rem;
-        }
-
-        .status {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px 20px;
-            margin: 0 0 12px;
-            color: var(--muted);
-        }
-
-        .status b {
-            color: var(--cyan);
-            font-weight: 500;
-        }
-
-        .links {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-            margin: 0 0 clamp(12px, 3vh, 32px);
-            font-size: 0.875rem;
-        }
-
-        .links a {
-            padding: 8px 16px;
-            border: 1px solid var(--line);
-            border-radius: var(--radius);
-            background: var(--raised);
-            color: var(--ink);
-            font-weight: 500;
-            transition: border-color 160ms ease, transform 160ms ease;
-        }
-
-        .links a:hover {
-            border-color: var(--blue);
-            text-decoration: none;
-            transform: translateY(-2px);
-        }
-
-        .wave {
-            display: flex;
-            align-items: flex-end;
-            gap: 6px;
-            height: clamp(72px, 12vh, 140px);
-            margin: 0 -48px;
-            padding: 0 24px;
-            overflow: hidden;
-            mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
-            -webkit-mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
-        }
-
-        .wave i {
-            flex: 1 0 8px;
-            height: var(--h);
-            border-radius: 999px;
-            background: var(--tint);
-            opacity: 0.55;
-            transform-origin: bottom;
-            animation: breathe 4.8s ease-in-out infinite;
-            animation-delay: var(--delay);
-        }
-
-        @keyframes breathe {
-            0%, 100% { transform: scaleY(1); }
-            50% { transform: scaleY(var(--swell)); }
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-            .wave i,
-            html:not(.loading) .frame {
-                animation: none;
-            }
-        }
-
-        .content {
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            padding: 48px;
-        }
-
-        .downloads {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-            gap: 16px;
-            margin: 0;
-            padding: 0;
-            list-style: none;
-        }
-
-        .download {
-            position: relative;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-            gap: 48px;
-            min-height: 240px;
-            height: 100%;
-            padding: 26px 28px;
-            overflow: hidden;
-            border: 1px solid var(--line);
-            border-radius: var(--radius);
-            background: var(--raised);
-            color: var(--ink);
-            transition: border-color 160ms ease, transform 160ms ease;
-        }
-
-        .download:hover {
-            border-color: var(--blue);
-            text-decoration: none;
-            transform: translateY(-2px);
-        }
-
-        .download:hover .arrow {
-            color: var(--blue);
-            transform: translateY(2px);
-        }
-
-        .download:hover .glyph {
-            color: var(--blue);
-            opacity: 0.14;
-        }
-
-        .download[data-recommended] {
-            border-color: var(--blue);
-        }
-
-        .download header {
-            position: relative;
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 12px;
-        }
-
-        .download strong {
-            font-size: 1.125rem;
-            font-weight: 600;
-        }
-
-        .download .arrow {
-            flex-shrink: 0;
-            width: 20px;
-            height: 20px;
-            color: var(--muted);
-            transition: color 160ms ease, transform 160ms ease;
-        }
-
-        .download .chip {
-            padding: 2px 8px;
-            border-radius: 999px;
-            background: var(--blue);
-            color: var(--bg);
-            font-size: 0.6875rem;
-            font-weight: 600;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-            white-space: nowrap;
-        }
-
-        .download .glyph {
-            position: absolute;
-            right: -40px;
-            bottom: -44px;
-            width: 180px;
-            height: 180px;
-            color: var(--ink);
-            opacity: 0.06;
-            transition: color 160ms ease, opacity 160ms ease;
-            pointer-events: none;
-        }
-
-        .download footer {
-            position: relative;
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
-
-        .download .file {
-            overflow: hidden;
-            color: var(--muted);
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-
-        .download .size {
-            color: var(--magenta);
-        }
-
-        .fallback {
-            padding: 20px 22px;
-            border: 1px dashed var(--line);
-            border-radius: var(--radius);
-            color: var(--ink-soft);
-        }
-
-        @media (max-width: 900px) {
-            .split {
-                grid-template-columns: 1fr;
-            }
-
-            .brand {
-                position: static;
-                min-height: 0;
-                padding: 40px 16px 0;
-                border-right: 0;
-                border-bottom: 1px solid var(--line);
-            }
-
-            .shot {
-                display: block;
-                flex: none;
-                min-height: 0;
-                margin-top: 32px;
-                container-type: normal;
-            }
-
-            .frame {
-                width: 100%;
-            }
-
-            h1 {
-                margin-top: 32px;
-            }
-
-            .wave {
-                height: 96px;
-                margin: 0 -16px;
-                padding: 0 8px;
-            }
-
-            .content {
-                padding: 24px 16px 48px;
-            }
-
-            .download {
-                min-height: 200px;
-                padding: 20px 22px;
-            }
-        }
-
-        @media (max-width: 560px) {
-            .downloads {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        [hidden] {
-            display: none !important;
-        }
-    </style>
-</head>
-<body>
-    <div class="split">
-        <aside class="brand">
-            <svg class="lockup" viewBox="0 0 395.54 100.82" role="img" aria-label="scribe">
-                <rect x="10.65" y="20.59" width="12.92" height="19.88" rx="5.96" fill="#00a2d2"/>
-                <rect x="27.55" y="10.65" width="12.92" height="39.76" rx="5.96" fill="#00a2d2"/>
-                <rect x="44.45" y="16.61" width="12.92" height="27.83" rx="5.96" fill="#00a2d2"/>
-                <rect x="61.34" y="22.58" width="12.92" height="15.90" rx="5.96" fill="#00a2d2"/>
-                <rect x="10.65" y="58.36" width="63.62" height="11.93" rx="5.96" fill="currentColor"/>
-                <rect x="10.65" y="78.24" width="39.76" height="11.93" rx="5.96" fill="currentColor"/>
-                <path fill="currentColor" transform="matrix(0.100000 0 0 -0.100000 98.7460 85.9100)" d="M287.40087890625 -12.0Q205.600341796875 -12.0 152.10009765625 11.20001220703125Q98.599853515625 34.4000244140625 70.8997802734375 75.10003662109375Q43.19970703125 115.800048828125 39.19970703125 168.2000732421875L170.0023193359375 173.800048828125Q177.2022705078125 132.200439453125 203.9019775390625 108.9007568359375Q230.6016845703125 85.60107421875 287.8009033203125 85.60107421875Q332.600341796875 85.60107421875 356.5 100.3009033203125Q380.399658203125 115.000732421875 380.399658203125 146.000244140625Q380.399658203125 164.2000732421875 371.89971923828125 176.199951171875Q363.3997802734375 188.1998291015625 338.79998779296875 197.29974365234375Q314.2001953125 206.399658203125 266.6005859375 214.799560546875Q185.8001708984375 229.1995849609375 139.99993896484375 249.799560546875Q94.19970703125 270.3995361328125 75.599609375 301.39959716796875Q56.99951171875 332.399658203125 56.99951171875 377.599853515625Q56.99951171875 452.60009765625 114.49981689453125 499.3001708984375Q172.0001220703125 546.000244140625 283.2010498046875 546.000244140625Q360.4014892578125 546.000244140625 409.7017822265625 521.7002563476562Q459.0020751953125 497.4002685546875 484.4022216796875 456.60015869140625Q509.8023681640625 415.800048828125 514.0023193359375 366.399658203125L384.3997802734375 360.399658203125Q383.1998291015625 385.399658203125 371.99993896484375 405.3995361328125Q360.800048828125 425.3994140625 338.80029296875 436.8992919921875Q316.800537109375 448.399169921875 281.2010498046875 448.399169921875Q235.8017578125 448.399169921875 212.60198974609375 430.19940185546875Q189.4022216796875 411.9996337890625 189.4022216796875 382.39990234375Q189.4022216796875 360.8001708984375 198.7021484375 346.90032958984375Q208.0020751953125 333.00048828125 231.10186767578125 324.30059814453125Q254.20166015625 315.6007080078125 293.80126953125 309.2008056640625Q376.2015380859375 297.0008544921875 424.2017822265625 276.2008056640625Q472.2020263671875 255.4007568359375 492.502197265625 223.900634765625Q512.8023681640625 192.4005126953125 512.8023681640625 147.600341796875Q512.8023681640625 71.0001220703125 451.5020751953125 29.50006103515625Q390.2017822265625 -12.0 287.40087890625 -12.0Z M834.8009033203125 -12.0Q755.2005615234375 -12.0 696.30029296875 22.4000244140625Q637.4000244140625 56.800048828125 604.7998657226562 119.7000732421875Q572.19970703125 182.60009765625 572.19970703125 267.0001220703125Q572.19970703125 351.400146484375 604.7998657226562 413.8001708984375Q637.4000244140625 476.2001953125 696.30029296875 511.1002197265625Q755.2005615234375 546.000244140625 834.8009033203125 546.000244140625Q902.601318359375 546.000244140625 955.9016723632812 522.10009765625Q1009.2020263671875 498.199951171875 1042.6022338867188 453.39971923828125Q1076.00244140625 408.5994873046875 1084.202392578125 344.7991943359375L951.7996826171875 337.9991455078125Q943.999755859375 388.9990234375 912.60009765625 415.4989013671875Q881.200439453125 441.998779296875 834.8009033203125 441.998779296875Q773.0015869140625 441.998779296875 738.802001953125 395.69915771484375Q704.6024169921875 349.3995361328125 704.6024169921875 267.0001220703125Q704.6024169921875 184.20068359375 738.802001953125 137.90106201171875Q773.0015869140625 91.6014404296875 834.8009033203125 91.6014404296875Q881.6004638671875 91.6014404296875 913.2001342773438 119.00128173828125Q944.7998046875 146.401123046875 951.7996826171875 202.8009033203125L1084.202392578125 196.8009033203125Q1076.4024658203125 133.0006103515625 1043.4022827148438 86.10040283203125Q1010.402099609375 39.2001953125 957.1017456054688 13.60009765625Q903.8013916015625 -12.0 834.8009033203125 -12.0Z M1163.3994140625 0.0V534.000244140625H1283.002197265625L1287.80224609375 385.599365234375L1277.402099609375 388.1993408203125Q1289.4022216796875 464.9998779296875 1322.7022094726562 499.50006103515625Q1356.002197265625 534.000244140625 1413.602294921875 534.000244140625H1463.2021484375V424.3984375H1413.4022216796875Q1372.2021484375 424.3984375 1345.3021240234375 412.298583984375Q1318.402099609375 400.19873046875 1304.902099609375 374.69891357421875Q1291.402099609375 349.1990966796875 1291.402099609375 307.5992431640625V0.0Z M1536.3994140625 0.0V534.000244140625H1664.402099609375V0.0ZM1533.9993896484375 605.3995361328125V718.6004638671875H1666.8021240234375V605.3995361328125Z M2066.0020751953125 -12.0Q2010.2020263671875 -12.0 1968.402099609375 12.0999755859375Q1926.6021728515625 36.199951171875 1903.6021728515625 79.199951171875L1900.6021728515625 0.0H1779.3994140625V710.0H1907.402099609375V458.400146484375Q1928.6021728515625 494.600341796875 1969.8021240234375 520.30029296875Q2011.0020751953125 546.000244140625 2066.0020751953125 546.000244140625Q2134.802001953125 546.000244140625 2185.2019653320312 511.6002197265625Q2235.6019287109375 477.2001953125 2263.201904296875 414.60015869140625Q2290.8018798828125 352.0001220703125 2290.8018798828125 267.0001220703125Q2290.8018798828125 182.0001220703125 2263.201904296875 119.40008544921875Q2235.6019287109375 56.800048828125 2185.2019653320312 22.4000244140625Q2134.802001953125 -12.0 2066.0020751953125 -12.0ZM2036.6005859375 91.6014404296875Q2091.9998779296875 91.6014404296875 2125.1995239257812 138.2010498046875Q2158.399169921875 184.8006591796875 2158.399169921875 267.0001220703125Q2158.399169921875 349.799560546875 2125.5995483398438 396.09918212890625Q2092.7999267578125 442.3988037109375 2037.800537109375 442.3988037109375Q1996.801025390625 442.3988037109375 1967.4013671875 421.698974609375Q1938.001708984375 400.9991455078125 1922.701904296875 361.7994384765625Q1907.402099609375 322.5997314453125 1907.402099609375 267.0001220703125Q1907.402099609375 213.00048828125 1922.701904296875 173.50079345703125Q1938.001708984375 134.0010986328125 1967.1013793945312 112.80126953125Q1996.2010498046875 91.6014404296875 2036.6005859375 91.6014404296875Z M2610.600830078125 -12.0Q2530.800537109375 -12.0 2472.1002807617188 22.4000244140625Q2413.4000244140625 56.800048828125 2381.2998657226562 119.7000732421875Q2349.19970703125 182.60009765625 2349.19970703125 267.0001220703125Q2349.19970703125 351.400146484375 2381.2998657226562 413.8001708984375Q2413.4000244140625 476.2001953125 2471.5003051757812 511.1002197265625Q2529.6005859375 546.000244140625 2608.200927734375 546.000244140625Q2684.4013671875 546.000244140625 2741.6016235351562 511.900146484375Q2798.8018798828125 477.800048828125 2830.1019897460938 413.7999267578125Q2861.402099609375 349.7998046875 2861.402099609375 259.999755859375V231.3995361328125H2482.00244140625Q2485.8023681640625 160.8004150390625 2520.302001953125 125.60089111328125Q2554.8016357421875 90.4013671875 2612.200927734375 90.4013671875Q2655.0003662109375 90.4013671875 2683.300048828125 109.50103759765625Q2711.5997314453125 128.6007080078125 2722.9996337890625 163.8004150390625L2853.8021240234375 155.600341796875Q2832.402099609375 78.199951171875 2767.7017211914062 33.0999755859375Q2703.0013427734375 -12.0 2610.600830078125 -12.0ZM2482.00244140625 317.4002685546875H2728.599609375Q2724.5997314453125 382.3995361328125 2691.9000854492188 413.79925537109375Q2659.200439453125 445.198974609375 2608.200927734375 445.198974609375Q2556.801513671875 445.198974609375 2523.3018798828125 412.29925537109375Q2489.80224609375 379.3995361328125 2482.00244140625 317.4002685546875Z"/>
-            </svg>
-
-            <figure class="shot">
-                <div class="frame">
-                    <picture>
-                        <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/stratusadv/scribe/main/assets/home-dark.png">
-                        <img src="https://raw.githubusercontent.com/stratusadv/scribe/main/assets/home-light.png" alt="The Home screen, with recordings shown as tiles" width="2880" height="2010">
-                    </picture>
-                </div>
-            </figure>
-
-            <h1>Record the meeting.<br><span>Read the notes.</span></h1>
-            <p class="tagline">scribe turns a meeting recording into a formatted document: transcribed, shaped by a template, edited in place, and exported to Word, Markdown, or PDF.</p>
-            <p class="status mono" id="status"><span>Fetching the latest release&hellip;</span></p>
-            <p class="links">
-                <a href="https://github.com/stratusadv/scribe">Source on GitHub</a>
-                <a href="https://github.com/stratusadv/scribe/releases">All releases</a>
-            </p>
-
-            <div class="wave" id="wave" aria-hidden="true"></div>
-        </aside>
-
-        <main class="content">
-            <h2>Download</h2>
-            <p class="lede">Pick the installer for your system.</p>
-
-            <ul class="downloads" id="downloads"></ul>
-
-            <p class="fallback" id="fallback" hidden>The release list could not be loaded. Every installer is on the <a href="https://github.com/stratusadv/scribe/releases/latest">latest release</a> page.</p>
-        </main>
-    </div>
-
+    <link rel="stylesheet" id="fonts" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400..700&family=Geist:wght@300..700&family=Geist+Mono:wght@400..600&display=swap">
     <script>
-        const glyphs = {
-            fedora: 'M12.001 0C5.376 0 .008 5.369.004 11.992H.002v9.287h.002A2.726 2.726 0 0 0 2.73 24h9.275c6.626-.004 11.993-5.372 11.993-11.997C23.998 5.375 18.628 0 12 0zm2.431 4.94c2.015 0 3.917 1.543 3.917 3.671 0 .197.001.395-.03.619a1.002 1.002 0 0 1-1.137.893 1.002 1.002 0 0 1-.842-1.175 2.61 2.61 0 0 0 .013-.337c0-1.207-.987-1.672-1.92-1.672-.934 0-1.775.784-1.777 1.672.016 1.027 0 2.046 0 3.07l1.732-.012c1.352-.028 1.368 2.009.016 1.998l-1.748.013c-.004.826.006.677.002 1.093 0 0 .015 1.01-.016 1.776-.209 2.25-2.124 4.046-4.424 4.046-2.438 0-4.448-1.993-4.448-4.437.073-2.515 2.078-4.492 4.603-4.469l1.409-.01v1.996l-1.409.013h-.007c-1.388.04-2.577.984-2.6 2.47a2.438 2.438 0 0 0 2.452 2.439c1.356 0 2.441-.987 2.441-2.437l-.001-7.557c0-.14.005-.252.02-.407.23-1.848 1.883-3.256 3.754-3.256z',
-            linux: 'M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139zm.529 3.405h.013c.213 0 .396.062.584.198.19.135.33.332.438.533.105.259.158.459.166.724 0-.02.006-.04.006-.06v.105a.086.086 0 01-.004-.021l-.004-.024a1.807 1.807 0 01-.15.706.953.953 0 01-.213.335.71.71 0 00-.088-.042c-.104-.045-.198-.064-.284-.133a1.312 1.312 0 00-.22-.066c.05-.06.146-.133.183-.198.053-.128.082-.264.088-.402v-.02a1.21 1.21 0 00-.061-.4c-.045-.134-.101-.2-.183-.333-.084-.066-.167-.132-.267-.132h-.016c-.093 0-.176.03-.262.132a.8.8 0 00-.205.334 1.18 1.18 0 00-.09.4v.019c.002.089.008.179.02.267-.193-.067-.438-.135-.607-.202a1.635 1.635 0 01-.018-.2v-.02a1.772 1.772 0 01.15-.768c.082-.22.232-.406.43-.533a.985.985 0 01.594-.2zm-2.962.059h.036c.142 0 .27.048.399.135.146.129.264.288.344.465.09.199.14.4.153.667v.004c.007.134.006.2-.002.266v.08c-.03.007-.056.018-.083.024-.152.055-.274.135-.393.2.012-.09.013-.18.003-.267v-.015c-.012-.133-.04-.2-.082-.333a.613.613 0 00-.166-.267.248.248 0 00-.183-.064h-.021c-.071.006-.13.04-.186.132a.552.552 0 00-.12.27.944.944 0 00-.023.33v.015c.012.135.037.2.08.334.046.134.098.2.166.268.01.009.02.018.034.024-.07.057-.117.07-.176.136a.304.304 0 01-.131.068 2.62 2.62 0 01-.275-.402 1.772 1.772 0 01-.155-.667 1.759 1.759 0 01.08-.668 1.43 1.43 0 01.283-.535c.128-.133.26-.2.418-.2zm1.37 1.706c.332 0 .733.065 1.216.399.293.2.523.269 1.052.468h.003c.255.136.405.266.478.399v-.131a.571.571 0 01.016.47c-.123.31-.516.643-1.063.842v.002c-.268.135-.501.333-.775.465-.276.135-.588.292-1.012.267a1.139 1.139 0 01-.448-.067 3.566 3.566 0 01-.322-.198c-.195-.135-.363-.332-.612-.465v-.005h-.005c-.4-.246-.616-.512-.686-.71-.07-.268-.005-.47.193-.6.224-.135.38-.271.483-.336.104-.074.143-.102.176-.131h.002v-.003c.169-.202.436-.47.839-.601.139-.036.294-.065.466-.065zm2.8 2.142c.358 1.417 1.196 3.475 1.735 4.473.286.534.855 1.659 1.102 3.024.156-.005.33.018.513.064.646-1.671-.546-3.467-1.089-3.966-.22-.2-.232-.335-.123-.335.59.534 1.365 1.572 1.646 2.757.13.535.16 1.104.021 1.67.067.028.135.06.205.067 1.032.534 1.413.938 1.23 1.537v-.043c-.06-.003-.12 0-.18 0h-.016c.151-.467-.182-.825-1.065-1.224-.915-.4-1.646-.336-1.77.465-.008.043-.013.066-.018.135-.068.023-.139.053-.209.064-.43.268-.662.669-.793 1.187-.13.533-.17 1.156-.205 1.869v.003c-.02.334-.17.838-.319 1.35-1.5 1.072-3.58 1.538-5.348.334a2.645 2.645 0 00-.402-.533 1.45 1.45 0 00-.275-.333c.182 0 .338-.03.465-.067a.615.615 0 00.314-.334c.108-.267 0-.697-.345-1.163-.345-.467-.931-.995-1.788-1.521-.63-.4-.986-.87-1.15-1.396-.165-.534-.143-1.085-.015-1.645.245-1.07.873-2.11 1.274-2.763.107-.065.037.135-.408.974-.396.751-1.14 2.497-.122 3.854a8.123 8.123 0 01.647-2.876c.564-1.278 1.743-3.504 1.836-5.268.048.036.217.135.289.202.218.133.38.333.59.465.21.201.477.335.876.335.039.003.075.006.11.006.412 0 .73-.134.997-.268.29-.134.52-.334.74-.4h.005c.467-.135.835-.402 1.044-.7zm2.185 8.958c.037.6.343 1.245.882 1.377.588.134 1.434-.333 1.791-.765l.211-.01c.315-.007.577.01.847.268l.003.003c.208.199.305.53.391.876.085.4.154.78.409 1.066.486.527.645.906.636 1.14l.003-.007v.018l-.003-.012c-.015.262-.185.396-.498.595-.63.401-1.746.712-2.457 1.57-.618.737-1.37 1.14-2.036 1.191-.664.053-1.237-.2-1.574-.898l-.005-.003c-.21-.4-.12-1.025.056-1.69.176-.668.428-1.344.463-1.897.037-.714.076-1.335.195-1.814.12-.465.308-.797.641-.984l.045-.022zm-10.814.049h.01c.053 0 .105.005.157.014.376.055.706.333 1.023.752l.91 1.664.003.003c.243.533.754 1.064 1.189 1.637.434.598.77 1.131.729 1.57v.006c-.057.744-.48 1.148-1.125 1.294-.645.135-1.52.002-2.395-.464-.968-.536-2.118-.469-2.857-.602-.369-.066-.61-.2-.723-.4-.11-.2-.113-.602.123-1.23v-.004l.002-.003c.117-.334.03-.752-.027-1.118-.055-.401-.083-.71.043-.94.16-.334.396-.4.69-.533.294-.135.64-.202.915-.47h.002v-.002c.256-.268.445-.601.668-.838.19-.201.38-.336.663-.336zm7.159-9.074c-.435.201-.945.535-1.488.535-.542 0-.97-.267-1.28-.466-.154-.134-.28-.268-.373-.335-.164-.134-.144-.333-.074-.333.109.016.129.134.199.2.096.066.215.2.36.333.292.2.68.467 1.167.467.485 0 1.053-.267 1.398-.466.195-.135.445-.334.648-.467.156-.136.149-.267.279-.267.128.016.034.134-.147.332a8.097 8.097 0 01-.69.468zm-1.082-1.583V5.64c-.006-.02.013-.042.029-.05.074-.043.18-.027.26.004.063 0 .16.067.15.135-.006.049-.085.066-.135.066-.055 0-.092-.043-.141-.068-.052-.018-.146-.008-.163-.065zm-.551 0c-.02.058-.113.049-.166.066-.047.025-.086.068-.14.068-.05 0-.13-.02-.136-.068-.01-.066.088-.133.15-.133.08-.031.184-.047.259-.005.019.009.036.03.03.05v.02h.003z',
-            ubuntu: 'M17.61.455a3.41 3.41 0 0 0-3.41 3.41 3.41 3.41 0 0 0 3.41 3.41 3.41 3.41 0 0 0 3.41-3.41 3.41 3.41 0 0 0-3.41-3.41zM12.92.8C8.923.777 5.137 2.941 3.148 6.451a4.5 4.5 0 0 1 .26-.007 4.92 4.92 0 0 1 2.585.737A8.316 8.316 0 0 1 12.688 3.6 4.944 4.944 0 0 1 13.723.834 11.008 11.008 0 0 0 12.92.8zm9.226 4.994a4.915 4.915 0 0 1-1.918 2.246 8.36 8.36 0 0 1-.273 8.303 4.89 4.89 0 0 1 1.632 2.54 11.156 11.156 0 0 0 .559-13.089zM3.41 7.932A3.41 3.41 0 0 0 0 11.342a3.41 3.41 0 0 0 3.41 3.409 3.41 3.41 0 0 0 3.41-3.41 3.41 3.41 0 0 0-3.41-3.41zm2.027 7.866a4.908 4.908 0 0 1-2.915.358 11.1 11.1 0 0 0 7.991 6.698 11.234 11.234 0 0 0 2.422.249 4.879 4.879 0 0 1-.999-2.85 8.484 8.484 0 0 1-.836-.136 8.304 8.304 0 0 1-5.663-4.32zm11.405.928a3.41 3.41 0 0 0-3.41 3.41 3.41 3.41 0 0 0 3.41 3.41 3.41 3.41 0 0 0 3.41-3.41 3.41 3.41 0 0 0-3.41-3.41z',
-            windows: 'M1 2.2a1 1 0 0 1 1-1h8.6v9.6H1zm12.4-1H22a1 1 0 0 1 1 1v8.6h-9.6zM1 13.2h9.6v9.6H2a1 1 0 0 1-1-1zm12.4 0H23v8.6a1 1 0 0 1-1 1h-8.6z',
-        };
+        const REVEAL_MS_MAX = 2000;
 
-        const platforms = [
-            { label: 'Windows 10 and 11', suffix: '-setup.exe', glyph: 'windows' },
-            { label: 'Ubuntu and Debian', suffix: '.deb', glyph: 'ubuntu' },
-            { label: 'Fedora', suffix: '.rpm', glyph: 'fedora' },
-            { label: 'Linux AppImage', suffix: '.AppImage', glyph: 'linux' },
-        ];
-
-        const detect = (agent) => {
-            if (/Windows/.test(agent)) return 'windows';
-            if (/Fedora/.test(agent)) return 'fedora';
-            if (/Linux/.test(agent)) return 'ubuntu';
-
-            return null;
-        };
-
-        const tints = ['var(--blue)', 'var(--cyan)', 'var(--magenta)'];
-        const frame = document.querySelector('.frame');
-        const motion = matchMedia('(prefers-reduced-motion: reduce)');
-
-        const arrow = '<svg class="arrow" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3v11M5 9l5 5 5-5M4 17h12"/></svg>';
-
-        const drawWave = () => {
-            const wave = document.getElementById('wave');
-            const count = Math.ceil(wave.clientWidth / 14);
-
-            for (let index = 0; index < count; index += 1) {
-                const bar = document.createElement('i');
-                const phase = index / 6;
-                const height = 18 + 52 * (0.5 + 0.5 * Math.sin(phase)) * (0.6 + 0.4 * Math.sin(index / 1.7));
-
-                bar.style.setProperty('--h', `${height}%`);
-                bar.style.setProperty('--swell', (1.15 + 0.35 * Math.abs(Math.cos(index / 2.3))).toFixed(2));
-                bar.style.setProperty('--delay', `${-(index % 12) * 0.4}s`);
-                bar.style.setProperty('--tint', tints[Math.floor(index / 9) % tints.length]);
-                wave.append(bar);
-            }
-        };
-
-        const tilt = (event) => {
-            if (event.pointerType !== 'mouse' || motion.matches) return;
-
-            const box = frame.getBoundingClientRect();
-            const x = (event.clientX - box.left) / box.width;
-            const y = (event.clientY - box.top) / box.height;
-            const clamp = (value) => Math.max(-1, Math.min(1, value));
-
-            frame.style.setProperty('--rx', `${(clamp(0.5 - y) * 10).toFixed(2)}deg`);
-            frame.style.setProperty('--ry', `${(clamp(x - 0.5) * 18).toFixed(2)}deg`);
-            frame.style.setProperty('--gx', `${(x * 100).toFixed(1)}%`);
-            frame.style.setProperty('--gy', `${(y * 100).toFixed(1)}%`);
-        };
-
-        const megabytes = (bytes) => `${(bytes / 1048576).toFixed(0)} MB`;
-
-        const render = (release) => {
-            const list = document.getElementById('downloads');
-            const recommended = detect(navigator.userAgent);
-
-            for (const platform of platforms) {
-                const asset = release.assets.find((candidate) => candidate.name.endsWith(platform.suffix));
-
-                if (!asset) continue;
-
-                const link = document.createElement('a');
-                link.className = 'download';
-                link.href = asset.browser_download_url;
-
-                const chip = platform.glyph === recommended ? '<span class="chip">Your device</span>' : '';
-                const glyph = `<svg class="glyph" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="${glyphs[platform.glyph]}"/></svg>`;
-
-                if (chip) link.dataset.recommended = '';
-
-                link.innerHTML = `${glyph}<header><strong>${platform.label}</strong>${chip || arrow}</header><footer class="mono"><span class="file">${asset.name}</span><span class="size">${megabytes(asset.size)}</span></footer>`;
-
-                const item = document.createElement('li');
-                item.append(link);
-                list.append(item);
-            }
-
-            const date = new Date(release.published_at).toLocaleDateString(undefined, { dateStyle: 'long' });
-            document.getElementById('status').innerHTML = `<span><b>${release.tag_name}</b></span><span>${date}</span><a href="https://stratusadv.com">Stratus Advanced Technologies</a>`;
-        };
-
-        const reveal = () => document.documentElement.classList.remove('loading');
-
-        const stylesheet = new Promise((resolve) => {
-            const link = document.getElementById('fonts');
-
-            if (link.sheet) return resolve();
-
-            link.addEventListener('load', resolve);
-            link.addEventListener('error', resolve);
-        });
-
-        const fonts = stylesheet.then(() => document.fonts.ready);
-        const shot = frame.querySelector('img').decode().catch(() => {});
-
-        const release = fetch('https://api.github.com/repos/stratusadv/scribe/releases/latest')
-            .then((response) => response.ok ? response.json() : Promise.reject(response.status))
-            .then(render)
-            .catch(() => {
-                document.getElementById('status').hidden = true;
-                document.getElementById('fallback').hidden = false;
-            });
-
-        drawWave();
-        document.querySelector('.brand').addEventListener('pointermove', tilt);
-
-        Promise.all([fonts, release, shot]).then(reveal);
-        setTimeout(reveal, 2500);
+        document.documentElement.classList.add('loading');
+        setTimeout(() => document.documentElement.classList.remove('loading'), REVEAL_MS_MAX);
     </script>
+    <link rel="stylesheet" href="assets/cubist.css">
+    <link rel="stylesheet" href="assets/home.css">
+</head>
+<body data-campaign="general">
+    <header class="bar">
+        <a class="brand" href="./" aria-label="Remi home">
+            <svg class="lockup" viewBox="0 0 377.54 112.75" role="img" aria-label="Remi">
+                <defs><linearGradient id="nav-lockup-bars" gradientUnits="userSpaceOnUse" x1="-9.82" y1="39.37" x2="94.74" y2="65.43"><stop offset="0" stop-color="#4fd0f5"/><stop offset="0.58" stop-color="#4fd0f5"/><stop offset="0.58" stop-color="#4fd0f5"/><stop offset="1" stop-color="#4fd0f5"/></linearGradient><linearGradient id="nav-lockup-lines" gradientUnits="userSpaceOnUse" x1="-9.82" y1="39.37" x2="94.74" y2="65.43"><stop offset="0" stop-color="#f6f8fb"/><stop offset="0.58" stop-color="#f6f8fb"/><stop offset="0.58" stop-color="#f6f8fb"/><stop offset="1" stop-color="#f6f8fb"/></linearGradient></defs>
+                <defs><linearGradient id="nav-lockup-pip" x1="0" y1="0" x2="1" y2="0"><stop offset="0.5" stop-color="#f0a020"/><stop offset="0.5" stop-color="#f0a020"/></linearGradient></defs>
+                <path d="M18.60 78.24L21.57 66.31L82.22 66.31L79.25 78.24ZM18.60 102.10L21.57 90.17L58.36 90.17L55.39 102.10Z" fill="#f0a020" stroke="#f0a020" stroke-width="1.1" stroke-linejoin="round"/><path d="M14.03 20.59L25.15 20.59L20.19 40.47L9.07 40.47ZM33.41 10.65L44.53 10.65L34.61 50.41L23.49 50.41ZM48.82 16.61L59.94 16.61L53.00 44.44L41.88 44.44ZM64.22 22.58L75.34 22.58L71.38 38.48L60.26 38.48Z" fill="url(#nav-lockup-bars)" stroke="url(#nav-lockup-bars)" stroke-width="1.1" stroke-linejoin="round"/><path d="M10.65 70.29L13.62 58.36L74.27 58.36L71.30 70.29ZM10.65 94.15L13.62 82.22L50.41 82.22L47.44 94.15Z" fill="url(#nav-lockup-lines)" stroke="url(#nav-lockup-lines)" stroke-width="1.1" stroke-linejoin="round"/>
+                <g transform="translate(119.89 94.15)"><path d="M36.38 -40.23Q43.67 -40.23 47.55 -44.16Q51.43 -48.08 51.43 -55.70Q51.43 -60.56 49.78 -63.84Q48.13 -67.13 44.59 -68.81Q41.04 -70.49 35.31 -70.49H15.27L18.46 -74.36H41.24Q51.71 -74.36 57.79 -72.03Q63.88 -69.70 66.49 -65.71Q69.10 -61.71 69.10 -56.63Q69.10 -51.86 66.44 -47.84Q63.78 -43.81 58.53 -41.30Q53.28 -38.79 45.50 -38.47V-38.65Q50.92 -38.48 54.48 -36.97Q58.05 -35.47 60.35 -32.70Q62.64 -29.92 64.20 -25.78L70.12 -11.17Q71.67 -7.40 73.02 -5.57Q74.38 -3.74 76.22 -3.19Q78.07 -2.65 81.03 -2.65V0.00Q72.82 0.61 67.72 0.53Q62.62 0.46 59.69 -0.55Q56.75 -1.55 55.11 -3.69Q53.47 -5.82 52.12 -9.27L44.87 -28.01Q43.46 -31.61 42.10 -33.39Q40.73 -35.16 39.15 -35.76Q37.56 -36.35 35.41 -36.35H17.97L14.71 -40.23H36.38ZM29.63 -74.36V-4.25L38.30 -1.73V0.00H2.88V-1.73L11.55 -4.25V-70.16L2.88 -72.61V-74.36H29.63ZM105.07 -54.53Q111.36 -54.53 115.83 -52.04Q120.30 -49.54 122.85 -44.80Q125.40 -40.05 125.89 -33.28H90.88V-37.11H118.61L111.53 -34.66Q111.16 -40.84 110.17 -44.45Q109.19 -48.06 107.52 -49.64Q105.85 -51.23 103.36 -51.23Q100.22 -51.23 98.00 -49.34Q95.78 -47.46 94.62 -43.31Q93.45 -39.15 93.45 -32.33Q93.45 -24.11 95.46 -19.05Q97.47 -14.00 101.37 -11.68Q105.27 -9.37 110.97 -9.37Q113.81 -9.37 116.34 -10.05Q118.88 -10.74 121.24 -12.22Q123.59 -13.71 125.75 -16.12L126.90 -15.18Q123.36 -9.04 119.80 -5.43Q116.25 -1.83 112.34 -0.27Q108.44 1.28 103.76 1.28Q96.30 1.28 90.56 -1.86Q84.82 -5.00 81.59 -11.01Q78.36 -17.03 78.36 -25.59Q78.36 -33.36 81.43 -39.95Q84.50 -46.53 90.47 -50.53Q96.44 -54.53 105.07 -54.53ZM152.23 -43.18V-3.16L157.77 -1.55V0.00H130.43V-1.55L136.47 -3.23V-41.64Q135.62 -42.47 134.03 -43.98Q132.45 -45.49 129.79 -47.66V-48.96L151.47 -54.84H152.23V-43.18ZM184.53 -39.05V-3.16L190.07 -1.55V0.00H163.21V-1.55L168.77 -3.16V-36.13Q168.77 -38.90 167.91 -40.61Q167.05 -42.33 165.27 -43.14Q163.49 -43.95 160.71 -43.95Q158.04 -43.95 155.42 -43.23Q152.81 -42.51 150.47 -41.37L150.14 -42.58Q154.01 -46.46 156.81 -48.79Q159.60 -51.12 161.81 -52.32Q164.02 -53.51 166.12 -53.90Q168.22 -54.29 170.72 -54.29Q175.35 -54.29 178.42 -52.59Q181.48 -50.88 183.01 -47.51Q184.53 -44.13 184.53 -39.05ZM216.83 -39.05V-3.23L222.85 -1.55V0.00H195.51V-1.55L201.07 -3.16V-36.13Q201.07 -38.90 200.21 -40.61Q199.35 -42.33 197.57 -43.14Q195.79 -43.95 193.00 -43.95Q190.34 -43.95 187.72 -43.23Q185.11 -42.51 182.77 -41.37L182.44 -42.58Q186.31 -46.46 189.11 -48.79Q191.90 -51.12 194.11 -52.32Q196.32 -53.51 198.42 -53.90Q200.51 -54.29 203.02 -54.29Q209.97 -54.29 213.40 -50.48Q216.83 -46.67 216.83 -39.05ZM247.87 -54.84V-44.13V-3.16L253.64 -1.55V0.00H226.06V-1.55L232.11 -3.23V-41.64Q231.51 -42.19 230.55 -43.03Q229.59 -43.87 228.31 -45.03Q227.04 -46.18 225.42 -47.66V-48.96L247.10 -54.84H247.87Z" fill="currentColor"/><path d="M239.24 -84.97L246.88 -72.76L239.24 -60.55L231.61 -72.76Z" fill="url(#nav-lockup-pip)"/></g>
+            </svg>
+        </a>
+
+        <nav class="links" aria-label="Main">
+            <a href="#how">How it works</a>
+            <a href="#ask">Ask</a>
+            <a href="#private">Privacy</a>
+            <a href="overview/">Docs</a>
+        </nav>
+
+        <a class="button small" href="#download">Download</a>
+    </header>
+
+    <main>
+        <section class="hero" aria-labelledby="hero-title">
+            <div class="facets" aria-hidden="true">
+                <i></i>
+                <i></i>
+                <i></i>
+                <i></i>
+                <i></i>
+                <i></i>
+            </div>
+
+            <div class="hero-head">
+                <div class="hero-title">
+                    <p class="eyebrow">Private meeting notes</p>
+                    <h1 id="hero-title">Your meetings, <em>remembered.</em></h1>
+                </div>
+
+                <div class="hero-copy">
+                    <p class="lede">Remi remembers every meeting you record. Ask about any of them, and it tells you what was said and which meeting it came from. It also writes up the notes in your team’s format.</p>
+
+                    <div class="cta">
+                        <a class="button" id="get" data-get href="#download">Download Remi</a>
+                        <a class="button quiet" href="#how">How it works</a>
+                    </div>
+
+                    <p class="platforms">A desktop app for Windows, macOS, and Linux.</p>
+                </div>
+            </div>
+
+            <div class="canvas" id="how">
+                <figure class="stage" id="stage" role="img" aria-label="In a meeting, a person records the conversation on a handheld recorder. They carry it to their desk, where Remi turns the recording into a transcript and then finished notes. The notes fly to the team, and a teammate who missed the meeting gives a thumbs-up.">
+                    <div class="scene" id="scene">
+                        <svg class="art" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+                            <defs>
+                                <pattern id="art-dots" width="12" height="12" patternUnits="userSpaceOnUse">
+                                    <circle cx="3" cy="3" r="1.7" fill="#a5e6fa" fill-opacity="0.3"/>
+                                </pattern>
+                                <pattern id="art-grille" width="6" height="6" patternUnits="userSpaceOnUse">
+                                    <circle cx="2" cy="2" r="1.1" fill="#c9d6e3" fill-opacity="0.7"/>
+                                </pattern>
+                                <pattern id="art-stripes" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(38)">
+                                    <rect width="12" height="12" fill="#2f2478"/>
+                                    <rect width="5" height="12" fill="#5b4bc4"/>
+                                </pattern>
+                                <pattern id="art-harlequin" width="44" height="60" patternUnits="userSpaceOnUse" patternTransform="rotate(-8)">
+                                    <rect width="44" height="60" fill="#1c2940"/>
+                                    <polygon points="22,0 44,30 22,60 0,30" fill="#2c4166"/>
+                                    <polygon points="22,0 44,30 22,60 0,30" fill="none" stroke="#4fd0f5" stroke-opacity="0.32" stroke-width="1.2"/>
+                                </pattern>
+                                <pattern id="art-breton" width="20" height="16" patternUnits="userSpaceOnUse" patternTransform="rotate(-4)">
+                                    <rect width="20" height="16" fill="#1b273a"/>
+                                    <rect width="20" height="6" fill="#c9d6e3" fill-opacity="0.5"/>
+                                </pattern>
+                                <pattern id="art-dotted" width="14" height="14" patternUnits="userSpaceOnUse">
+                                    <rect width="14" height="14" fill="#2a2364"/>
+                                    <circle cx="7" cy="7" r="2.4" fill="#ffc46b" fill-opacity="0.55"/>
+                                </pattern>
+                                <pattern id="art-ruled" width="14" height="9" patternUnits="userSpaceOnUse">
+                                    <rect y="3" width="14" height="1.6" fill="#2b3d5a"/>
+                                </pattern>
+                                <clipPath id="art-torso"><polygon points="40,720 78,520 150,462 250,450 340,466 402,548 424,720"/></clipPath>
+                                <clipPath id="art-pane"><polygon points="556,22 880,16 882,180 560,186"/></clipPath>
+                                <linearGradient id="art-mark-bars" gradientUnits="userSpaceOnUse" x1="-9.35" y1="37.49" x2="94.27" y2="63.33">
+                                    <stop offset="0" stop-color="#4fd0f5"/><stop offset="0.58" stop-color="#4fd0f5"/>
+                                    <stop offset="0.58" stop-color="#00a2d2"/><stop offset="1" stop-color="#00a2d2"/>
+                                </linearGradient>
+                                <linearGradient id="art-mark-lines" gradientUnits="userSpaceOnUse" x1="-9.35" y1="37.49" x2="94.27" y2="63.33">
+                                    <stop offset="0" stop-color="#f6f8fb"/><stop offset="0.58" stop-color="#f6f8fb"/>
+                                    <stop offset="0.58" stop-color="#c3cddb"/><stop offset="1" stop-color="#c3cddb"/>
+                                </linearGradient>
+                                <linearGradient id="art-mark-pip" x1="0" y1="0" x2="1" y2="0">
+                                    <stop offset="0.5" stop-color="#f0a020"/><stop offset="0.5" stop-color="#cc8212"/>
+                                </linearGradient>
+                            </defs>
+                            <g class="cam cam-back">
+                                <g class="bg-a">
+                                    <polygon points="0,0 1200,0 1200,560 0,560" fill="#0b1018"/>
+                                    <polygon points="0,0 540,0 400,560 0,560" fill="#0c131d"/>
+                                    <polygon points="253,0 322,0 282,372 236,372" fill="#0d2232"/>
+                                    <polygon points="0,316 124,238 106,440 0,520" fill="#161433"/>
+                                    <polygon points="54,52 184,26 214,138 78,172" fill="url(#art-dots)"/>
+                                    <polygon points="540,0 1200,0 1200,380 640,420" fill="#0f1724"/>
+                                    <polygon points="900,0 980,0 860,560 780,560" fill="#ffffff" fill-opacity="0.03"/>
+                                    <polyline points="0,470 1200,382" fill="none" stroke="#a5e6fa" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.1"/>
+                                </g>
+                                <g class="win-pos">
+                                    <polygon points="548,14 888,6 892,190 552,198" fill="#0b1119" stroke="#07090d" stroke-width="3"/>
+                                    <polygon points="556,22 880,16 882,180 560,186" fill="#0d2a3c"/>
+                                    <polygon points="556,22 716,19 720,183 560,186" fill="#0f3a50"/>
+                                    <circle cx="820" cy="62" r="22" fill="#ffc46b"/>
+                                    <path d="M 820 40 A 22 22 0 0 1 820 84 Z" fill="#e8a24a"/>
+                                    <g clip-path="url(#art-pane)">
+                                        <g transform="translate(610 70) scale(1)">
+                                            <g class="cloud cloud-0">
+                                                <path d="M -50 10 A 22 22 0 0 1 -10 -8 A 26 26 0 0 1 40 0 A 16 16 0 0 1 56 10 Z" fill="#dfe6ee" fill-opacity="0.75"/>
+                                                <path d="M -10 -8 A 26 26 0 0 1 40 0 L 40 10 L -10 10 Z" fill="#ffffff" fill-opacity="0.35"/>
+                                            </g>
+                                        </g>
+                                        <g transform="translate(760 128) scale(0.8)">
+                                            <g class="cloud cloud-1">
+                                                <path d="M -50 10 A 22 22 0 0 1 -10 -8 A 26 26 0 0 1 40 0 A 16 16 0 0 1 56 10 Z" fill="#dfe6ee" fill-opacity="0.75"/>
+                                                <path d="M -10 -8 A 26 26 0 0 1 40 0 L 40 10 L -10 10 Z" fill="#ffffff" fill-opacity="0.35"/>
+                                            </g>
+                                        </g>
+                                        <g transform="translate(660 150) scale(0.7)">
+                                            <g class="cloud cloud-2">
+                                                <path d="M -50 10 A 22 22 0 0 1 -10 -8 A 26 26 0 0 1 40 0 A 16 16 0 0 1 56 10 Z" fill="#dfe6ee" fill-opacity="0.75"/>
+                                                <path d="M -10 -8 A 26 26 0 0 1 40 0 L 40 10 L -10 10 Z" fill="#ffffff" fill-opacity="0.35"/>
+                                            </g>
+                                        </g>
+                                    </g>
+                                    <polyline points="664,18 668,184" fill="none" stroke="#1c2940" stroke-width="6" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="772,15 776,182" fill="none" stroke="#1c2940" stroke-width="6" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="556,102 882,96" fill="none" stroke="#1c2940" stroke-width="6" stroke-linejoin="round" stroke-linecap="round"/>
+                                </g>
+                                <g class="clock-pos">
+                                    <circle cx="1090" cy="92" r="40" fill="#dfe6ee" stroke="#07090d" stroke-width="3"/>
+                                    <path d="M 1090 52 A 40 40 0 0 1 1090 132 Z" fill="#b9c6d4"/>
+                                    <polyline points="1120,92 1126,92" fill="none" stroke="#2b3d5a" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="1115.98,107 1121.18,110" fill="none" stroke="#2b3d5a" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="1105,117.981 1108,123.177" fill="none" stroke="#2b3d5a" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="1090,122 1090,128" fill="none" stroke="#2b3d5a" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="1075,117.981 1072,123.177" fill="none" stroke="#2b3d5a" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="1064.02,107 1058.82,110" fill="none" stroke="#2b3d5a" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="1060,92 1054,92" fill="none" stroke="#2b3d5a" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="1064.02,77 1058.82,74" fill="none" stroke="#2b3d5a" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="1075,66.0192 1072,60.8231" fill="none" stroke="#2b3d5a" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="1090,62 1090,56" fill="none" stroke="#2b3d5a" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="1105,66.0192 1108,60.8231" fill="none" stroke="#2b3d5a" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="1115.98,77 1121.18,74" fill="none" stroke="#2b3d5a" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="1090,92 1074,80" fill="none" stroke="#07090d" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <g transform="translate(1090 92)">
+                                        <g class="minute">
+                                            <polyline points="0,4 0,-31" fill="none" stroke="#ff4848" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                        </g>
+                                    </g>
+                                    <circle cx="1090" cy="92" r="4" fill="#07090d"/>
+                                </g>
+                                <g class="col-a-pos">
+                                    <polygon points="-130,40 -62,4 64,4 130,44 150,250 -150,250" fill="url(#art-breton)"/>
+                                    <polygon points="64,4 130,44 150,250 40,250" fill="#000000" fill-opacity="0.3"/>
+                                    <polygon points="-130,40 -62,4 -24,4 -92,250 -150,250" fill="#ffffff" fill-opacity="0.06"/>
+                                    <polyline points="-150,250 -130,40 -62,4 64,4 130,44 150,250" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polygon points="-26,4 26,4 0,30" fill="#07090d"/>
+                                    <polygon points="-17,-32 17,-32 21,6 -21,6" fill="#c6eef8"/>
+                                    <polygon points="2,-32 17,-32 21,6 2,6" fill="#8fd0e2"/>
+                                    <g transform="translate(-70 130)">
+                                        <g class="col-a-arm">
+                                            <polygon points="-12,4 12,-4 -16,-112 -42,-104" fill="url(#art-breton)"/>
+                                            <polygon points="12,-4 -16,-112 -28,-108" fill="#ffffff" fill-opacity="0.12"/>
+                                            <polyline points="-12,4 -42,-104" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                            <polyline points="12,-4 -16,-112" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                            <polygon points="-16,-104 -44,-96 -48,-108 -20,-116" fill="#dfe6ee"/>
+                                            <polygon points="-50,-112 -18,-120 -12,-146 -46,-140" fill="#ffc46b" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round"/>
+                                            <rect x="-44" y="-164" width="8" height="24" rx="4" fill="#ffc46b" stroke="#07090d" stroke-width="2" transform="rotate(-14 -40 -140)"/>
+                                            <rect x="-34" y="-164" width="8" height="24" rx="4" fill="#ffc46b" stroke="#07090d" stroke-width="2" transform="rotate(-14 -30 -140)"/>
+                                            <rect x="-24" y="-164" width="8" height="24" rx="4" fill="#ffc46b" stroke="#07090d" stroke-width="2" transform="rotate(-14 -20 -140)"/>
+                                            <rect x="-60" y="-138" width="16" height="9" rx="4.5" fill="#e8a24a" stroke="#07090d" stroke-width="2"/>
+                                        </g>
+                                    </g>
+                                    <g class="col-a-head">
+                                        <polygon points="-30,-176 34,-182 66,-150 70,-70 52,-56 48,-120 6,-150 -34,-140" fill="#0b1119"/>
+                                        <polygon points="2,-150 48,-120 52,-56 40,-38 2,-28" fill="#c6eef8"/>
+                                        <polygon points="2,-150 -34,-140 -44,-104 -74,-78 -46,-72 -50,-60 -42,-55 -48,-46 -36,-36 -18,-28 2,-28" fill="#ffd592"/>
+                                        <polygon points="-44,-104 -74,-78 -46,-72" fill="#e8a24a"/>
+                                        <polygon points="2,-96 52,-90 40,-38" fill="#a5e6fa"/>
+                                        <polygon points="-36,-36 -18,-28 2,-28 2,-50" fill="#f0c27a"/>
+                                        <polygon points="-34,-140 6,-150 48,-120 50,-108 8,-138 -38,-128" fill="#ff4848"/>
+                                        <g class="col-eye col-a-eye">
+                                            <path d="M 11 -96 Q 24 -107 37 -96 Q 24 -87 11 -96 Z" fill="#f6f8fb" stroke="#07090d" stroke-width="2.5"/>
+                                            <g class="col-gaze col-a-gaze">
+                                                <circle cx="24" cy="-96" r="5" fill="#6b5bd6"/>
+                                                <circle cx="24" cy="-96" r="2.4" fill="#07090d"/>
+                                            </g>
+                                        </g>
+                                        <path d="M -36 -98 Q -26 -104 -17 -99 Q -26 -93 -36 -98 Z" fill="#07090d"/>
+                                        <polyline points="12,-110 38,-106" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-38,-110 -18,-113" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <path d="M 50 -96 C 64 -96, 64 -74, 50 -74" fill="#a5e6fa" stroke="#07090d" stroke-width="2.5"/>
+                                        <polyline points="2,-150 2,-28" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-34,-140 -44,-104 -74,-78 -46,-72 -50,-60" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-48,-46 -36,-36 -18,-28" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-54,-132 -62,-100 -86,-80" fill="none" stroke="#a5e6fa" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.45"/>
+                                        <polygon points="-54,-58 -40,-60 -38,-50 -52,-47" fill="#ff4848" class="col-mouth col-a-mouth"/>
+                                    </g>
+                                </g>
+                                <g class="col-b-pos">
+                                    <polygon points="-120,36 -56,2 58,2 124,40 140,250 -140,250" fill="url(#art-dotted)"/>
+                                    <polygon points="58,2 124,40 140,250 36,250" fill="#000000" fill-opacity="0.3"/>
+                                    <polygon points="-120,36 -56,2 -20,2 -80,250 -140,250" fill="#ffffff" fill-opacity="0.06"/>
+                                    <polyline points="-140,250 -120,36 -56,2 58,2 124,40 140,250" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polygon points="-26,2 0,28 -6,2" fill="#dfe6ee"/>
+                                    <polygon points="26,2 0,28 6,2" fill="#c9d6e3"/>
+                                    <polygon points="-16,-30 16,-30 19,4 -19,4" fill="#f2b45a"/>
+                                    <polygon points="2,-30 16,-30 19,4 2,4" fill="#d98a33"/>
+                                    <g class="col-b-head">
+                                        <circle cx="14" cy="-176" r="22" fill="#a294ff"/>
+                                        <path d="M 14 -198 A 22 22 0 0 1 14 -154 Z" fill="#6b5bd6"/>
+                                        <polyline points="-6,-196 36,-160" fill="none" stroke="#ffc46b" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polygon points="2,-148 46,-130 52,-70 36,-38 2,-28" fill="#e9eef4"/>
+                                        <polygon points="2,-148 -30,-142 -42,-100 -70,-80 -44,-72 -48,-60 -40,-55 -46,-46 -34,-36 -16,-28 2,-28" fill="#f2b45a"/>
+                                        <polygon points="-42,-100 -70,-80 -44,-72" fill="#d98a33"/>
+                                        <polygon points="2,-88 50,-82 36,-38" fill="#c9d6e3"/>
+                                        <polygon points="-34,-36 -16,-28 2,-28 2,-46" fill="#e8a24a"/>
+                                        <path d="M -36 -132 C -30 -170, 40 -176, 56 -128 L 46 -130 L 2 -148 L -30 -142 Z" fill="#6b5bd6"/>
+                                        <path d="M 2 -168 C 30 -168, 50 -150, 56 -128 L 46 -130 L 2 -148 Z" fill="#8a7bea"/>
+                                        <g class="col-eye col-b-eye">
+                                            <path d="M 14 -96 Q 25 -105 36 -96 Q 25 -88 14 -96 Z" fill="#f6f8fb" stroke="#07090d" stroke-width="2"/>
+                                            <g class="col-gaze col-b-gaze">
+                                                <circle cx="25" cy="-96" r="4.5" fill="#0f7a9c"/>
+                                                <circle cx="25" cy="-96" r="2.2" fill="#07090d"/>
+                                            </g>
+                                        </g>
+                                        <circle cx="-26" cy="-98" r="3" fill="#07090d"/>
+                                        <circle cx="25" cy="-96" r="14" fill="#ffffff" fill-opacity="0.12" stroke="#07090d" stroke-width="3"/>
+                                        <circle cx="-26" cy="-98" r="9" fill="none" stroke="#07090d" stroke-width="2.5"/>
+                                        <polyline points="-17,-98 11,-97" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="39,-98 50,-100" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <circle cx="50" cy="-58" r="4" fill="#ffc46b" stroke="#07090d" stroke-width="1.5"/>
+                                        <polyline points="2,-148 2,-28" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-30,-142 -42,-100 -70,-80 -44,-72 -48,-60" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-46,-46 -34,-36 -16,-28" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-50,-126 -58,-96 -82,-78" fill="none" stroke="#ffc46b" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.45"/>
+                                        <polygon points="-52,-57 -38,-59 -36,-50 -50,-46" fill="#c2303a" class="col-mouth col-b-mouth"/>
+                                    </g>
+                                </g>
+                                <g class="table-tall">
+                                    <polygon points="-10,352 450,330 450,420 -10,444" fill="#1c2940"/>
+                                    <polygon points="-10,352 220,341 200,432 -10,444" fill="#ffffff" fill-opacity="0.05"/>
+                                    <polyline points="-10,352 450,330" fill="none" stroke="#4fd0f5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.3"/>
+                                    <polygon points="-10,444 450,420 450,470 -10,494" fill="#121a28"/>
+                                </g>
+                                <g class="divider">
+                                    <polygon points="1140,0 1262,0 1262,560 1140,560" fill="#0b1119"/>
+                                    <polygon points="1162,118 1240,112 1240,560 1162,560" fill="#1c2940"/>
+                                    <polygon points="1162,118 1200,115 1200,560 1162,560" fill="#ffffff" fill-opacity="0.04"/>
+                                    <polyline points="1162,560 1162,118 1240,112 1240,560" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <circle cx="1228" cy="350" r="5" fill="#ffc46b" stroke="#07090d" stroke-width="2"/>
+                                </g>
+                                <g class="bg-b">
+                                    <polygon points="1200,0 2400,0 2400,560 1200,560" fill="#0b1018"/>
+                                    <polygon points="1200,0 1660,0 1580,560 1200,560" fill="#0c131d"/>
+                                    <polygon points="1620,0 2400,0 2400,210 1900,124" fill="#0f1724"/>
+                                    <polygon points="1860,560 2400,560 2400,380 1920,470" fill="#0a1018"/>
+                                    <polygon points="2240,0 2320,0 2180,560 2100,560" fill="#ffffff" fill-opacity="0.03"/>
+                                    <polygon points="1250,300 1400,240 1380,470 1250,520" fill="#161433"/>
+                                    <circle cx="2130" cy="280" r="250" fill="none" stroke="#a5e6fa" stroke-opacity="0.06" stroke-width="1.5"/>
+                                    <polyline points="1200,450 2400,380" fill="none" stroke="#a5e6fa" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.1"/>
+                                </g>
+                                <g class="shelf">
+                                    <polygon points="1300,92 1580,86 1582,98 1302,104" fill="#2b3d5a"/>
+                                    <rect x="1316" y="46" width="14" height="46" fill="#6b5bd6" stroke="#07090d" stroke-width="2"/>
+                                    <rect x="1332" y="40" width="12" height="52" fill="#e8a24a" stroke="#07090d" stroke-width="2"/>
+                                    <rect x="1346" y="52" width="16" height="40" fill="#0f7a9c" stroke="#07090d" stroke-width="2"/>
+                                    <rect x="1364" y="44" width="10" height="48" fill="#c9d6e3" stroke="#07090d" stroke-width="2"/>
+                                    <rect x="1376" y="58" width="22" height="34" fill="#a294ff" stroke="#07090d" stroke-width="2"/>
+                                    <rect x="1404" y="54" width="12" height="40" fill="#ff4848" stroke="#07090d" stroke-width="2" transform="rotate(14 1410 92)"/>
+                                    <polygon points="1516,64 1554,64 1548,88 1522,88" fill="#b9772a" stroke="#07090d" stroke-width="2"/>
+                                    <polygon points="1535,64 1508,22 1530,30" fill="#0f7a9c"/>
+                                    <polygon points="1535,64 1546,14 1556,40" fill="#4fd0f5"/>
+                                    <polygon points="1535,64 1566,30 1560,56" fill="#0b4a63"/>
+                                    <polygon points="1660,40 1790,34 1794,132 1664,138" fill="#141d2c" stroke="#07090d" stroke-width="3"/>
+                                    <circle cx="1708" cy="86" r="26" fill="#ffc46b"/>
+                                    <polygon points="1720,120 1776,52 1782,124" fill="#6b5bd6"/>
+                                    <polygon points="1676,116 1700,70 1730,118" fill="#0f7a9c" fill-opacity="0.85"/>
+                                </g>
+                                <g class="lamp-pos">
+                                    <polygon points="2078,56 2182,56 2330,500 1930,500" fill="#ffc46b" class="beam"/>
+                                    <polyline points="2130,0 2130,26" fill="none" stroke="#8fa3b8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polygon points="2096,26 2164,26 2182,56 2078,56" fill="#e8a24a" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round"/>
+                                    <polygon points="2130,26 2164,26 2182,56 2130,56" fill="#b9772a"/>
+                                    <path class="bulb" d="M 2118 56 A 12 12 0 0 0 2142 56 Z" fill="#ffd592"/>
+                                </g>
+                                <g class="monitor-pos">
+                                    <polygon points="896,468 964,466 978,512 882,514" fill="#1c2940" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round"/>
+                                    <polygon points="850,512 1010,508 1014,522 846,526" fill="#2b3d5a" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round"/>
+                                    <polygon points="718,110 1166,100 1172,478 724,488" fill="#111a29"/>
+                                    <polygon points="700,92 1150,82 1156,462 706,472" fill="#162132"/>
+                                    <polygon points="700,92 1150,82 1151,128 702,138" fill="#1c2940"/>
+                                    <polygon points="700,92 900,88 840,472 706,472" fill="#ffffff" fill-opacity="0.035"/>
+                                    <polygon points="1030,85 1150,82 1156,462 980,467" fill="#000000" fill-opacity="0.18"/>
+                                    <polyline points="700,92 1150,82 1156,462 706,472 700,92" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="702,138 1151,128" fill="none" stroke="#07090d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <g transform="translate(724 99.5) scale(0.28)">
+                                        <path d="M14.05 73.69L17.02 61.76L77.67 61.76L74.70 73.69ZM14.05 93.57L17.02 81.64L53.81 81.64L50.84 93.57Z" fill="#f0a020" stroke="#f0a020" stroke-width="1.1" stroke-linejoin="round"/>
+                                        <path d="M14.03 20.59L25.15 20.59L20.19 40.47L9.07 40.47ZM33.41 10.65L44.53 10.65L34.61 50.41L23.49 50.41ZM48.82 16.61L59.94 16.61L53.00 44.44L41.88 44.44ZM64.22 22.58L75.34 22.58L71.38 38.48L60.26 38.48Z" fill="url(#art-mark-bars)" stroke="url(#art-mark-bars)" stroke-width="1.1" stroke-linejoin="round"/>
+                                        <path d="M10.65 70.29L13.62 58.36L74.27 58.36L71.30 70.29ZM10.65 90.17L13.62 78.24L50.41 78.24L47.44 90.17Z" fill="url(#art-mark-lines)" stroke="url(#art-mark-lines)" stroke-width="1.1" stroke-linejoin="round"/>
+                                        <g transform="translate(115.34 90.17)">
+                                            <path d="M36.38 -40.23Q43.67 -40.23 47.55 -44.16Q51.43 -48.08 51.43 -55.70Q51.43 -60.56 49.78 -63.84Q48.13 -67.13 44.59 -68.81Q41.04 -70.49 35.31 -70.49H15.27L18.46 -74.36H41.24Q51.71 -74.36 57.79 -72.03Q63.88 -69.70 66.49 -65.71Q69.10 -61.71 69.10 -56.63Q69.10 -51.86 66.44 -47.84Q63.78 -43.81 58.53 -41.30Q53.28 -38.79 45.50 -38.47V-38.65Q50.92 -38.48 54.48 -36.97Q58.05 -35.47 60.35 -32.70Q62.64 -29.92 64.20 -25.78L70.12 -11.17Q71.67 -7.40 73.02 -5.57Q74.38 -3.74 76.22 -3.19Q78.07 -2.65 81.03 -2.65V0.00Q72.82 0.61 67.72 0.53Q62.62 0.46 59.69 -0.55Q56.75 -1.55 55.11 -3.69Q53.47 -5.82 52.12 -9.27L44.87 -28.01Q43.46 -31.61 42.10 -33.39Q40.73 -35.16 39.15 -35.76Q37.56 -36.35 35.41 -36.35H17.97L14.71 -40.23H36.38ZM29.63 -74.36V-4.25L38.30 -1.73V0.00H2.88V-1.73L11.55 -4.25V-70.16L2.88 -72.61V-74.36H29.63ZM105.07 -54.53Q111.36 -54.53 115.83 -52.04Q120.30 -49.54 122.85 -44.80Q125.40 -40.05 125.89 -33.28H90.88V-37.11H118.61L111.53 -34.66Q111.16 -40.84 110.17 -44.45Q109.19 -48.06 107.52 -49.64Q105.85 -51.23 103.36 -51.23Q100.22 -51.23 98.00 -49.34Q95.78 -47.46 94.62 -43.31Q93.45 -39.15 93.45 -32.33Q93.45 -24.11 95.46 -19.05Q97.47 -14.00 101.37 -11.68Q105.27 -9.37 110.97 -9.37Q113.81 -9.37 116.34 -10.05Q118.88 -10.74 121.24 -12.22Q123.59 -13.71 125.75 -16.12L126.90 -15.18Q123.36 -9.04 119.80 -5.43Q116.25 -1.83 112.34 -0.27Q108.44 1.28 103.76 1.28Q96.30 1.28 90.56 -1.86Q84.82 -5.00 81.59 -11.01Q78.36 -17.03 78.36 -25.59Q78.36 -33.36 81.43 -39.95Q84.50 -46.53 90.47 -50.53Q96.44 -54.53 105.07 -54.53ZM152.23 -43.18V-3.16L157.77 -1.55V0.00H130.43V-1.55L136.47 -3.23V-41.64Q135.62 -42.47 134.03 -43.98Q132.45 -45.49 129.79 -47.66V-48.96L151.47 -54.84H152.23V-43.18ZM184.53 -39.05V-3.16L190.07 -1.55V0.00H163.21V-1.55L168.77 -3.16V-36.13Q168.77 -38.90 167.91 -40.61Q167.05 -42.33 165.27 -43.14Q163.49 -43.95 160.71 -43.95Q158.04 -43.95 155.42 -43.23Q152.81 -42.51 150.47 -41.37L150.14 -42.58Q154.01 -46.46 156.81 -48.79Q159.60 -51.12 161.81 -52.32Q164.02 -53.51 166.12 -53.90Q168.22 -54.29 170.72 -54.29Q175.35 -54.29 178.42 -52.59Q181.48 -50.88 183.01 -47.51Q184.53 -44.13 184.53 -39.05ZM216.83 -39.05V-3.23L222.85 -1.55V0.00H195.51V-1.55L201.07 -3.16V-36.13Q201.07 -38.90 200.21 -40.61Q199.35 -42.33 197.57 -43.14Q195.79 -43.95 193.00 -43.95Q190.34 -43.95 187.72 -43.23Q185.11 -42.51 182.77 -41.37L182.44 -42.58Q186.31 -46.46 189.11 -48.79Q191.90 -51.12 194.11 -52.32Q196.32 -53.51 198.42 -53.90Q200.51 -54.29 203.02 -54.29Q209.97 -54.29 213.40 -50.48Q216.83 -46.67 216.83 -39.05ZM247.87 -54.84V-44.13V-3.16L253.64 -1.55V0.00H226.06V-1.55L232.11 -3.23V-41.64Q231.51 -42.19 230.55 -43.03Q229.59 -43.87 228.31 -45.03Q227.04 -46.18 225.42 -47.66V-48.96L247.10 -54.84H247.87Z" fill="#dfe6ee"/>
+                                            <path d="M239.24 -84.97L246.88 -72.76L239.24 -60.55L231.61 -72.76Z" fill="url(#art-mark-pip)"/>
+                                        </g>
+                                    </g>
+                                    <g class="target">
+                                        <polygon points="762,170 1098,163 1102,430 766,437" fill="none" stroke="#4fd0f5" stroke-width="2" stroke-dasharray="6 9"/>
+                                        <polyline points="932,266 932,302" fill="none" stroke="#4fd0f5" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="918,290 932,304 946,290" fill="none" stroke="#4fd0f5" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                    </g>
+                                    <polyline points="862,352 1000,349" fill="none" stroke="#4fd0f5" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" class="progress"/>
+                                    <g class="transcript">
+                                        <rect class="tline" style="--n: 0; --tx: -32.5px; --ty: 104.5px; --k: 0.1040" x="792" y="182" width="250" height="7" rx="3.5" fill="#4fd0f5"/>
+                                        <circle class="tdot" style="--n: 0" cx="772" cy="185.5" r="5" fill="#4fd0f5"/>
+                                        <rect class="tline" style="--n: 1; --tx: 15.5px; --ty: 74.5px; --k: 0.2444" x="792" y="212" width="180" height="7" rx="3.5" fill="#4fd0f5"/>
+                                        <circle class="tdot" style="--n: 1" cx="772" cy="215.5" r="5" fill="#a294ff"/>
+                                        <rect class="tline" style="--n: 2; --tx: -26.5px; --ty: 44.5px; --k: 0.1103" x="792" y="242" width="290" height="7" rx="3.5" fill="#4fd0f5"/>
+                                        <circle class="tdot" style="--n: 2" cx="772" cy="245.5" r="5" fill="#4fd0f5"/>
+                                        <rect class="tline" style="--n: 3; --tx: 61.5px; --ty: 14.5px; --k: 0.3857" x="792" y="272" width="140" height="7" rx="3.5" fill="#4fd0f5"/>
+                                        <circle class="tdot" style="--n: 3" cx="772" cy="275.5" r="5" fill="#ffc46b"/>
+                                        <rect class="tline" style="--n: 4; --tx: 29.5px; --ty: -15.5px; --k: 0.1652" x="792" y="302" width="230" height="7" rx="3.5" fill="#4fd0f5"/>
+                                        <circle class="tdot" style="--n: 4" cx="772" cy="305.5" r="5" fill="#a294ff"/>
+                                        <rect class="tline" style="--n: 5; --tx: 57.5px; --ty: -45.5px; --k: 0.2400" x="792" y="332" width="200" height="7" rx="3.5" fill="#4fd0f5"/>
+                                        <circle class="tdot" style="--n: 5" cx="772" cy="335.5" r="5" fill="#4fd0f5"/>
+                                        <rect class="tline" style="--n: 6; --tx: 35.5px; --ty: -75.5px; --k: 0.0889" x="792" y="362" width="270" height="7" rx="3.5" fill="#4fd0f5"/>
+                                        <circle class="tdot" style="--n: 6" cx="772" cy="365.5" r="5" fill="#ffc46b"/>
+                                        <rect class="tline" style="--n: 7; --tx: 103.5px; --ty: -105.5px; --k: 0.2250" x="792" y="392" width="160" height="7" rx="3.5" fill="#4fd0f5"/>
+                                        <circle class="tdot" style="--n: 7" cx="772" cy="395.5" r="5" fill="#a294ff"/>
+                                    </g>
+                                    <g class="sheet sheet-a">
+                                        <polygon points="770,160 1012,148 1022,300 778,312" fill="#e9eef4"/>
+                                        <rect class="ink" style="--n: 0" x="792" y="170" width="124" height="10" fill="#00a2d2"/>
+                                        <rect class="ink" style="--n: 1" x="792" y="188" width="70" height="5" fill="#8fa3b8"/>
+                                        <rect class="ink" style="--n: 2" x="792" y="214" width="196" height="6" rx="3" fill="#2b3d5a"/>
+                                        <rect class="ink" style="--n: 3" x="792" y="230" width="176" height="6" rx="3" fill="#2b3d5a"/>
+                                        <rect class="ink" style="--n: 4" x="792" y="246" width="124" height="6" rx="3" fill="#2b3d5a"/>
+                                    </g>
+                                    <g class="sheet sheet-b">
+                                        <polygon points="912,202 1116,192 1122,440 922,452" fill="#dfe6ee"/>
+                                        <rect class="ink" style="--n: 5" x="934" y="214" width="64" height="8" fill="#d98a33"/>
+                                        <rect class="check" style="--n: 0" x="934" y="236" width="13" height="13" rx="2" fill="#dfe6ee" stroke="#2b3d5a" stroke-width="2"/>
+                                        <polyline class="tick" style="--n: 0" points="937,243 940,246 945,239" pathLength="1" fill="none" stroke="#07090d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+                                        <rect class="ink" style="--n: 6" x="956" y="239" width="112" height="6" rx="3" fill="#2b3d5a"/>
+                                        <rect class="check" style="--n: 1" x="934" y="260" width="13" height="13" rx="2" fill="#dfe6ee" stroke="#2b3d5a" stroke-width="2"/>
+                                        <polyline class="tick" style="--n: 1" points="937,267 940,270 945,263" pathLength="1" fill="none" stroke="#07090d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+                                        <rect class="ink" style="--n: 7" x="956" y="263" width="132" height="6" rx="3" fill="#2b3d5a"/>
+                                        <rect class="check" style="--n: 2" x="934" y="284" width="13" height="13" rx="2" fill="#dfe6ee" stroke="#2b3d5a" stroke-width="2"/>
+                                        <polyline class="tick" style="--n: 2" points="937,291 940,294 945,287" pathLength="1" fill="none" stroke="#07090d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+                                        <rect class="ink" style="--n: 8" x="956" y="287" width="100" height="6" rx="3" fill="#2b3d5a"/>
+                                    </g>
+                                    <g class="sheet sheet-c">
+                                        <polygon points="760,312 918,306 926,450 766,456" fill="#f4f7fb"/>
+                                        <rect class="ink" style="--n: 9" x="784" y="328" width="72" height="8" fill="#6b5bd6"/>
+                                        <circle class="pip" style="--n: 10" cx="789" cy="355" r="3.5" fill="#2b3d5a"/>
+                                        <rect class="ink" style="--n: 10" x="800" y="352" width="104" height="6" rx="3" fill="#2b3d5a"/>
+                                        <circle class="pip" style="--n: 11" cx="789" cy="377" r="3.5" fill="#2b3d5a"/>
+                                        <rect class="ink" style="--n: 11" x="800" y="374" width="116" height="6" rx="3" fill="#2b3d5a"/>
+                                        <circle class="pip" style="--n: 12" cx="789" cy="399" r="3.5" fill="#2b3d5a"/>
+                                        <rect class="ink" style="--n: 12" x="800" y="396" width="88" height="6" rx="3" fill="#2b3d5a"/>
+                                    </g>
+                                </g>
+                                <g class="bg-c">
+                                    <polygon points="2400,0 3600,0 3600,560 2400,560" fill="#0b1018"/>
+                                    <polygon points="2400,0 2900,0 2800,560 2400,560" fill="#0c131d"/>
+                                    <polygon points="3300,330 3600,260 3600,560 3240,560" fill="#161433"/>
+                                    <polygon points="3000,0 3080,0 2960,560 2880,560" fill="#ffffff" fill-opacity="0.03"/>
+                                    <polyline points="2400,470 3600,400" fill="none" stroke="#a5e6fa" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.1"/>
+                                </g>
+                                <g class="cwin-pos">
+                                    <polygon points="2560,24 3500,16 3504,300 2564,308" fill="#0b1119" stroke="#07090d" stroke-width="3"/>
+                                    <polygon points="2572,32 3492,24 3494,292 2574,300" fill="#0d2a3c"/>
+                                    <polygon points="2572,32 3000,28 3002,296 2574,300" fill="#0f3a50"/>
+                                    <circle cx="3380" cy="92" r="28" fill="#dfe6ee"/>
+                                    <circle cx="3394" cy="82" r="24" fill="#0d2a3c"/>
+                                    <circle class="star" cx="2620" cy="70" r="2" fill="#dfe6ee"/>
+                                    <circle class="star" cx="2700" cy="48" r="2" fill="#dfe6ee"/>
+                                    <circle class="star" cx="2840" cy="84" r="2" fill="#dfe6ee"/>
+                                    <circle class="star" cx="3120" cy="56" r="2" fill="#dfe6ee"/>
+                                    <circle class="star" cx="3240" cy="40" r="2" fill="#dfe6ee"/>
+                                    <circle class="star" cx="3460" cy="70" r="2" fill="#dfe6ee"/>
+                                    <circle class="star" cx="2960" cy="44" r="2" fill="#dfe6ee"/>
+                                    <rect x="2574" y="146" width="70" height="150" fill="#1c2940" stroke="#07090d" stroke-width="2"/>
+                                    <rect class="window-light lit" style="--n: 0" x="2580" y="156" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 4" x="2598" y="182" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 8" x="2616" y="208" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 3" x="2580" y="260" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect x="2648" y="186" width="56" height="110" fill="#22324d" stroke="#07090d" stroke-width="2"/>
+                                    <rect class="window-light" style="--n: 1" x="2654" y="222" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 5" x="2672" y="248" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light lit" style="--n: 0" x="2690" y="274" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect x="2708" y="116" width="90" height="180" fill="#2a2364" stroke="#07090d" stroke-width="2"/>
+                                    <rect class="window-light" style="--n: 7" x="2750" y="126" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light lit" style="--n: 2" x="2768" y="152" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 2" x="2714" y="178" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 6" x="2786" y="178" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light lit" style="--n: 6" x="2732" y="204" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 1" x="2750" y="230" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 5" x="2768" y="256" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect x="2802" y="166" width="64" height="130" fill="#0b4a63" stroke="#07090d" stroke-width="2"/>
+                                    <rect class="window-light" style="--n: 4" x="2826" y="176" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light lit" style="--n: 8" x="2844" y="202" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light lit" style="--n: 3" x="2808" y="254" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 7" x="2826" y="280" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect x="2870" y="206" width="48" height="90" fill="#1c2940" stroke="#07090d" stroke-width="2"/>
+                                    <rect class="window-light" style="--n: 1" x="2876" y="216" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light lit" style="--n: 5" x="2894" y="242" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect x="2922" y="126" width="100" height="170" fill="#22324d" stroke="#07090d" stroke-width="2"/>
+                                    <rect class="window-light" style="--n: 2" x="2982" y="136" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light lit" style="--n: 2" x="2928" y="162" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 6" x="3000" y="162" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 6" x="2946" y="188" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 1" x="2964" y="214" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light lit" style="--n: 5" x="2982" y="240" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 5" x="2928" y="266" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 0" x="3000" y="266" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect x="3026" y="176" width="70" height="120" fill="#2a2364" stroke="#07090d" stroke-width="2"/>
+                                    <rect class="window-light" style="--n: 8" x="3068" y="186" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 3" x="3032" y="238" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 7" x="3050" y="264" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect x="3100" y="146" width="60" height="150" fill="#1c2940" stroke="#07090d" stroke-width="2"/>
+                                    <rect class="window-light" style="--n: 5" x="3124" y="156" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 0" x="3142" y="182" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 4" x="3106" y="234" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light lit" style="--n: 8" x="3124" y="260" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect x="3164" y="196" width="80" height="100" fill="#0b4a63" stroke="#07090d" stroke-width="2"/>
+                                    <rect class="window-light" style="--n: 2" x="3170" y="206" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 6" x="3188" y="232" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light lit" style="--n: 1" x="3206" y="258" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect x="3248" y="106" width="66" height="190" fill="#22324d" stroke="#07090d" stroke-width="2"/>
+                                    <rect class="window-light" style="--n: 3" x="3254" y="142" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light lit" style="--n: 7" x="3272" y="168" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 2" x="3290" y="194" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 6" x="3254" y="246" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 1" x="3272" y="272" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect x="3318" y="156" width="90" height="140" fill="#2a2364" stroke="#07090d" stroke-width="2"/>
+                                    <rect class="window-light lit" style="--n: 0" x="3360" y="166" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 4" x="3378" y="192" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light lit" style="--n: 4" x="3324" y="218" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 8" x="3396" y="218" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 8" x="3342" y="244" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 3" x="3360" y="270" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect x="3412" y="136" width="80" height="160" fill="#1c2940" stroke="#07090d" stroke-width="2"/>
+                                    <rect class="window-light lit" style="--n: 6" x="3436" y="146" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 1" x="3454" y="172" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 5" x="3472" y="198" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 5" x="3418" y="224" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light" style="--n: 0" x="3436" y="250" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <rect class="window-light lit" style="--n: 4" x="3454" y="276" width="8" height="10" fill="#ffc46b" fill-opacity="0.85"/>
+                                    <polyline points="2880,26 2884,302" fill="none" stroke="#1c2940" stroke-width="6" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="3190,22 3194,298" fill="none" stroke="#1c2940" stroke-width="6" stroke-linejoin="round" stroke-linecap="round"/>
+                                </g>
+                                <g class="plant">
+                                    <polygon points="2490,470 2420,300 2470,330" fill="#0b4a63" stroke="#07090d" stroke-width="2" stroke-linejoin="round"/>
+                                    <polygon points="2490,470 2480,250 2520,320" fill="#0f7a9c" stroke="#07090d" stroke-width="2" stroke-linejoin="round"/>
+                                    <polygon points="2490,470 2560,290 2540,360" fill="#4fd0f5" stroke="#07090d" stroke-width="2" stroke-linejoin="round"/>
+                                    <polygon points="2490,470 2440,380 2410,420" fill="#0f7a9c" stroke="#07090d" stroke-width="2" stroke-linejoin="round"/>
+                                    <polygon points="2490,470 2580,380 2560,430" fill="#0b4a63" stroke="#07090d" stroke-width="2" stroke-linejoin="round"/>
+                                    <polygon points="2448,462 2532,462 2520,540 2460,540" fill="#b9772a" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round"/>
+                                    <polygon points="2490,462 2532,462 2520,540 2490,540" fill="#8a5a20"/>
+                                </g>
+                                <g class="col-a2-pos">
+                                    <polygon points="-130,40 -62,4 64,4 130,44 150,250 -150,250" fill="url(#art-breton)"/>
+                                    <polygon points="64,4 130,44 150,250 40,250" fill="#000000" fill-opacity="0.3"/>
+                                    <polygon points="-130,40 -62,4 -24,4 -92,250 -150,250" fill="#ffffff" fill-opacity="0.06"/>
+                                    <polyline points="-150,250 -130,40 -62,4 64,4 130,44 150,250" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polygon points="-26,4 26,4 0,30" fill="#07090d"/>
+                                    <polygon points="-17,-32 17,-32 21,6 -21,6" fill="#c6eef8"/>
+                                    <polygon points="2,-32 17,-32 21,6 2,6" fill="#8fd0e2"/>
+                                    <g class="col-a-head">
+                                        <polygon points="-30,-176 34,-182 66,-150 70,-70 52,-56 48,-120 6,-150 -34,-140" fill="#0b1119"/>
+                                        <polygon points="2,-150 48,-120 52,-56 40,-38 2,-28" fill="#c6eef8"/>
+                                        <polygon points="2,-150 -34,-140 -44,-104 -74,-78 -46,-72 -50,-60 -42,-55 -48,-46 -36,-36 -18,-28 2,-28" fill="#ffd592"/>
+                                        <polygon points="-44,-104 -74,-78 -46,-72" fill="#e8a24a"/>
+                                        <polygon points="2,-96 52,-90 40,-38" fill="#a5e6fa"/>
+                                        <polygon points="-36,-36 -18,-28 2,-28 2,-50" fill="#f0c27a"/>
+                                        <polygon points="-34,-140 6,-150 48,-120 50,-108 8,-138 -38,-128" fill="#ff4848"/>
+                                        <g class="col-eye col-a-eye">
+                                            <path d="M 11 -96 Q 24 -107 37 -96 Q 24 -87 11 -96 Z" fill="#f6f8fb" stroke="#07090d" stroke-width="2.5"/>
+                                            <g class="col-gaze col-a-gaze">
+                                                <circle cx="24" cy="-96" r="5" fill="#6b5bd6"/>
+                                                <circle cx="24" cy="-96" r="2.4" fill="#07090d"/>
+                                            </g>
+                                        </g>
+                                        <path d="M -36 -98 Q -26 -104 -17 -99 Q -26 -93 -36 -98 Z" fill="#07090d"/>
+                                        <polyline points="12,-110 38,-106" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-38,-110 -18,-113" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <path d="M 50 -96 C 64 -96, 64 -74, 50 -74" fill="#a5e6fa" stroke="#07090d" stroke-width="2.5"/>
+                                        <polyline points="2,-150 2,-28" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-34,-140 -44,-104 -74,-78 -46,-72 -50,-60" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-48,-46 -36,-36 -18,-28" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-54,-132 -62,-100 -86,-80" fill="none" stroke="#a5e6fa" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.45"/>
+                                        <polygon points="-54,-58 -40,-60 -38,-50 -52,-47" fill="#ff4848" class="col-mouth col-a-mouth"/>
+                                    </g>
+                                </g>
+                                <g class="col-c-pos">
+                                    <polygon points="-118,38 -52,4 56,4 122,42 140,250 -140,250" fill="#0b4a63"/>
+                                    <polygon points="56,4 122,42 140,250 36,250" fill="#000000" fill-opacity="0.3"/>
+                                    <polygon points="-118,38 -52,4 -14,4 -80,250 -140,250" fill="#ffffff" fill-opacity="0.08"/>
+                                    <polyline points="-140,250 -118,38 -52,4 56,4 122,42 140,250" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polygon points="-15,-30 15,-30 17,0 -17,0" fill="#c6c9f0"/>
+                                    <polygon points="2,-30 15,-30 17,0 2,0" fill="#9497d4"/>
+                                    <polygon points="-26,-4 26,-4 30,16 -30,16" fill="#0f7a9c" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round"/>
+                                    <polyline points="-18,-2 -17,14" fill="none" stroke="#0b4a63" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="-6,-2 -5,14" fill="none" stroke="#0b4a63" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="6,-2 7,14" fill="none" stroke="#0b4a63" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <polyline points="18,-2 19,14" fill="none" stroke="#0b4a63" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                    <g transform="translate(-64 140)">
+                                        <g class="c-arm">
+                                            <polygon points="-12,4 12,-4 -8,-118 -34,-112" fill="#0b4a63" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round"/>
+                                            <polygon points="12,-4 -8,-118 -20,-114" fill="#ffffff" fill-opacity="0.12"/>
+                                            <polygon points="-6,-110 -36,-104 -38,-116 -8,-122" fill="#0f7a9c"/>
+                                            <polygon points="-42,-152 -8,-156 -4,-118 -38,-112" fill="#ffd592" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round"/>
+                                            <polyline points="-40,-146 -14,-148" fill="none" stroke="#07090d" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+                                            <polyline points="-40,-136 -14,-138" fill="none" stroke="#07090d" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+                                            <polyline points="-40,-126 -14,-128" fill="none" stroke="#07090d" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+                                            <rect x="-34" y="-190" width="13" height="40" rx="6.5" fill="#ffd592" stroke="#07090d" stroke-width="2.5"/>
+                                        </g>
+                                    </g>
+                                    <g class="c-head">
+                                        <polygon points="2,-148 44,-136 50,-80 38,-40 2,-28" fill="#c6c9f0"/>
+                                        <polygon points="2,-148 -30,-142 -40,-104 -66,-82 -42,-74 -46,-62 -38,-56 -44,-48 -32,-38 -16,-28 2,-28" fill="#ffd592"/>
+                                        <polygon points="-40,-104 -66,-82 -42,-74" fill="#e8a24a"/>
+                                        <polygon points="2,-92 48,-86 38,-40" fill="#aeb3e6"/>
+                                        <polygon points="-34,-140 -30,-178 46,-182 52,-138 44,-134 2,-148" fill="#dfe6ee" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round"/>
+                                        <polygon points="8,-180 46,-182 52,-138 44,-134 8,-150" fill="#b9c6d4"/>
+                                        <path d="M -40 -136 C -34 -204, 70 -206, 62 -112" fill="none" stroke="#07090d" stroke-width="7" stroke-linecap="round"/>
+                                        <path d="M -40 -136 C -34 -204, 70 -206, 62 -112" fill="none" stroke="#4fd0f5" stroke-width="2.5" stroke-linecap="round"/>
+                                        <rect x="44" y="-132" width="24" height="42" rx="10" fill="#4fd0f5" stroke="#07090d" stroke-width="2.5"/>
+                                        <rect x="44" y="-132" width="12" height="42" rx="6" fill="#0f7a9c"/>
+                                        <path d="M -40 -130 A 12 12 0 0 0 -40 -106 Z" fill="#0f7a9c" stroke="#07090d" stroke-width="2"/>
+                                        <g class="col-eye c-eye">
+                                            <path d="M 12 -98 Q 25 -108 38 -98 Q 25 -89 12 -98 Z" fill="#f6f8fb" stroke="#07090d" stroke-width="2.5"/>
+                                            <g class="col-gaze c-gaze">
+                                                <circle cx="25" cy="-98" r="5" fill="#b9772a"/>
+                                                <circle cx="25" cy="-98" r="2.4" fill="#07090d"/>
+                                            </g>
+                                        </g>
+                                        <path d="M -34 -100 Q -24 -106 -15 -101 Q -24 -95 -34 -100 Z" fill="#07090d"/>
+                                        <polyline points="12,-113 38,-110" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-36,-112 -16,-115" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="2,-148 2,-28" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-30,-142 -40,-104 -66,-82 -42,-74 -46,-62" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-44,-48 -32,-38 -16,-28" fill="none" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="-50,-124 -56,-96 -78,-80" fill="none" stroke="#c6c9f0" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.5"/>
+                                        <polygon points="-50,-56 -38,-58 -36,-50 -48,-46" fill="#ff4848" class="col-mouth c-mouth"/>
+                                    </g>
+                                </g>
+                                <rect class="haze" x="-200" y="-200" width="4000" height="2700" fill="#05070b"/>
+                            </g>
+                            <g class="pro-pos">
+                                <g class="pro">
+                                    <g transform="translate(30 4) scale(0.78)">
+                                        <g class="disc">
+                                            <g class="ring ring-4">
+                                                <path d="M 759.1 485.2 A 180.2 180.2 0 0 1 528.1 592.9 L 540.3 559.4 A 144.5 144.5 0 0 0 725.5 473.0 Z" fill="#2b3d5a"/>
+                                                <path d="M 528.1 592.9 A 180.2 180.2 0 0 1 420.4 361.9 L 454.0 374.2 A 144.5 144.5 0 0 0 540.3 559.4 Z" fill="#1b273a"/>
+                                                <path d="M 420.4 361.9 A 180.2 180.2 0 0 1 651.4 254.2 L 639.2 287.8 A 144.5 144.5 0 0 0 454.0 374.2 Z" fill="#2b3d5a"/>
+                                                <path d="M 651.4 254.2 A 180.2 180.2 0 0 1 759.1 485.2 L 725.5 473.0 A 144.5 144.5 0 0 0 639.2 287.8 Z" fill="#1b273a"/>
+                                            </g>
+                                            <g class="ring ring-3">
+                                                <path d="M 725.5 473.0 A 144.5 144.5 0 0 1 540.3 559.4 L 552.5 525.8 A 108.8 108.8 0 0 0 692.0 460.8 Z" fill="#0b4a63"/>
+                                                <path d="M 540.3 559.4 A 144.5 144.5 0 0 1 454.0 374.2 L 487.5 386.4 A 108.8 108.8 0 0 0 552.5 525.8 Z" fill="#0f7a9c"/>
+                                                <path d="M 454.0 374.2 A 144.5 144.5 0 0 1 639.2 287.8 L 627.0 321.3 A 108.8 108.8 0 0 0 487.5 386.4 Z" fill="#0b4a63"/>
+                                                <path d="M 639.2 287.8 A 144.5 144.5 0 0 1 725.5 473.0 L 692.0 460.8 A 108.8 108.8 0 0 0 627.0 321.3 Z" fill="#0f7a9c"/>
+                                            </g>
+                                            <g class="ring ring-2">
+                                                <path d="M 692.0 460.8 A 108.8 108.8 0 0 1 552.5 525.8 L 564.7 492.3 A 73.1 73.1 0 0 0 658.4 448.6 Z" fill="#e8a24a"/>
+                                                <path d="M 552.5 525.8 A 108.8 108.8 0 0 1 487.5 386.4 L 521.0 398.6 A 73.1 73.1 0 0 0 564.7 492.3 Z" fill="#b9772a"/>
+                                                <path d="M 487.5 386.4 A 108.8 108.8 0 0 1 627.0 321.3 L 614.7 354.9 A 73.1 73.1 0 0 0 521.0 398.6 Z" fill="#e8a24a"/>
+                                                <path d="M 627.0 321.3 A 108.8 108.8 0 0 1 692.0 460.8 L 658.4 448.6 A 73.1 73.1 0 0 0 614.7 354.9 Z" fill="#b9772a"/>
+                                            </g>
+                                            <g class="ring ring-1">
+                                                <path d="M 658.4 448.6 A 73.1 73.1 0 0 1 564.7 492.3 L 576.9 458.7 A 37.4 37.4 0 0 0 624.9 436.4 Z" fill="#6b5bd6"/>
+                                                <path d="M 564.7 492.3 A 73.1 73.1 0 0 1 521.0 398.6 L 554.6 410.8 A 37.4 37.4 0 0 0 576.9 458.7 Z" fill="#a294ff"/>
+                                                <path d="M 521.0 398.6 A 73.1 73.1 0 0 1 614.7 354.9 L 602.5 388.4 A 37.4 37.4 0 0 0 554.6 410.8 Z" fill="#6b5bd6"/>
+                                                <path d="M 614.7 354.9 A 73.1 73.1 0 0 1 658.4 448.6 L 624.9 436.4 A 37.4 37.4 0 0 0 602.5 388.4 Z" fill="#a294ff"/>
+                                            </g>
+                                            <g class="ring ring-0">
+                                                <path d="M 589.74 423.58 L 624.9 436.4 A 37.4 37.4 0 0 1 576.9 458.7 Z" fill="#4fd0f5"/>
+                                                <path d="M 589.74 423.58 L 576.9 458.7 A 37.4 37.4 0 0 1 554.6 410.8 Z" fill="#00a2d2"/>
+                                                <path d="M 589.74 423.58 L 554.6 410.8 A 37.4 37.4 0 0 1 602.5 388.4 Z" fill="#4fd0f5"/>
+                                                <path d="M 589.74 423.58 L 602.5 388.4 A 37.4 37.4 0 0 1 624.9 436.4 Z" fill="#00a2d2"/>
+                                            </g>
+                                        </g>
+                                        <g clip-path="url(#art-torso)">
+                                            <rect width="720" height="720" fill="url(#art-harlequin)"/>
+                                            <polygon points="250,450 340,466 402,548 424,720 292,720" fill="#000000" fill-opacity="0.32"/>
+                                            <polygon points="78,520 150,462 204,456 128,720 40,720" fill="#ffffff" fill-opacity="0.07"/>
+                                        </g>
+                                        <polygon points="196,452 264,452 236,522" fill="#dfe6ee"/>
+                                        <polygon points="212,452 250,452 233,494" fill="#07090d"/>
+                                        <polygon points="198,378 250,386 258,456 192,452" fill="#b9c6d4"/>
+                                        <polygon points="226,382 250,386 258,456 230,454" fill="#8fa3b8"/>
+                                        <g transform="translate(226 400)">
+                                            <g class="pro-head">
+                                                <g transform="translate(-226 -400)">
+                                                    <path d="M 150 340 L 132 262 C 132 196, 178 150, 238 144 C 280 140, 312 160, 322 190 L 296 204 L 240 186 L 160 250 Z" fill="#3d2f8f"/>
+                                                    <path d="M 238 144 C 280 140, 312 160, 322 190 L 296 204 L 240 186 Z" fill="#a294ff"/>
+                                                    <polygon points="132,262 180,196 240,186 160,250 150,340" fill="url(#art-stripes)"/>
+                                                    <polygon points="160,250 240,186 238,262 166,292" fill="#dfe6ee"/>
+                                                    <polygon points="166,292 238,262 236,394 198,386 158,338" fill="#aeb3e6"/>
+                                                    <polygon points="240,186 296,204 304,256 238,262" fill="#ffc46b"/>
+                                                    <polygon points="238,262 304,256 308,270 346,318 306,326 236,330" fill="#f2b45a"/>
+                                                    <polygon points="236,330 306,326 314,342 300,348 312,360 296,384 236,394" fill="#ffd592"/>
+                                                    <polygon points="308,270 346,318 306,326" fill="#d98a33"/>
+                                                    <polygon points="166,292 238,262 206,336" fill="#c6c9f0"/>
+                                                    <polygon points="158,338 206,336 198,386" fill="#9497d4"/>
+                                                    <polygon points="270,326 306,326 314,342 300,348 276,352" fill="#f0c27a"/>
+                                                    <polygon points="236,394 296,384 282,410 232,412" fill="#8fa3b8"/>
+                                                    <polygon points="300,348 314,342 321,350 312,360" fill="#ff4848" class="pro-mouth"/>
+                                                    <g class="pro-eye">
+                                                        <path d="M 172 286 Q 200 264 228 286 Q 200 306 172 286 Z" fill="#f6f8fb" stroke="#07090d" stroke-width="3"/>
+                                                        <g class="pro-gaze">
+                                                            <circle cx="204" cy="286" r="9" fill="#00a2d2"/>
+                                                            <circle cx="205" cy="286" r="4" fill="#07090d"/>
+                                                        </g>
+                                                    </g>
+                                                    <polyline points="170,262 226,251" fill="none" stroke="#07090d" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+                                                    <path d="M 266 264 Q 280 254 295 262 Q 280 270 266 264 Z" fill="#07090d"/>
+                                                    <polyline points="262,246 299,240" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                                    <polyline points="196,357 222,353" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                                    <path d="M 160 288 C 138 288, 138 324, 158 328" fill="#b9c6d4" stroke="#07090d" stroke-width="3"/>
+                                                    <polyline points="240,186 236,394" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                                    <polyline points="296,204 304,256 308,270 346,318 306,326 314,342 300,348 312,360 296,384" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                                    <polyline points="244,92 240,186" fill="none" stroke="#a5e6fa" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.3"/>
+                                                    <polyline points="312,214 318,262 356,312 318,334 326,356 308,392" fill="none" stroke="#a5e6fa" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.45"/>
+                                                </g>
+                                            </g>
+                                        </g>
+                                        <polygon points="312,468 382,454 476,530 408,604" fill="url(#art-harlequin)"/>
+                                        <polygon points="312,468 382,454 476,530 444,556" fill="#ffffff" fill-opacity="0.1"/>
+                                        <polygon points="312,468 444,556 408,604" fill="#000000" fill-opacity="0.3"/>
+                                        <polyline points="312,468 408,604" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <polyline points="382,454 476,530" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                        <g transform="translate(442 567)">
+                                            <g class="pro-fore">
+                                                <g transform="translate(-442 -567)">
+                                                    <polygon points="408,604 476,530 524,380 462,360" fill="url(#art-harlequin)"/>
+                                                    <polygon points="408,604 444,556 476,530 524,380 496,370" fill="#ffffff" fill-opacity="0.14"/>
+                                                    <polygon points="408,604 496,370 462,360" fill="#000000" fill-opacity="0.24"/>
+                                                    <polyline points="408,604 462,360" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                                    <polyline points="476,530 524,380" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                                    <polygon points="460,348 526,366 520,390 454,372" fill="#00a2d2"/>
+                                                    <g class="held">
+                                                        <g transform="rotate(-8 528 244)">
+                                                            <polygon points="492,170 530,148 562,162 584,176 584,326 562,334 530,340 494,322" fill="none" stroke="#a5e6fa" stroke-opacity="0.4" stroke-width="2" transform="rotate(-14 528 244) translate(24 -12)"/>
+                                                            <polygon points="470,300 494,296 496,356 474,360" fill="#b9772a"/>
+                                                            <polygon points="562,162 584,176 584,326 562,334" fill="#1c2940"/>
+                                                            <polygon points="492,170 530,148 530,340 494,322" fill="#577196"/>
+                                                            <polygon points="530,148 562,162 562,334 530,340" fill="#3b5276"/>
+                                                            <polygon points="492,170 512,159 502,330 494,322" fill="#ffffff" fill-opacity="0.12"/>
+                                                            <polyline points="584,236 584,176 562,162 530,148 492,170 494,322 530,340 562,334 584,326 584,268" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                                            <polyline points="530,148 530,214" fill="none" stroke="#07090d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                                            <polyline points="562,162 562,334" fill="none" stroke="#07090d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                                            <circle cx="528" cy="194" r="17" fill="#0b1119"/>
+                                                            <path d="M 528 177 A 17 17 0 0 0 528 211 Z" fill="url(#art-grille)"/>
+                                                            <polyline points="533,188 541,188" fill="none" stroke="#8fa3b8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                                            <polyline points="533,194 543,194" fill="none" stroke="#8fa3b8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                                            <polyline points="533,200 541,200" fill="none" stroke="#8fa3b8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                                            <circle cx="528" cy="194" r="17" fill="none" stroke="#07090d" stroke-width="2.5"/>
+                                                            <polygon points="500,222 556,216 556,258 500,264" fill="#05070a" stroke="#07090d" stroke-width="2"/>
+                                                            <rect x="506" y="235" width="3.5" height="10" rx="1.75" fill="#4fd0f5"/>
+                                                            <rect x="513" y="230" width="3.5" height="20" rx="1.75" fill="#4fd0f5"/>
+                                                            <rect x="520" y="233" width="3.5" height="14" rx="1.75" fill="#4fd0f5"/>
+                                                            <rect x="527" y="225" width="3.5" height="30" rx="1.75" fill="#4fd0f5"/>
+                                                            <rect x="534" y="232" width="3.5" height="16" rx="1.75" fill="#4fd0f5"/>
+                                                            <rect x="541" y="228" width="3.5" height="24" rx="1.75" fill="#4fd0f5"/>
+                                                            <rect x="548" y="234" width="3.5" height="12" rx="1.75" fill="#4fd0f5"/>
+                                                            <rect class="levels-cover" x="503" y="219" width="51" height="42" fill="#05070a"/>
+                                                            <polygon points="500,222 556,216 556,258 500,264" fill="#a5e6fa" class="screen-flash"/>
+                                                            <circle class="rec-ring" cx="528" cy="290" r="24" fill="none" stroke="#ff4848" stroke-width="2"/>
+                                                            <circle cx="528" cy="290" r="19" fill="#0b1119" stroke="#07090d" stroke-width="2"/>
+                                                            <g class="rec-button">
+                                                                <path d="M 528 277 A 13 13 0 0 1 528 303 Z" fill="#c2303a"/>
+                                                                <path d="M 528 277 A 13 13 0 0 0 528 303 Z" fill="#6e1c24"/>
+                                                                <g class="rec-on">
+                                                                    <path class="rec-light" d="M 528 277 A 13 13 0 0 0 528 303 Z" fill="#ff4848"/>
+                                                                </g>
+                                                                <circle cx="528" cy="290" r="13" fill="none" stroke="#07090d" stroke-width="2.5"/>
+                                                            </g>
+                                                            <rect x="480" y="306" width="50" height="14" rx="7" fill="#ffc46b" stroke="#07090d" stroke-width="2.5"/>
+                                                            <rect x="480" y="322" width="54" height="14" rx="7" fill="#ffc46b" stroke="#07090d" stroke-width="2.5"/>
+                                                            <rect x="480" y="338" width="48" height="14" rx="7" fill="#ffc46b" stroke="#07090d" stroke-width="2.5"/>
+                                                            <rect class="thumb" x="574" y="280" width="14" height="36" rx="7" fill="#e8a24a" stroke="#07090d" stroke-width="2.5"/>
+                                                        </g>
+                                                    </g>
+                                                    <g class="open-hand">
+                                                        <rect x="452" y="292" width="15" height="42" rx="7.5" fill="#e8a24a" stroke="#07090d" stroke-width="2.5" transform="rotate(-34 459.5 334)"/>
+                                                        <rect x="473.5" y="246" width="13" height="52" rx="6.5" fill="#ffc46b" stroke="#07090d" stroke-width="2" transform="rotate(14 480 290)"/>
+                                                        <rect x="489.5" y="242.4" width="13" height="60" rx="6.5" fill="#ffc46b" stroke="#07090d" stroke-width="2" transform="rotate(14 496 294.4)"/>
+                                                        <rect x="505.5" y="249.8" width="13" height="57" rx="6.5" fill="#ffc46b" stroke="#07090d" stroke-width="2" transform="rotate(14 512 298.8)"/>
+                                                        <rect x="521.5" y="263.2" width="13" height="48" rx="6.5" fill="#ffc46b" stroke="#07090d" stroke-width="2" transform="rotate(14 528 303.2)"/>
+                                                        <polygon points="460,348 526,366 540,306 474,288" fill="#ffc46b" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round"/>
+                                                        <polygon points="460,348 493,357 507,297 474,288" fill="#e8a24a" fill-opacity="0.55"/>
+                                                    </g>
+                                                </g>
+                                            </g>
+                                        </g>
+                                    </g>
+                                </g>
+                            </g>
+                            <g class="cam cam-front">
+                                <g class="table-wide">
+                                    <polygon points="-20,420 1220,394 1220,452 -20,488" fill="#1c2940"/>
+                                    <polygon points="-20,420 560,408 520,474 -20,488" fill="#ffffff" fill-opacity="0.05"/>
+                                    <polyline points="-20,432 1220,402" fill="none" stroke="#2b3d5a" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.8"/>
+                                    <polyline points="-20,444 1220,414" fill="none" stroke="#2b3d5a" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.8"/>
+                                    <polyline points="-20,456 1220,426" fill="none" stroke="#2b3d5a" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.8"/>
+                                    <polyline points="-20,468 1220,438" fill="none" stroke="#2b3d5a" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.8"/>
+                                    <polyline points="-20,420 1220,394" fill="none" stroke="#4fd0f5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.3"/>
+                                    <polygon points="-20,488 1220,452 1220,560 -20,560" fill="#121a28"/>
+                                    <polygon points="600,470 1220,452 1220,560 560,560" fill="#000000" fill-opacity="0.18"/>
+                                </g>
+                                <g class="placed-pos">
+                                    <g class="placed">
+                                        <g transform="translate(30 4) scale(0.78)">
+                                            <g transform="translate(459.63 731.47) rotate(8) translate(-442 -567)">
+                                                <g transform="rotate(-8 528 244)">
+                                                    <polygon points="492,170 530,148 562,162 584,176 584,326 562,334 530,340 494,322" fill="none" stroke="#a5e6fa" stroke-opacity="0.4" stroke-width="2" transform="rotate(-14 528 244) translate(24 -12)"/>
+                                                    <polygon points="562,162 584,176 584,326 562,334" fill="#1c2940"/>
+                                                    <polygon points="492,170 530,148 530,340 494,322" fill="#577196"/>
+                                                    <polygon points="530,148 562,162 562,334 530,340" fill="#3b5276"/>
+                                                    <polygon points="492,170 512,159 502,330 494,322" fill="#ffffff" fill-opacity="0.12"/>
+                                                    <polyline points="584,236 584,176 562,162 530,148 492,170 494,322 530,340 562,334 584,326 584,268" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+                                                    <polyline points="530,148 530,214" fill="none" stroke="#07090d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                                    <polyline points="562,162 562,334" fill="none" stroke="#07090d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                                    <circle cx="528" cy="194" r="17" fill="#0b1119"/>
+                                                    <path d="M 528 177 A 17 17 0 0 0 528 211 Z" fill="url(#art-grille)"/>
+                                                    <polyline points="533,188 541,188" fill="none" stroke="#8fa3b8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                                    <polyline points="533,194 543,194" fill="none" stroke="#8fa3b8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                                    <polyline points="533,200 541,200" fill="none" stroke="#8fa3b8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                                    <circle cx="528" cy="194" r="17" fill="none" stroke="#07090d" stroke-width="2.5"/>
+                                                    <polygon points="500,222 556,216 556,258 500,264" fill="#05070a" stroke="#07090d" stroke-width="2"/>
+                                                    <rect x="506" y="235" width="3.5" height="10" rx="1.75" fill="#4fd0f5"/>
+                                                    <rect x="513" y="230" width="3.5" height="20" rx="1.75" fill="#4fd0f5"/>
+                                                    <rect x="520" y="233" width="3.5" height="14" rx="1.75" fill="#4fd0f5"/>
+                                                    <rect x="527" y="225" width="3.5" height="30" rx="1.75" fill="#4fd0f5"/>
+                                                    <rect x="534" y="232" width="3.5" height="16" rx="1.75" fill="#4fd0f5"/>
+                                                    <rect x="541" y="228" width="3.5" height="24" rx="1.75" fill="#4fd0f5"/>
+                                                    <rect x="548" y="234" width="3.5" height="12" rx="1.75" fill="#4fd0f5"/>
+                                                    <rect class="levels-cover" x="503" y="219" width="51" height="42" fill="#05070a"/>
+                                                    <polygon points="500,222 556,216 556,258 500,264" fill="#a5e6fa" class="screen-flash"/>
+                                                    <circle class="rec-ring" cx="528" cy="290" r="24" fill="none" stroke="#ff4848" stroke-width="2"/>
+                                                    <circle cx="528" cy="290" r="19" fill="#0b1119" stroke="#07090d" stroke-width="2"/>
+                                                    <g class="rec-button">
+                                                        <path d="M 528 277 A 13 13 0 0 1 528 303 Z" fill="#c2303a"/>
+                                                        <path d="M 528 277 A 13 13 0 0 0 528 303 Z" fill="#6e1c24"/>
+                                                        <g class="rec-on">
+                                                            <path class="rec-light" d="M 528 277 A 13 13 0 0 0 528 303 Z" fill="#ff4848"/>
+                                                        </g>
+                                                        <circle cx="528" cy="290" r="13" fill="none" stroke="#07090d" stroke-width="2.5"/>
+                                                    </g>
+                                                </g>
+                                            </g>
+                                        </g>
+                                    </g>
+                                </g>
+                                <g class="cup-pos">
+                                    <polygon points="598,388 626,388 622,420 602,420" fill="#e9eef4" stroke="#07090d" stroke-width="2"/>
+                                    <polygon points="612,388 626,388 622,420 612,420" fill="#b9c6d4"/>
+                                    <ellipse cx="612" cy="388" rx="14" ry="4" fill="#4a2f1c" stroke="#07090d" stroke-width="2"/>
+                                    <path d="M 625 396 C 638 396, 638 412, 623 412" fill="none" stroke="#07090d" stroke-width="2.5"/>
+                                    <path class="steam" style="--n: 0" d="M 606 380 C 600 372, 612 366, 606 358" fill="none" stroke="#c9d6e3" stroke-width="2" stroke-linecap="round"/>
+                                    <path class="steam" style="--n: 1" d="M 614 380 C 608 372, 620 366, 614 358" fill="none" stroke="#c9d6e3" stroke-width="2" stroke-linecap="round"/>
+                                    <path class="steam" style="--n: 2" d="M 621 380 C 615 372, 627 366, 621 358" fill="none" stroke="#c9d6e3" stroke-width="2" stroke-linecap="round"/>
+                                </g>
+                                <g class="col-b-front-pos">
+                                    <g class="sip">
+                                        <polygon points="-118,30 -90,30 -94,62 -114,62" fill="#e9eef4" stroke="#07090d" stroke-width="2"/>
+                                        <polygon points="-104,30 -90,30 -94,62 -104,62" fill="#b9c6d4"/>
+                                        <ellipse cx="-104" cy="30" rx="14" ry="4" fill="#4a2f1c" stroke="#07090d" stroke-width="2"/>
+                                        <path d="M -91 38 C -78 38, -78 54, -93 54" fill="none" stroke="#07090d" stroke-width="2.5"/>
+                                        <path class="steam" style="--n: 0" d="M -110 22 C -116 14, -104 8, -110 0" fill="none" stroke="#c9d6e3" stroke-width="2" stroke-linecap="round"/>
+                                        <path class="steam" style="--n: 1" d="M -102 22 C -108 14, -96 8, -102 0" fill="none" stroke="#c9d6e3" stroke-width="2" stroke-linecap="round"/>
+                                        <path class="steam" style="--n: 2" d="M -95 22 C -101 14, -89 8, -95 0" fill="none" stroke="#c9d6e3" stroke-width="2" stroke-linecap="round"/>
+                                        <polygon points="-96,30 -74,26 -72,58 -92,62" fill="#f2b45a" stroke="#07090d" stroke-width="2" stroke-linejoin="round"/>
+                                        <rect x="-104" y="30" width="22" height="8" rx="4" fill="#f2b45a" stroke="#07090d" stroke-width="1.8"/>
+                                        <rect x="-104" y="40" width="22" height="8" rx="4" fill="#f2b45a" stroke="#07090d" stroke-width="1.8"/>
+                                        <rect x="-104" y="50" width="22" height="8" rx="4" fill="#f2b45a" stroke="#07090d" stroke-width="1.8"/>
+                                    </g>
+                                </g>
+                                <g class="desk-pos">
+                                    <polygon points="1680,508 2420,490 2420,524 1680,542" fill="#2b3d5a"/>
+                                    <polyline points="1680,508 2420,490" fill="none" stroke="#4fd0f5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.3"/>
+                                    <polygon points="1680,542 2420,524 2420,560 1680,560" fill="#1c2940"/>
+                                    <polygon points="1766,486 1794,486 1790,518 1770,518" fill="#e9eef4" stroke="#07090d" stroke-width="2"/>
+                                    <polygon points="1780,486 1794,486 1790,518 1780,518" fill="#b9c6d4"/>
+                                    <ellipse cx="1780" cy="486" rx="14" ry="4" fill="#4a2f1c" stroke="#07090d" stroke-width="2"/>
+                                    <path d="M 1793 494 C 1806 494, 1806 510, 1791 510" fill="none" stroke="#07090d" stroke-width="2.5"/>
+                                </g>
+                                <g class="desk-c-pos">
+                                    <polygon points="2400,436 3600,414 3600,470 2400,494" fill="#1c2940"/>
+                                    <polygon points="2400,436 2980,425 2940,484 2400,494" fill="#ffffff" fill-opacity="0.05"/>
+                                    <polyline points="2400,436 3600,414" fill="none" stroke="#4fd0f5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.3"/>
+                                    <polygon points="2400,494 3600,470 3600,560 2400,560" fill="#121a28"/>
+                                    <polygon points="3000,482 3600,470 3600,560 2960,560" fill="#000000" fill-opacity="0.18"/>
+                                </g>
+                                <g class="laptop-1-pos">
+                                    <polygon points="2574,300 2694,292 2702,404 2580,410" fill="#141d2c" stroke="#07090d" stroke-width="3" stroke-linejoin="round"/>
+                                    <polygon points="2584,310 2684,304 2690,394 2590,400" fill="#0b1119"/>
+                                    <polygon points="2584,310 2634,307 2638,397 2590,400" fill="#ffffff" fill-opacity="0.04"/>
+                                    <g transform="translate(2589.9 311.8) scale(0.119)">
+                                        <path d="M14.05 73.69L17.02 61.76L77.67 61.76L74.70 73.69ZM14.05 93.57L17.02 81.64L53.81 81.64L50.84 93.57Z" fill="#f0a020" stroke="#f0a020" stroke-width="1.1" stroke-linejoin="round"/>
+                                        <path d="M14.03 20.59L25.15 20.59L20.19 40.47L9.07 40.47ZM33.41 10.65L44.53 10.65L34.61 50.41L23.49 50.41ZM48.82 16.61L59.94 16.61L53.00 44.44L41.88 44.44ZM64.22 22.58L75.34 22.58L71.38 38.48L60.26 38.48Z" fill="url(#art-mark-bars)" stroke="url(#art-mark-bars)" stroke-width="1.1" stroke-linejoin="round"/>
+                                        <path d="M10.65 70.29L13.62 58.36L74.27 58.36L71.30 70.29ZM10.65 90.17L13.62 78.24L50.41 78.24L47.44 90.17Z" fill="url(#art-mark-lines)" stroke="url(#art-mark-lines)" stroke-width="1.1" stroke-linejoin="round"/>
+                                    </g>
+                                    <g class="c-note c-note-1">
+                                        <polygon points="2598,330 2672,326 2676,390 2602,394" fill="#e9eef4"/>
+                                        <rect x="2606" y="336" width="34" height="5" fill="#00a2d2"/>
+                                        <rect x="2606" y="348" width="52" height="3.5" rx="1.75" fill="#2b3d5a"/>
+                                        <rect x="2606" y="357" width="40" height="3.5" rx="1.75" fill="#2b3d5a"/>
+                                        <rect x="2606" y="366" width="46" height="3.5" rx="1.75" fill="#2b3d5a"/>
+                                        <rect x="2606" y="375" width="6" height="6" rx="1" fill="#4fd0f5" stroke="#2b3d5a" stroke-width="1"/>
+                                        <rect x="2616" y="376.5" width="30" height="3" rx="1.5" fill="#2b3d5a"/>
+                                        <rect x="2606" y="384" width="6" height="6" rx="1" fill="#4fd0f5" stroke="#2b3d5a" stroke-width="1"/>
+                                        <rect x="2616" y="385.5" width="22" height="3" rx="1.5" fill="#2b3d5a"/>
+                                    </g>
+                                    <polygon points="2566,410 2706,402 2722,426 2556,434" fill="#2b3d5a" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round"/>
+                                    <polygon points="2586,414 2688,409 2694,418 2582,423" fill="#1c2940"/>
+                                </g>
+                                <g class="laptop-2-pos">
+                                    <polygon points="3024,300 3144,292 3152,404 3030,410" fill="#141d2c" stroke="#07090d" stroke-width="3" stroke-linejoin="round"/>
+                                    <polygon points="3034,310 3134,304 3140,394 3040,400" fill="#0b1119"/>
+                                    <polygon points="3034,310 3084,307 3088,397 3040,400" fill="#ffffff" fill-opacity="0.04"/>
+                                    <g transform="translate(3039.9 311.8) scale(0.119)">
+                                        <path d="M14.05 73.69L17.02 61.76L77.67 61.76L74.70 73.69ZM14.05 93.57L17.02 81.64L53.81 81.64L50.84 93.57Z" fill="#f0a020" stroke="#f0a020" stroke-width="1.1" stroke-linejoin="round"/>
+                                        <path d="M14.03 20.59L25.15 20.59L20.19 40.47L9.07 40.47ZM33.41 10.65L44.53 10.65L34.61 50.41L23.49 50.41ZM48.82 16.61L59.94 16.61L53.00 44.44L41.88 44.44ZM64.22 22.58L75.34 22.58L71.38 38.48L60.26 38.48Z" fill="url(#art-mark-bars)" stroke="url(#art-mark-bars)" stroke-width="1.1" stroke-linejoin="round"/>
+                                        <path d="M10.65 70.29L13.62 58.36L74.27 58.36L71.30 70.29ZM10.65 90.17L13.62 78.24L50.41 78.24L47.44 90.17Z" fill="url(#art-mark-lines)" stroke="url(#art-mark-lines)" stroke-width="1.1" stroke-linejoin="round"/>
+                                    </g>
+                                    <g class="c-note c-note-2">
+                                        <polygon points="3048,330 3122,326 3126,390 3052,394" fill="#e9eef4"/>
+                                        <rect x="3056" y="336" width="34" height="5" fill="#00a2d2"/>
+                                        <rect x="3056" y="348" width="52" height="3.5" rx="1.75" fill="#2b3d5a"/>
+                                        <rect x="3056" y="357" width="40" height="3.5" rx="1.75" fill="#2b3d5a"/>
+                                        <rect x="3056" y="366" width="46" height="3.5" rx="1.75" fill="#2b3d5a"/>
+                                        <rect x="3056" y="375" width="6" height="6" rx="1" fill="#4fd0f5" stroke="#2b3d5a" stroke-width="1"/>
+                                        <rect x="3066" y="376.5" width="30" height="3" rx="1.5" fill="#2b3d5a"/>
+                                        <rect x="3056" y="384" width="6" height="6" rx="1" fill="#4fd0f5" stroke="#2b3d5a" stroke-width="1"/>
+                                        <rect x="3066" y="385.5" width="22" height="3" rx="1.5" fill="#2b3d5a"/>
+                                    </g>
+                                    <polygon points="3016,410 3156,402 3172,426 3006,434" fill="#2b3d5a" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round"/>
+                                    <polygon points="3036,414 3138,409 3144,418 3032,423" fill="#1c2940"/>
+                                </g>
+                                <g class="words-pos">
+                                    <g class="word" style="--d: 1.249s; --dx: 244.0px; --dy: -23.4px; --tdx: 17.4px; --tdy: -499.5px; --r: 40deg">
+                                        <polygon points="-18,15 0,-18 18,15" fill="#a294ff"/>
+                                    </g>
+                                    <g class="word" style="--d: 1.516s; --dx: 244.0px; --dy: 0.6px; --tdx: 17.4px; --tdy: -475.5px; --r: -30deg">
+                                        <path d="M -18 8 A 18 18 0 0 1 18 8 Z" fill="#ffc46b"/>
+                                    </g>
+                                    <g class="word" style="--d: 1.784s; --dx: 244.0px; --dy: -19.4px; --tdx: 17.4px; --tdy: -495.5px; --r: 60deg">
+                                        <rect x="-13" y="-13" width="26" height="26" transform="rotate(45)" fill="#4fd0f5"/>
+                                    </g>
+                                    <g class="word" style="--d: 2.119s; --dx: -216.6px; --dy: -6.8px; --tdx: -191.9px; --tdy: -4.9px; --r: 0deg">
+                                        <circle r="13" fill="#dfe6ee"/>
+                                    </g>
+                                    <g class="word" style="--d: 2.353s; --dx: -216.6px; --dy: -10.8px; --tdx: -191.9px; --tdy: -8.9px; --r: -50deg">
+                                        <polygon points="-19,-11 19,-16 14,14 -14,16" fill="#a294ff"/>
+                                    </g>
+                                    <g class="word" style="--d: 2.587s; --dx: -216.6px; --dy: -24.8px; --tdx: -191.9px; --tdy: -22.9px; --r: 90deg">
+                                        <path d="M 0 -18 A 18 18 0 0 1 18 0 L 0 0 Z" fill="#ffc46b"/>
+                                    </g>
+                                    <g class="word" style="--d: 2.821s; --dx: -216.6px; --dy: -4.8px; --tdx: -191.9px; --tdy: -2.9px; --r: -70deg">
+                                        <polygon points="-16,16 16,16 0,-16" fill="#4fd0f5"/>
+                                    </g>
+                                    <g class="word" style="--d: 3.122s; --dx: 502.8px; --dy: -4.3px; --tdx: -216.7px; --tdy: -491.5px; --r: 35deg">
+                                        <rect x="-16" y="-9" width="32" height="18" rx="2" fill="#e8a24a"/>
+                                    </g>
+                                    <g class="word" style="--d: 3.390s; --dx: 502.8px; --dy: 13.7px; --tdx: -216.7px; --tdy: -473.5px; --r: 20deg">
+                                        <polygon points="0,-17 17,0 0,17 -17,0" fill="#a294ff"/>
+                                    </g>
+                                    <g class="word" style="--d: 3.658s; --dx: 502.8px; --dy: 3.7px; --tdx: -216.7px; --tdy: -483.5px; --r: -40deg">
+                                        <path d="M -17 0 A 17 17 0 0 0 17 0 Z" fill="#4fd0f5"/>
+                                    </g>
+                                    <g class="word" style="--d: 4.059s; --dx: 244.0px; --dy: -5.4px; --tdx: 17.4px; --tdy: -481.5px; --r: 55deg">
+                                        <polygon points="-17,-13 17,-13 9,15 -9,15" fill="#ffc46b"/>
+                                    </g>
+                                    <g class="word" style="--d: 4.327s; --dx: 244.0px; --dy: -23.4px; --tdx: 17.4px; --tdy: -499.5px; --r: 0deg">
+                                        <circle r="11" fill="#a294ff"/>
+                                    </g>
+                                    <g class="word" style="--d: 4.595s; --dx: 244.0px; --dy: -9.4px; --tdx: 17.4px; --tdy: -485.5px; --r: 40deg">
+                                        <polygon points="-18,15 0,-18 18,15" fill="#a294ff"/>
+                                    </g>
+                                </g>
+                                <g class="flight">
+                                    <g class="fly-x">
+                                        <g class="fly-y">
+                                            <g class="shard">
+                                                <polygon points="-74,-36 66,-44 74,36 -66,44" fill="#0d2232"/>
+                                                <polygon points="-74,-36 0,-40 0,40 -66,44" fill="#0f3a50"/>
+                                                <polyline points="-74,-36 66,-44 74,36 -66,44 -74,-36" fill="none" stroke="#4fd0f5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                                <g class="shard-bars">
+                                                    <rect x="-48.5" y="-13" width="6" height="26" rx="3" fill="#4fd0f5"/>
+                                                    <rect x="-35.5" y="-22" width="6" height="44" rx="3" fill="#4fd0f5"/>
+                                                    <rect x="-22.5" y="-16" width="6" height="32" rx="3" fill="#4fd0f5"/>
+                                                    <rect x="-9.5" y="-27" width="6" height="54" rx="3" fill="#4fd0f5"/>
+                                                    <rect x="3.5" y="-19" width="6" height="38" rx="3" fill="#4fd0f5"/>
+                                                    <rect x="16.5" y="-24" width="6" height="48" rx="3" fill="#4fd0f5"/>
+                                                    <rect x="29.5" y="-12" width="6" height="24" rx="3" fill="#4fd0f5"/>
+                                                    <rect x="42.5" y="-18" width="6" height="36" rx="3" fill="#4fd0f5"/>
+                                                </g>
+                                            </g>
+                                        </g>
+                                    </g>
+                                </g>
+                                <g class="plane-pos plane-pos-1">
+                                    <g class="plane-x">
+                                        <g class="plane-y">
+                                            <g class="plane">
+                                                <polygon points="30,0 -24,-16 -12,0" fill="#f4f7fb" stroke="#07090d" stroke-width="2" stroke-linejoin="round"/>
+                                                <polygon points="30,0 -12,0 -26,14" fill="#c9d6e3" stroke="#07090d" stroke-width="2" stroke-linejoin="round"/>
+                                                <polyline points="30,0 -12,0" fill="none" stroke="#07090d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                                <polyline points="-14,-2 -40,-6" fill="none" stroke="#4fd0f5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.6"/>
+                                                <polyline points="-16,6 -46,8" fill="none" stroke="#4fd0f5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.4"/>
+                                            </g>
+                                        </g>
+                                    </g>
+                                </g>
+                                <g class="plane-pos plane-pos-2">
+                                    <g class="plane-x">
+                                        <g class="plane-y">
+                                            <g class="plane">
+                                                <polygon points="30,0 -24,-16 -12,0" fill="#f4f7fb" stroke="#07090d" stroke-width="2" stroke-linejoin="round"/>
+                                                <polygon points="30,0 -12,0 -26,14" fill="#c9d6e3" stroke="#07090d" stroke-width="2" stroke-linejoin="round"/>
+                                                <polyline points="30,0 -12,0" fill="none" stroke="#07090d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                                                <polyline points="-14,-2 -40,-6" fill="none" stroke="#4fd0f5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.6"/>
+                                                <polyline points="-16,6 -46,8" fill="none" stroke="#4fd0f5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.4"/>
+                                            </g>
+                                        </g>
+                                    </g>
+                                </g>
+                            </g>
+                            <g class="wipe">
+                                <polygon points="-260,-60 1500,-60 1380,900 -380,900" fill="#0f1724"/>
+                                <polygon points="-380,-60 -230,-60 -350,900 -500,900" fill="#00a2d2"/>
+                                <polygon points="-520,-60 -420,-60 -540,900 -640,900" fill="#ffc46b"/>
+                                <polygon points="1500,-60 1580,-60 1460,900 1380,900" fill="#6b5bd6"/>
+                                <polygon points="200,-60 520,-60 300,900 -20,900" fill="#ffffff" fill-opacity="0.03"/>
+                            </g>
+                        </svg>
+                    </div>
+                </figure>
+            </div>
+
+            <ol class="steps">
+                <li class="step step-1"><i aria-hidden="true">I</i><b>Record the meeting</b><span>Use a phone, a voice recorder, or the app itself.</span></li>
+                <li class="step step-2"><i aria-hidden="true">II</i><b>Add it to Remi</b><span>Remi transcribes the recording and writes the notes.</span></li>
+                <li class="step step-3"><i aria-hidden="true">III</i><b>Share the notes</b><span>Send them to your team, including anyone who missed the meeting.</span></li>
+            </ol>
+        </section>
+
+        <section class="ask paper turn" id="ask" aria-labelledby="ask-title">
+            <div class="facets" aria-hidden="true">
+                <i></i>
+                <i></i>
+                <i></i>
+                <i></i>
+            </div>
+
+            <div class="wrap">
+                <div class="recall-head">
+                    <p class="eyebrow">Meeting memory</p>
+                    <h2 id="ask-title">What did we decide?<br> <em>Remi remembers.</em></h2>
+                    <p>Each meeting you record stays searchable. Ask a question the way you’d ask a colleague, and Remi answers from your past meetings and shows you which meeting each answer came from.</p>
+                </div>
+
+                <div class="recall">
+                    <div class="chat" role="group" aria-label="Example questions and answers">
+                        <div class="exchange exchange-1">
+                            <p class="chat-q">What did we decide about the Q3 budget?</p>
+                            <p class="chat-a">Keep spending flat and review it again in October <span class="cite">M1</span>. Dana is updating the forecast before then <span class="cite">M2</span>.</p>
+                        </div>
+
+                        <div class="exchange exchange-2">
+                            <p class="chat-q">Did Northwind agree to two years?</p>
+                            <p class="chat-a">Yes. Riley Chen agreed to a two-year renewal on the same terms <span class="cite">M1</span>, and the contract goes out on Friday <span class="cite">M2</span>.</p>
+                        </div>
+
+                        <div class="exchange exchange-3">
+                            <p class="chat-q">Who is following up with the site crew?</p>
+                            <p class="chat-a">Marco is. He will confirm the new delivery date by Wednesday <span class="cite">M1</span>.</p>
+                        </div>
+                    </div>
+
+                    <div class="memory">
+                        <p class="memory-label">Your meetings</p>
+
+                        <ol aria-label="Past meetings">
+                            <li class="hit-2"><b>M2</b>Weekly sync<span>9 Nov</span></li>
+                            <li class="hit-2"><b>M1</b>Northwind renewal call<span>7 Nov</span></li>
+                            <li class="hit-3"><b>M1</b>Site meeting<span>28 Oct</span></li>
+                            <li><b></b>Hiring panel<span>15 Sep</span></li>
+                            <li class="hit-1"><b>M2</b>Finance sync<span>21 Aug</span></li>
+                            <li class="hit-1"><b>M1</b>Budget review<span>14 Aug</span></li>
+                            <li><b></b>Q3 kickoff<span>3 Jul</span></li>
+                        </ol>
+                    </div>
+                </div>
+
+                <ul class="recall-points">
+                    <li><b>Searches every word</b><span>Remi looks through the title, people, notes, and full transcript of each meeting.</span></li>
+                    <li><b>Shows its sources</b><span>Each answer names the meetings it used, and one click opens them.</span></li>
+                    <li><b>Understands time</b><span>Ask about “last Thursday” or “March,” and Remi looks there first.</span></li>
+                </ul>
+            </div>
+        </section>
+
+        <section class="statement paper" aria-labelledby="statement-title">
+            <div class="facets" aria-hidden="true">
+                <i></i>
+                <i></i>
+                <i></i>
+                <i></i>
+            </div>
+
+            <div class="wrap statement-grid">
+                <h2 id="statement-title">Everyone gets to <em>join the conversation.</em></h2>
+                <p>Remi takes care of the notes, so the person who usually writes everything down can take part too.</p>
+            </div>
+        </section>
+
+        <section class="private" id="private" aria-labelledby="private-title">
+            <div class="facets" aria-hidden="true">
+                <i></i>
+                <i></i>
+                <i></i>
+                <i></i>
+            </div>
+
+            <div class="wrap split">
+                <div class="copy reveal">
+                    <p class="eyebrow">Private by design</p>
+                    <h2 id="private-title">Never stored <em>in the cloud.</em></h2>
+                    <p>Recordings are processed on our own private servers and aren’t kept afterward. The audio, transcripts, and notes stay on your computer.</p>
+                </div>
+
+                <div class="vault reveal" aria-hidden="true">
+                    <div class="vault-in">
+                        <i style="--level: 0.58; --i: 0"></i>
+                        <i style="--level: 0.77; --i: 1"></i>
+                        <i style="--level: 0.49; --i: 2"></i>
+                        <i style="--level: 0.52; --i: 3"></i>
+                        <i style="--level: 0.33; --i: 4"></i>
+                        <i style="--level: 0.34; --i: 5"></i>
+                        <i style="--level: 0.31; --i: 6"></i>
+                        <i style="--level: 0.53; --i: 7"></i>
+                        <i style="--level: 0.28; --i: 8"></i>
+                        <i style="--level: 0.57; --i: 9"></i>
+                        <i style="--level: 0.29; --i: 10"></i>
+                        <i style="--level: 0.63; --i: 11"></i>
+                        <i style="--level: 0.37; --i: 12"></i>
+                        <i style="--level: 0.57; --i: 13"></i>
+                        <i style="--level: 0.60; --i: 14"></i>
+                        <i style="--level: 0.80; --i: 15"></i>
+                        <i style="--level: 0.57; --i: 16"></i>
+                        <i style="--level: 0.73; --i: 17"></i>
+                    </div>
+
+                    <div class="vault-core">
+                        <span class="vault-ring"></span>
+                        <span class="vault-lock"></span>
+                        <span class="vault-label">Private servers</span>
+                        <span class="vault-kept">Stored: nothing</span>
+                    </div>
+
+                    <div class="vault-out">
+                        <span style="--w: 88%"></span>
+                        <span style="--w: 64%"></span>
+                        <span style="--w: 78%"></span>
+                        <span style="--w: 52%"></span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="more" aria-labelledby="more-title">
+            <div class="wrap">
+                <p class="eyebrow">The details</p>
+                <h2 id="more-title">More than <em>a transcript.</em></h2>
+
+                <ul class="features">
+                    <li class="reveal">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5z"/><path d="M5 9h14M10 9v11"/></svg>
+                        <b>Your template</b>
+                        <span>Set up your format once, and every set of notes follows it.</span>
+                    </li>
+                    <li class="reveal">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+                        <b>Names spelled correctly</b>
+                        <span>Add the people you meet with, and Remi will spell their names correctly every time.</span>
+                    </li>
+                    <li class="reveal">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4Z"/><path d="M13 7l4 4"/></svg>
+                        <b>Easy corrections</b>
+                        <span>If Remi mishears a name, correct it once and the whole transcript is updated.</span>
+                    </li>
+                    <li class="reveal">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3Z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+                        <b>Any recording</b>
+                        <span>Use audio or video from your phone, a voice recorder, or a video call. You can add several files at once.</span>
+                    </li>
+                    <li class="reveal">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M12 7v5l3 2M17 3h4v4"/></svg>
+                        <b>Long meetings</b>
+                        <span>Remi handles recordings up to six hours long.</span>
+                    </li>
+                    <li class="reveal">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M10 17h4"/></svg>
+                        <b>Word, PDF, or Markdown</b>
+                        <span>Share the notes in whichever format your team prefers.</span>
+                    </li>
+                </ul>
+            </div>
+        </section>
+
+        <section class="get" id="download" aria-labelledby="get-title">
+            <div class="wrap">
+                <div class="poster reveal">
+                    <svg class="still" viewBox="0 0 520 560" aria-hidden="true" focusable="false">
+                        <defs>
+                            <pattern id="still-stripes" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(38)">
+                                <rect width="12" height="12" fill="#2f2478"/>
+                                <rect width="5" height="12" fill="#5b4bc4"/>
+                            </pattern>
+                            <pattern id="still-dots" width="12" height="12" patternUnits="userSpaceOnUse">
+                                <circle cx="3" cy="3" r="1.7" fill="#a5e6fa" fill-opacity="0.38"/>
+                            </pattern>
+                            <pattern id="still-harlequin" width="30" height="44" patternUnits="userSpaceOnUse" patternTransform="rotate(-8)">
+                                <rect width="30" height="44" fill="#a8244f"/>
+                                <path d="M15 0 30 22 15 44 0 22Z" fill="#e0457b"/>
+                            </pattern>
+                            <linearGradient id="still-plate-face" gradientUnits="userSpaceOnUse" x1="-8.81" y1="35.34" x2="108.81" y2="64.66">
+                                <stop offset="0" stop-color="#f6f8fb"/><stop offset="0.62" stop-color="#f6f8fb"/>
+                                <stop offset="0.62" stop-color="#d3dce7"/><stop offset="1" stop-color="#d3dce7"/>
+                            </linearGradient>
+                        </defs>
+                        <rect width="520" height="560" fill="#0f1726"/>
+                        <polygon points="0,0 520,0 520,236 0,300" fill="#1c2940"/>
+                        <polygon points="0,36 128,14 156,206 0,246" fill="url(#still-stripes)"/>
+                        <polygon points="186,28 300,18 296,116 192,124" fill="url(#still-dots)"/>
+                        <polygon points="318,0 520,0 520,168 382,222" fill="#ffc46b"/>
+                        <polygon points="318,0 400,0 430,204 382,222" fill="#e8a24a"/>
+                        <polyline points="318,0 382,222 296,252" fill="none" stroke="#07090d" stroke-width="2" stroke-opacity="0.55"/>
+                        <polyline points="0,246 156,206 190,304" fill="none" stroke="#07090d" stroke-width="2" stroke-opacity="0.55"/>
+                        <polygon points="0,318 520,262 520,452 0,540" fill="#6e4430"/>
+                        <polygon points="260,290 520,262 520,452 300,489" fill="#5a3524" fill-opacity="0.55"/>
+                        <path d="M0 360 L180 340 M210 337 L520 304 M0 404 L120 391 M150 388 L520 348 M0 452 L260 420 M290 416 L520 390 M0 498 L330 452" fill="none" stroke="#45281b" stroke-width="2" stroke-opacity="0.8"/>
+                        <polyline points="0,318 520,262" fill="none" stroke="#07090d" stroke-width="3"/>
+                        <polygon points="0,540 520,452 520,500 0,600" fill="#45281b"/>
+                        <polygon points="206,0 290,0 238,560 116,560" fill="#ffffff" fill-opacity="0.045"/>
+                        <circle cx="92" cy="246" r="74" fill="none" stroke="#a5e6fa" stroke-opacity="0.45" stroke-width="2"/>
+                        <path d="M92 172 A74 74 0 0 1 92 320 Z" fill="#00a2d2" fill-opacity="0.22"/>
+                        <path d="M176 216 A90 90 0 0 1 176 276 M196 204 A112 112 0 0 1 196 288" fill="none" stroke="#a5e6fa" stroke-opacity="0.5" stroke-width="2.5" stroke-linecap="round"/>
+                        <polygon points="0,330 150,312 186,560 0,560" fill="url(#still-harlequin)"/>
+                        <polygon points="0,330 62,323 86,560 0,560" fill="#000000" fill-opacity="0.24"/>
+                        <polygon points="0,330 150,312 186,560 0,560" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round"/>
+                        <g transform="translate(92 250) scale(0.9)">
+                            <polygon points="-40,-46 52,-50 56,62 -36,66" fill="#000000" fill-opacity="0.3"/>
+                            <polygon points="-46,-56 46,-60 50,54 -42,58" fill="#0f1724" stroke="#07090d" stroke-width="3" stroke-linejoin="round"/>
+                            <polygon points="-46,-56 0,-58 2,56 -42,58" fill="#ffffff" fill-opacity="0.06"/>
+                            <polyline points="-46,-56 46,-60 50,54 -42,58 -46,-56" fill="none" stroke="#00a2d2" stroke-width="2" stroke-opacity="0.7"/>
+                            <g transform="rotate(-2.5 2 -1) translate(-35.8 -38.8) scale(0.7)">
+                                <rect x="8" y="8" width="100" height="100" rx="24" fill="#00a2d2"/>
+                                <rect width="100" height="100" rx="24" fill="url(#still-plate-face)"/>
+                                <rect x="22" y="24" width="10" height="18" rx="3.5" fill="#07090d"/>
+                                <rect x="37.33" y="15" width="10" height="36" rx="3.5" fill="#07090d"/>
+                                <rect x="52.67" y="20.4" width="10" height="25.2" rx="3.5" fill="#07090d"/>
+                                <rect x="68" y="25.8" width="10" height="14.4" rx="3.5" fill="#07090d"/>
+                                <rect x="22" y="56" width="56" height="11" rx="3.5" fill="#0090bd"/>
+                                <rect x="22" y="73" width="35" height="11" rx="3.5" fill="#0090bd"/>
+                            </g>
+                        </g>
+                        <polygon points="156,306 336,290 354,458 168,472" fill="#000000" fill-opacity="0.3"/>
+                        <polygon points="150,300 330,284 348,452 162,466" fill="#f6f8fb"/>
+                        <polygon points="150,300 240,292 254,459 162,466" fill="#dfe6ee"/>
+                        <polygon points="150,300 330,284 348,452 162,466" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round"/>
+                        <g transform="translate(184 318) rotate(-5)" fill="#07090d" fill-rule="evenodd">
+                            <path transform="scale(0.6)" d="M -12 16 L -12 -16 L -5 -16 L 5 4 L 5 -16 L 12 -16 L 12 16 L 5 16 L -5 -4 L -5 16 Z"/>
+                            <path transform="translate(20 0) scale(0.6)" d="M -6 -16 L 6 -16 L 12 -10 L 12 10 L 6 16 L -6 16 L -12 10 L -12 -10 Z M -3 -9 L -5 -7 L -5 7 L -3 9 L 3 9 L 5 7 L 5 -7 L 3 -9 Z"/>
+                            <path transform="translate(40 0) scale(0.6)" d="M -12 -16 L 12 -16 L 12 -9 L 4 -9 L 4 16 L -4 16 L -4 -9 L -12 -9 Z"/>
+                            <path transform="translate(60 0) scale(0.6)" d="M -12 -16 L 12 -16 L 12 -9 L -5 -9 L -5 -3 L 8 -3 L 8 3 L -5 3 L -5 9 L 12 9 L 12 16 L -12 16 Z"/>
+                            <path transform="translate(80 0) scale(0.6)" d="M 12 -16 L -6 -16 L -12 -10 L -12 -2 L -6 3 L 5 3 L 5 9 L -12 9 L -12 16 L 6 16 L 12 10 L 12 2 L 6 -3 L -5 -3 L -5 -9 L 12 -9 Z"/>
+                            <path d="M2 34 H120 M2 58 H96 M2 82 H128 M2 106 H84" fill="none" stroke="#07090d" stroke-opacity="0.75" stroke-width="3.5" stroke-linecap="round"/>
+                            <path d="M-16 34 l5 5 l9 -11 M-16 58 l5 5 l9 -11" fill="none" stroke="#e0457b" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M-16 82 l5 5 l9 -11" fill="none" stroke="#00a2d2" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </g>
+                        <g transform="translate(206 446) rotate(-30)">
+                            <rect x="0" y="-5" width="124" height="10" fill="#00a2d2" stroke="#07090d" stroke-width="2.5"/>
+                            <rect x="0" y="-5" width="34" height="10" fill="#0077a5" stroke="#07090d" stroke-width="2.5"/>
+                            <polygon points="124,-5 142,0 124,5" fill="#f6f8fb" stroke="#07090d" stroke-width="2.5" stroke-linejoin="round"/>
+                        </g>
+                        <ellipse cx="414" cy="314" rx="62" ry="13" fill="#dfe6ee" stroke="#07090d" stroke-width="3"/>
+                        <polygon points="374,232 414,232 414,312 382,312" fill="#ffd592"/>
+                        <polygon points="414,232 454,232 446,312 414,312" fill="#f6f8fb"/>
+                        <polygon points="430,232 454,232 446,312 426,312" fill="#b9c6d4"/>
+                        <polygon points="374,232 454,232 446,312 382,312" fill="none" stroke="#07090d" stroke-width="3" stroke-linejoin="round"/>
+                        <path d="M452 248 C482 248 482 292 446 296" fill="none" stroke="#07090d" stroke-width="7" stroke-linecap="round"/>
+                        <path d="M452 248 C482 248 482 292 446 296" fill="none" stroke="#f6f8fb" stroke-width="2.5" stroke-linecap="round"/>
+                        <ellipse cx="414" cy="232" rx="40" ry="11" fill="#5a3524" stroke="#07090d" stroke-width="3"/>
+                        <path d="M398 229 Q414 224 430 229" fill="none" stroke="#ffd592" stroke-opacity="0.6" stroke-width="2" stroke-linecap="round"/>
+                        <path d="M402 214 C394 200 412 192 404 176 M424 214 C416 198 434 190 426 172" fill="none" stroke="#a5e6fa" stroke-opacity="0.6" stroke-width="3" stroke-linecap="round"/>
+                        <polygon points="452,352 520,330 520,410 474,402" fill="#e0457b" stroke="#07090d" stroke-width="3" stroke-linejoin="round"/>
+                        <polygon points="452,352 488,340 496,406 474,402" fill="#a8244f"/>
+                    </svg>
+
+                    <div class="poster-copy">
+                        <h2 id="get-title">Start with <em>your next meeting.</em></h2>
+                        <p>Remi Remembers is a desktop app for Windows, macOS, and Linux. It updates automatically.</p>
+
+                        <div class="notice" id="mobile" hidden>
+                            <p>The Remi app runs on your computer, not your phone. Send yourself this page and open it there.</p>
+
+                            <div class="cta">
+                                <button class="button small" id="share" type="button" hidden>Send this page</button>
+                                <a class="button quiet small" href="mailto:?subject=Remi%20Remembers%20download%20link&amp;body=Open%20this%20on%20your%20computer%20to%20download%20Remi%20Remembers%3A%20https%3A%2F%2Fstratusadv.github.io%2Fremi%2F">Email me the link</a>
+                            </div>
+                        </div>
+
+                        <div class="cta">
+                            <a class="button" id="get-main" data-get href="https://github.com/stratusadv/remi/releases/latest">Download Remi</a>
+                        </div>
+
+                        <p class="release" id="release" hidden></p>
+                        <ul class="others" id="others" aria-label="Each installer"></ul>
+                        <p class="release" id="fallback" hidden>The installers could not be listed here. Each installer is on the <a href="https://github.com/stratusadv/remi/releases/latest">latest release</a> page.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="foot">
+        <nav aria-label="More">
+            <a href="overview/">Documentation</a>
+            <a href="https://github.com/stratusadv/remi/releases">All releases</a>
+            <a href="https://github.com/stratusadv/remi/blob/main/LICENSE">MIT license</a>
+        </nav>
+
+        <a class="stratus" href="https://stratusadv.com">
+            <svg viewBox="57.18 58.93 400.68 270.54" fill="currentColor" aria-hidden="true">
+                <circle cx="257.45724" cy="129.15694" r="70.22899"/>
+                <path d="M387.62723,189.00607c-31.25,44.67004-75.14996,70.54004-130.16998,70.54004s-98.92-25.87-130.16998-70.54004c53.77996,0,52.24999,51.27002,130.16998,51.27002S333.84726,189.00607,387.62723,189.00607z"/>
+                <path d="M457.85727,259.23611c0,38.77997-31.45001,70.22998-70.23004,70.22998c-53.77997,0-52.25-51.27002-130.16998-51.27002s-76.39003,51.27002-130.16998,51.27002c-38.78003,0-70.23004-31.45001-70.23004-70.22998c0-38.79004,31.45002-70.23004,70.23004-70.23004c31.24999,44.67004,75.14996,70.54004,130.16998,70.54004s98.91998-25.87,130.16998-70.54004C426.40726,189.00607,457.85727,220.44608,457.85727,259.23611z"/>
+            </svg>
+            <span>Powered by Stratus Advanced Technologies</span>
+        </a>
+    </footer>
+
+    <script type="module" src="assets/site.js"></script>
+    <script type="module" src="assets/home.js"></script>
+    <script type="module" src="assets/funnel.js"></script>
 </body>
 </html>

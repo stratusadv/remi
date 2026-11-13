@@ -1,21 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ipc } from '../../src/lib/ipc'
 import { use_endpoints } from '../../src/composables/use_endpoints'
 import { use_notes_templates } from '../../src/composables/use_notes_templates'
+import { ipc } from '../../src/lib/ipc'
 import type { APIEndpoint, NotesTemplate } from '../../src/types'
 
 
 vi.mock('../../src/lib/ipc')
 
-const TEMPLATE: NotesTemplate = {
+const TEMPLATE = Object.freeze<NotesTemplate>({
     id: 'meeting',
     name: 'Meeting notes',
     description: 'Summary and decisions',
     instructions: '## Summary',
     edited: false,
-}
+})
 
-const ENDPOINT_NOTES: APIEndpoint = {
+const ENDPOINT_NOTES = Object.freeze<APIEndpoint>({
     id: 'notes-endpoint',
     name: 'Notes',
     purpose: 'notes',
@@ -29,7 +29,7 @@ const ENDPOINT_NOTES: APIEndpoint = {
     transcribe_verbose: null,
     transcribe_chunk_seconds: null,
     has_api_key: true,
-}
+})
 
 const templates_state = use_notes_templates()
 const { endpoints } = use_endpoints()
@@ -110,7 +110,9 @@ describe('generate', () => {
 
         vi.mocked(ipc.notes_template_generate).mockResolvedValue('## Layout')
 
-        expect(await templates_state.generate('weekly sync')).toBe('## Layout')
+        const layout = await templates_state.generate('weekly sync')
+
+        expect(layout).toBe('## Layout')
         expect(ipc.notes_template_generate).toHaveBeenCalledWith('notes-endpoint', 'weekly sync')
     })
 })

@@ -1,27 +1,110 @@
-include = ["src-tauri/src/**/*.rs", "src/**/*.ts"]
-exclude = ["src/vite-env.d.ts"]
-line_length_max = 100
-function_lines_max = 70
-
-extend-select = [
-    "TS004",
-    "TS014",
-    "TS017",
-    "TS018",
-    "TS026",
-    "TS027",
-    "TS031",
-    "TS032",
-    "TS034",
-    "TS035",
-    "TS037",
-    "TS040",
-    "TS042",
-    "TS043",
-    "TS044",
-    "TS045",
-    "TS047",
-    "TS048",
-    "TS049",
-    "TS050",
+extend-exclude = [
+    "design/**",
+    "dist/**",
+    "public/**",
+    "server/**/migrations/**",
+    "src-tauri/gen/**",
+    "src-tauri/target/**",
 ]
+ignore = ["TS016", "TS035"]
+parameter-exempt-types = [
+    "APIEndpointPurpose",
+    "APIKey",
+    "APIResponse",
+    "Account",
+    "AccountRequest",
+    "AccountSignUp",
+    "AppHandle",
+    "BarCount",
+    "ChatExchanges",
+    "ChatID",
+    "CheckoutSessionID",
+    "ClipEnd",
+    "ClipStart",
+    "DateTime<Local>",
+    "EndpointID",
+    "EngineID",
+    "EnvironmentVariable",
+    "FolderName",
+    "FolderRename",
+    "Group",
+    "HttpRequest",
+    "Instruction",
+    "JobID",
+    "JobMetaPatch",
+    "Markdown",
+    "MediaStream",
+    "MicrophoneRate",
+    "ModelWrapValidatorHandler[Self]",
+    "NaiveDate",
+    "NonZeroU32",
+    "NotesTemplate",
+    "Option<&AtomicBool>",
+    "Option<&JobMeta>",
+    "Option<&TranscribeProgress>",
+    "Option<&reqwest::Url>",
+    "Option<&str>",
+    "Option<JobID>",
+    "Option<JobMeta>",
+    "Option<StreamID>",
+    "Option<String>",
+    "Option<TemplateID>",
+    "Option<TranscribeProgress>",
+    "Output",
+    "Page",
+    "PathBuf",
+    "Person",
+    "Promise<CheckoutStarted>",
+    "PromoCode",
+    "PromoCode | None",
+    "QuerySet[Account]",
+    "QuerySet[PromoCode]",
+    "RecordID",
+    "Request<'_>",
+    "Scope",
+    "SearchQuery",
+    "Settings",
+    "SignInCode",
+    "State<'_, AppState>",
+    "StreamID",
+    "TemplateID",
+    "TextRaw",
+    "Title",
+    "Transcript",
+    "TranscriptReuse",
+    "TranscriptText",
+    "Vec<AskTurn>",
+    "Vec<ChatExchange>",
+    "Vec<ChunkPlan>",
+    "Vec<JobID>",
+    "Vec<String>",
+    "WebviewWindow",
+    "Weekday",
+    "docmux::Error",
+    "reqwest::Error",
+    "reqwest::Response",
+    "rusqlite::Error",
+    "std::io::Error",
+    "tokio::task::JoinError",
+    "unknown",
+]
+preview = true
+select = ["ALL"]
+
+[per-file-ignores]
+"eslint.config.ts" = ["TS025", "TS032", "TS037"]
+"playwright.config.ts" = ["TS032", "TS037"]
+"server/**/*.py" = ["TS004"]
+"server/**/tests/**" = ["TS014", "TS017", "TS022", "TS026"]
+"server/app/**/admin.py" = ["TS037"]
+"server/app/**/services/*.py" = ["TS037"]
+"server/app/**/urls/*.py" = ["TS005"]
+"server/app/api/auth.py" = ["TS037"]
+"server/harness/**" = ["TS014", "TS017", "TS022", "TS026"]
+"server/system/*/settings.py" = ["TS005", "TS011", "TS037"]
+"server/system/base_settings.py" = ["TS005", "TS037"]
+"server/system/urls.py" = ["TS005"]
+"src/lib/assert.ts" = ["TS004", "TS022"]
+"src/lib/stripe.ts" = ["TS032", "TS037"]
+"tests/unit/stripe.test.ts" = ["TS032", "TS037", "TS042"]
+"vite.config.ts" = ["TS032"]

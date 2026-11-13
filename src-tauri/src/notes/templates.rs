@@ -2,15 +2,15 @@ use crate::error::{AppError, AppResult};
 use crate::workspace;
 use serde::{Deserialize, Serialize};
 
-const TEMPLATES_FILE: &str = "notes_templates.json";
-const TEMPLATES_FILE_BYTES_MAX: u32 = 64 << 20;
-const TEMPLATE_COUNT_MAX: u32 = 256;
-const TEMPLATE_NAME_CHARS_MAX: u32 = 120;
-const TEMPLATE_DESCRIPTION_CHARS_MAX: u32 = 240;
-const TEMPLATE_INSTRUCTIONS_CHARS_MAX: u32 = 16 * 1024;
-
 const TEMPLATE_CHARS_MAX: u32 =
     TEMPLATE_NAME_CHARS_MAX + TEMPLATE_DESCRIPTION_CHARS_MAX + TEMPLATE_INSTRUCTIONS_CHARS_MAX;
+
+const TEMPLATE_COUNT_MAX: u32 = 256;
+const TEMPLATE_DESCRIPTION_CHARS_MAX: u32 = 240;
+const TEMPLATE_INSTRUCTIONS_CHARS_MAX: u32 = 16 * 1024;
+const TEMPLATE_NAME_CHARS_MAX: u32 = 120;
+const TEMPLATES_FILE: &str = "notes_templates.json";
+const TEMPLATES_FILE_BYTES_MAX: u32 = 64 << 20;
 
 const _: () = assert!(TEMPLATES_FILE_BYTES_MAX >= TEMPLATE_COUNT_MAX * TEMPLATE_CHARS_MAX * 8);
 
@@ -59,7 +59,7 @@ pub(crate) const PROMPT_NOTES_SYSTEM: &str = concat!(
     "past tense, no filler, no commentary about the transcript or about yourself. Keep bullet ",
     "points to one idea each. Use bold only where the template does. Keep table cells brief ",
     "and separate points inside a cell with semicolons.\n\n",
-    "Output only the document: no preamble, no explanation, no surrounding code fences."
+    "Output only the document: no preamble, no explanation, no surrounding code fences.",
 );
 
 const INSTRUCTIONS_MEETING: &str = concat!(
@@ -89,7 +89,7 @@ const INSTRUCTIONS_MEETING: &str = concat!(
     "Include every open question that needs a follow-up.\n\n",
     "## Decisions\n\n",
     "- Every decision that was actually made, one per bullet, written as a statement. Leave ",
-    "out things that were only discussed."
+    "out things that were only discussed.",
 );
 
 const INSTRUCTIONS_SUMMARY: &str = concat!(
@@ -98,7 +98,7 @@ const INSTRUCTIONS_SUMMARY: &str = concat!(
     "minute.\n\n",
     "## Key details\n\n",
     "- The most important details that came up: names, numbers, prices, and dates, one per ",
-    "bullet."
+    "bullet.",
 );
 
 const INSTRUCTIONS_SITE_VISIT: &str = concat!(
@@ -113,7 +113,7 @@ const INSTRUCTIONS_SITE_VISIT: &str = concat!(
     "## Costs and quotes\n\n",
     "- Every price, quote, or cost that was mentioned, with what it was for.\n\n",
     "## Next steps\n\n",
-    "- [ ] **Person's name** what they need to do, and by when if a date was mentioned."
+    "- [ ] **Person's name** what they need to do, and by when if a date was mentioned.",
 );
 
 const INSTRUCTIONS_PROCEDURE: &str = concat!(
@@ -124,7 +124,7 @@ const INSTRUCTIONS_PROCEDURE: &str = concat!(
     "## Safety warnings\n\n",
     "- Every safety warning that was mentioned.\n\n",
     "## Common mistakes\n\n",
-    "- Mistakes to avoid that were mentioned."
+    "- Mistakes to avoid that were mentioned.",
 );
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +136,46 @@ pub(crate) struct NotesTemplate {
     pub(crate) instructions: String,
     #[serde(default)]
     pub(crate) edited: bool,
+}
+
+pub(crate) fn template_delete(id: &str) -> AppResult<()> {
+    let mut templates = templates_load_all()?;
+    let templates_count_before = templates.len();
+
+    templates.retain(|template| template.id != id);
+
+    assert!(templates.len() <= templates_count_before);
+    assert!(templates.iter().all(|template| template.id != id));
+
+    templates_save_all(&templates)
+}
+
+pub(crate) fn template_load(id: &str) -> AppResult<NotesTemplate> {
+    let template = templates_load_all()?
+        .into_iter()
+        .find(|template| template.id == id)
+        .ok_or_else(|| AppError::Config(format!("template not found: {id}")))?;
+
+    assert_eq!(template.id, id);
+
+    Ok(template)
+}
+
+pub(crate) fn template_upsert(template: NotesTemplate) -> AppResult<()> {
+    template_validate(&template)?;
+
+    let edited = NotesTemplate { edited: true, ..template };
+    let id = edited.id.clone();
+    let mut templates = templates_load_all()?;
+
+    match templates.iter_mut().find(|existing| existing.id == edited.id) {
+        Some(existing) => *existing = edited,
+        None => templates.push(edited),
+    }
+
+    assert!(templates.iter().any(|existing| existing.id == id));
+
+    templates_save_all(&templates)
 }
 
 pub(crate) fn templates_load_all() -> AppResult<Vec<NotesTemplate>> {
@@ -157,14 +197,70 @@ pub(crate) fn templates_load_all() -> AppResult<Vec<NotesTemplate>> {
         templates_save_all(&templates)?;
     }
 
-    debug_assert!(templates.len() <= TEMPLATE_COUNT_MAX as usize);
+    assert!(templates.len() <= usize_of!(TEMPLATE_COUNT_MAX));
 
     Ok(templates)
+}
+
+fn default_templates_seed() -> Vec<NotesTemplate> {
+    let seeds = vec![
+        NotesTemplate {
+            id: "default-meeting-notes".to_owned(),
+            name: "Meeting notes".to_owned(),
+            description: concat!(
+                "Who was there, what was discussed, decisions made, and who does ",
+                "what next.",
+            )
+            .to_owned(),
+            instructions: INSTRUCTIONS_MEETING.to_owned(),
+            edited: false,
+        },
+        NotesTemplate {
+            id: "default-summary".to_owned(),
+            name: "Quick summary".to_owned(),
+            description: concat!(
+                "A few sentences on the main point and the key names, numbers, ",
+                "and dates.",
+            )
+            .to_owned(),
+            instructions: INSTRUCTIONS_SUMMARY.to_owned(),
+            edited: false,
+        },
+        NotesTemplate {
+            id: "default-site-visit".to_owned(),
+            name: "Site visit or job notes".to_owned(),
+            description: concat!(
+                "What was inspected, problems found, parts and quotes, and next ",
+                "steps.",
+            )
+            .to_owned(),
+            instructions: INSTRUCTIONS_SITE_VISIT.to_owned(),
+            edited: false,
+        },
+        NotesTemplate {
+            id: "default-procedure".to_owned(),
+            name: "Step-by-step procedure".to_owned(),
+            description: concat!(
+                "How to do a task: preparation, numbered steps, safety warnings, ",
+                "and mistakes to avoid.",
+            )
+            .to_owned(),
+            instructions: INSTRUCTIONS_PROCEDURE.to_owned(),
+            edited: false,
+        },
+    ];
+
+    assert!(seeds.iter().all(|seed| !seed.edited));
+    assert!(seeds.len() <= usize_of!(TEMPLATE_COUNT_MAX));
+
+    seeds
 }
 
 fn seeds_refresh(templates: &mut [NotesTemplate]) -> bool {
     let seeds = default_templates_seed();
     let mut changed = false;
+
+    assert!(seeds.iter().all(|seed| !seed.id.is_empty()));
 
     for template in templates.iter_mut().filter(|template| !template.edited) {
         let Some(seed) = seeds.iter().find(|seed| seed.id == template.id) else {
@@ -182,71 +278,7 @@ fn seeds_refresh(templates: &mut [NotesTemplate]) -> bool {
         }
     }
 
-    debug_assert!(templates.iter().all(|template| !template.id.is_empty()));
-
     changed
-}
-
-fn templates_count_validate(templates: &[NotesTemplate]) -> AppResult<()> {
-    if templates.len() > TEMPLATE_COUNT_MAX as usize {
-        return Err(AppError::Config(format!(
-            "there are {} templates, over the {TEMPLATE_COUNT_MAX} this app keeps",
-            templates.len()
-        )));
-    }
-
-    Ok(())
-}
-
-fn templates_save_all(templates: &[NotesTemplate]) -> AppResult<()> {
-    templates_count_validate(templates)?;
-
-    let path = workspace::root_file_path(TEMPLATES_FILE)?;
-    let encoded = serde_json::to_string_pretty(templates)?;
-
-    debug_assert!(encoded.len() <= TEMPLATES_FILE_BYTES_MAX as usize);
-
-    workspace::atomic_write(&path, encoded.as_bytes())
-}
-
-pub(crate) fn template_upsert(template: NotesTemplate) -> AppResult<()> {
-    template_validate(&template)?;
-
-    let template = NotesTemplate { edited: true, ..template };
-    let id = template.id.clone();
-    let mut templates = templates_load_all()?;
-
-    match templates.iter_mut().find(|existing| existing.id == template.id) {
-        Some(existing) => *existing = template,
-        None => templates.push(template),
-    }
-
-    debug_assert_eq!(templates.iter().filter(|existing| existing.id == id).count(), 1);
-
-    templates_save_all(&templates)
-}
-
-pub(crate) fn template_delete(id: &str) -> AppResult<()> {
-    let mut templates = templates_load_all()?;
-    let templates_count_before = templates.len();
-
-    templates.retain(|template| template.id != id);
-
-    debug_assert!(templates.len() <= templates_count_before);
-    debug_assert!(templates.iter().all(|template| template.id != id));
-
-    templates_save_all(&templates)
-}
-
-pub(crate) fn template_load(id: &str) -> AppResult<NotesTemplate> {
-    let template = templates_load_all()?
-        .into_iter()
-        .find(|template| template.id == id)
-        .ok_or_else(|| AppError::Config(format!("template not found: {id}")))?;
-
-    debug_assert_eq!(template.id, id);
-
-    Ok(template)
 }
 
 fn template_validate(template: &NotesTemplate) -> AppResult<()> {
@@ -264,81 +296,55 @@ fn template_validate(template: &NotesTemplate) -> AppResult<()> {
         ));
     }
 
-    if template.name.chars().count() > TEMPLATE_NAME_CHARS_MAX as usize {
+    if template.name.chars().count() > usize_of!(TEMPLATE_NAME_CHARS_MAX) {
         return Err(AppError::Config(format!(
-            "the template name is too long; keep it under {TEMPLATE_NAME_CHARS_MAX} characters"
+            "the template name is too long; keep it under {TEMPLATE_NAME_CHARS_MAX} characters",
         )));
     }
 
-    if template.description.chars().count() > TEMPLATE_DESCRIPTION_CHARS_MAX as usize {
+    if template.description.chars().count() > usize_of!(TEMPLATE_DESCRIPTION_CHARS_MAX) {
         return Err(AppError::Config(format!(
             "the template description is too long; keep it under \
-             {TEMPLATE_DESCRIPTION_CHARS_MAX} characters"
+             {TEMPLATE_DESCRIPTION_CHARS_MAX} characters",
         )));
     }
 
-    if template.instructions.chars().count() > TEMPLATE_INSTRUCTIONS_CHARS_MAX as usize {
+    if template.instructions.chars().count() > usize_of!(TEMPLATE_INSTRUCTIONS_CHARS_MAX) {
         return Err(AppError::Config(format!(
             "the template text is too long; keep it under {TEMPLATE_INSTRUCTIONS_CHARS_MAX} \
-             characters"
+             characters",
         )));
     }
 
     Ok(())
 }
 
-fn default_templates_seed() -> Vec<NotesTemplate> {
-    let seeds = vec![
-        NotesTemplate {
-            id: "default-meeting-notes".to_owned(),
-            name: "Meeting notes".to_owned(),
-            description: concat!(
-                "Who was there, what was discussed, decisions made, and who does ",
-                "what next."
-            )
-            .to_owned(),
-            instructions: INSTRUCTIONS_MEETING.to_owned(),
-            edited: false,
-        },
-        NotesTemplate {
-            id: "default-summary".to_owned(),
-            name: "Quick summary".to_owned(),
-            description: concat!(
-                "A few sentences on the main point and the key names, numbers, ",
-                "and dates."
-            )
-            .to_owned(),
-            instructions: INSTRUCTIONS_SUMMARY.to_owned(),
-            edited: false,
-        },
-        NotesTemplate {
-            id: "default-site-visit".to_owned(),
-            name: "Site visit or job notes".to_owned(),
-            description: concat!(
-                "What was inspected, problems found, parts and quotes, and next ",
-                "steps."
-            )
-            .to_owned(),
-            instructions: INSTRUCTIONS_SITE_VISIT.to_owned(),
-            edited: false,
-        },
-        NotesTemplate {
-            id: "default-procedure".to_owned(),
-            name: "Step-by-step procedure".to_owned(),
-            description: concat!(
-                "How to do a task: preparation, numbered steps, safety warnings, ",
-                "and mistakes to avoid."
-            )
-            .to_owned(),
-            instructions: INSTRUCTIONS_PROCEDURE.to_owned(),
-            edited: false,
-        },
-    ];
+fn templates_count_validate(templates: &[NotesTemplate]) -> AppResult<()> {
+    if templates.len() > usize_of!(TEMPLATE_COUNT_MAX) {
+        return Err(AppError::Config(format!(
+            "there are {} templates, over the {TEMPLATE_COUNT_MAX} this app keeps",
+            templates.len(),
+        )));
+    }
 
-    debug_assert!(seeds.iter().all(|seed| !seed.edited));
-    debug_assert!(seeds.len() <= TEMPLATE_COUNT_MAX as usize);
+    Ok(())
+}
 
-    seeds
+fn templates_save_all(templates: &[NotesTemplate]) -> AppResult<()> {
+    templates_count_validate(templates)?;
+
+    let path = workspace::root_file_path(TEMPLATES_FILE)?;
+    let encoded = serde_json::to_string_pretty(templates)?;
+
+    if encoded.len() > usize_of!(TEMPLATES_FILE_BYTES_MAX) {
+        return Err(AppError::Config(format!(
+            "the saved templates are {} bytes, over the {TEMPLATES_FILE_BYTES_MAX} bytes this \
+             app keeps",
+            encoded.len(),
+        )));
+    }
+
+    workspace::atomic_write(&path, encoded.as_bytes())
 }
 
 #[cfg(test)]
@@ -372,7 +378,9 @@ mod tests {
         assert!(!seeds_refresh(&mut templates));
     }
 
-    fn template_with(name: &str, instructions: &str) -> NotesTemplate {
+    fn template_with(fields: &[&str; 2]) -> NotesTemplate {
+        let [name, instructions] = *fields;
+
         NotesTemplate {
             id: "test".to_owned(),
             name: name.to_owned(),
@@ -389,40 +397,42 @@ mod tests {
         assert_ne!(seeded.len(), 0);
 
         for template in seeded {
-            assert!(template_validate(&template).is_ok());
+            template_validate(&template).unwrap();
         }
     }
 
     #[test]
     fn a_template_without_a_name_or_instructions_is_refused() {
-        assert!(template_validate(&template_with("  ", "Write a summary.")).is_err());
-        assert!(template_validate(&template_with("Summary", "\n")).is_err());
-        let unidentified = NotesTemplate { id: " ".to_owned(), ..template_with("Summary", "x") };
+        assert!(template_validate(&template_with(&["  ", "Write a summary."])).is_err());
+        assert!(template_validate(&template_with(&["Summary", "\n"])).is_err());
+
+        let unidentified = NotesTemplate { id: " ".to_owned(), ..template_with(&["Summary", "x"]) };
 
         assert!(template_validate(&unidentified).is_err());
     }
 
     #[test]
     fn a_template_over_a_size_limit_is_refused_and_length_is_counted_in_characters() {
-        let name_long = "n".repeat(TEMPLATE_NAME_CHARS_MAX as usize + 1);
-        let name_multibyte = "é".repeat(TEMPLATE_NAME_CHARS_MAX as usize);
-        let instructions_long = "i".repeat(TEMPLATE_INSTRUCTIONS_CHARS_MAX as usize + 1);
-        let mut described = template_with("Summary", "Write a summary.");
-        described.description = "d".repeat(TEMPLATE_DESCRIPTION_CHARS_MAX as usize + 1);
+        let name_long = "n".repeat(usize_of!(TEMPLATE_NAME_CHARS_MAX) + 1);
+        let name_multibyte = "\u{e9}".repeat(usize_of!(TEMPLATE_NAME_CHARS_MAX));
+        let instructions_long = "i".repeat(usize_of!(TEMPLATE_INSTRUCTIONS_CHARS_MAX) + 1);
+        let mut described = template_with(&["Summary", "Write a summary."]);
 
-        assert!(template_validate(&template_with(&name_long, "Write a summary.")).is_err());
-        assert!(template_validate(&template_with(&name_multibyte, "Write a summary.")).is_ok());
-        assert!(template_validate(&template_with("Summary", &instructions_long)).is_err());
+        described.description = "d".repeat(usize_of!(TEMPLATE_DESCRIPTION_CHARS_MAX) + 1);
+
+        assert!(template_validate(&template_with(&[&name_long, "Write a summary."])).is_err());
+        template_validate(&template_with(&[&name_multibyte, "Write a summary."])).unwrap();
+        assert!(template_validate(&template_with(&["Summary", &instructions_long])).is_err());
         assert!(template_validate(&described).is_err());
     }
 
     #[test]
     fn a_template_count_past_the_limit_is_refused() {
-        let template = template_with("Summary", "Write a summary.");
-        let at_limit = vec![template.clone(); TEMPLATE_COUNT_MAX as usize];
-        let past_limit = vec![template; TEMPLATE_COUNT_MAX as usize + 1];
+        let template = template_with(&["Summary", "Write a summary."]);
+        let at_limit = vec![template.clone(); usize_of!(TEMPLATE_COUNT_MAX)];
+        let past_limit = vec![template; usize_of!(TEMPLATE_COUNT_MAX) + 1];
 
-        assert!(templates_count_validate(&at_limit).is_ok());
+        templates_count_validate(&at_limit).unwrap();
         assert!(templates_count_validate(&past_limit).is_err());
     }
 
@@ -455,40 +465,45 @@ mod tests {
 
     #[test]
     fn a_template_exactly_at_its_limits_is_accepted_and_old_files_fill_in_defaults() {
-        let name = "n".repeat(TEMPLATE_NAME_CHARS_MAX as usize);
-        let instructions = "i".repeat(TEMPLATE_INSTRUCTIONS_CHARS_MAX as usize);
-        let mut template = template_with(&name, &instructions);
-        template.description = "d".repeat(TEMPLATE_DESCRIPTION_CHARS_MAX as usize);
+        let name = "n".repeat(usize_of!(TEMPLATE_NAME_CHARS_MAX));
+        let instructions = "i".repeat(usize_of!(TEMPLATE_INSTRUCTIONS_CHARS_MAX));
+        let mut template = template_with(&[&name, &instructions]);
+
+        template.description = "d".repeat(usize_of!(TEMPLATE_DESCRIPTION_CHARS_MAX));
+
         let raw = r#"{"id":"t","name":"T","instructions":"x"}"#;
         let restored: NotesTemplate = serde_json::from_str(raw).unwrap();
 
-        assert!(template_validate(&template).is_ok());
+        template_validate(&template).unwrap();
+
         assert_eq!(restored.description, "");
         assert!(!restored.edited);
     }
 
     #[test]
     fn without_a_saved_file_the_seeds_are_served_and_nothing_is_written() {
-        let _root = root_scoped("templates-seed");
+        let _root = root_scoped();
         let path = workspace::root_file_path(TEMPLATES_FILE).unwrap();
         let templates = templates_load_all().unwrap();
+
+        assert_eq!(templates.len(), default_templates_seed().len());
+        assert!(!path.exists());
+
         let mut ids: Vec<&str> = templates.iter().map(|template| template.id.as_str()).collect();
 
         ids.sort_unstable();
         ids.dedup();
 
-        assert_eq!(templates.len(), default_templates_seed().len());
         assert_eq!(ids.len(), templates.len());
         assert!(templates.iter().all(|template| !template.edited));
-        assert!(!path.exists());
         assert_eq!(template_load("default-summary").unwrap().instructions, INSTRUCTIONS_SUMMARY);
-        assert!(template_load("absent").is_err());
+        assert_ne!(template_load("absent").unwrap_err().to_string(), "");
     }
 
     #[test]
     fn a_saved_template_is_marked_edited_and_survives_until_deleted() {
-        let _root = root_scoped("templates-store");
-        let template = template_with("Mine", "Write mine.");
+        let _root = root_scoped();
+        let template = template_with(&["Mine", "Write mine."]);
         let seed_count = default_templates_seed().len();
 
         template_upsert(template.clone()).unwrap();
@@ -506,14 +521,14 @@ mod tests {
 
         template_delete("test").unwrap();
 
-        assert!(template_load("test").is_err());
+        assert_ne!(template_load("test").unwrap_err().to_string(), "");
         assert_eq!(templates_load_all().unwrap().len(), seed_count);
-        assert!(template_upsert(template_with(" ", "x")).is_err());
+        assert!(template_upsert(template_with(&[" ", "x"])).is_err());
     }
 
     #[test]
     fn a_stale_unedited_seed_on_disk_is_refreshed_and_written_back() {
-        let _root = root_scoped("templates-refresh");
+        let _root = root_scoped();
         let path = workspace::root_file_path(TEMPLATES_FILE).unwrap();
 
         let stale = vec![NotesTemplate {
@@ -538,13 +553,23 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_template_without_an_id_is_read_rather_than_crashing_the_seed_refresh() {
+        let mut templates = vec![template_with(&["Summary", "x"])];
+
+        templates[0].id = String::new();
+
+        assert!(!seeds_refresh(&mut templates));
+        assert_eq!(templates[0].instructions, "x");
+    }
+
+    #[test]
     fn a_damaged_templates_file_is_an_error_rather_than_the_seeds() {
-        let _root = root_scoped("templates-damaged");
+        let _root = root_scoped();
 
         fs::write(workspace::root_file_path(TEMPLATES_FILE).unwrap(), b"[").unwrap();
 
-        assert!(templates_load_all().is_err());
-        assert!(template_load("default-summary").is_err());
-        assert!(template_upsert(template_with("Mine", "x")).is_err());
+        assert_ne!(templates_load_all().unwrap_err().to_string(), "");
+        assert_ne!(template_load("default-summary").unwrap_err().to_string(), "");
+        assert!(template_upsert(template_with(&["Mine", "x"])).is_err());
     }
 }

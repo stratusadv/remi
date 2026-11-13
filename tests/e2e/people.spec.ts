@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { assert } from '../../src/lib/assert'
 import { app_open, dialog, nav_to, row_menu_pick } from './helpers'
 import type { Locator, Page } from '@playwright/test'
 
@@ -8,15 +9,25 @@ const PLACEHOLDER_LAST = 'e.g. Doe'
 const PLACEHOLDER_ROLE = 'e.g. project manager, accountant, sales rep'
 const PLACEHOLDER_GROUP = 'e.g. Managers, Developers, Floor staff'
 
-function people_rows(page: Page) {
-    return page.locator('.list-divider').first().locator('> li')
-}
 
-function group_rows(page: Page) {
+function group_rows(page: Page): Locator {
+    assert(!page.isClosed())
+    assert(page.url().length > 0)
+
     return page.locator('.list-divider').nth(1).locator('> li')
 }
 
-function row_named(rows_locator: Locator, name: string) {
+function people_rows(page: Page): Locator {
+    assert(!page.isClosed())
+    assert(page.url().length > 0)
+
+    return page.locator('.list-divider').first().locator('> li')
+}
+
+function row_named(rows_locator: Locator, name: string): Locator {
+    assert(!rows_locator.page().isClosed())
+    assert(name.length > 0)
+
     return rows_locator.filter({ has: rows_locator.page().getByText(name, { exact: true }) })
 }
 
@@ -31,6 +42,7 @@ test('the list shows people sorted by last name and the seeded group', async ({ 
         'John Doe',
         'Sam Smith',
     ])
+
     await expect(row_named(people_rows(page), 'John Doe')).toContainText('Developer')
     await expect(row_named(people_rows(page), 'Sam Smith')).toContainText('No description')
     await expect(group_rows(page)).toHaveCount(1)
@@ -58,13 +70,16 @@ test('Add person saves a new person', async ({ page }) => {
 
     await expect(form).toBeHidden()
     await expect(people_rows(page)).toHaveCount(4)
+
     await expect(people_rows(page).locator('.font-medium')).toHaveText([
         'Jane Doe',
         'John Doe',
         'Ada Lovelace',
         'Sam Smith',
     ])
+
     await expect(row_named(people_rows(page), 'Ada Lovelace')).toContainText('Engineer')
+
     await expect(row_named(people_rows(page), 'Ada Lovelace'))
         .toContainText('Writes the first programs.')
 })
@@ -167,6 +182,7 @@ test('editing a group changes its members', async ({ page }) => {
     const form = dialog(page, 'Edit group')
 
     await expect(form.getByPlaceholder(PLACEHOLDER_GROUP)).toHaveValue('Product team')
+
     await expect(form.locator('.tag-chip')).toHaveText([
         'John Doe (Developer)',
         'Jane Doe (Product owner)',

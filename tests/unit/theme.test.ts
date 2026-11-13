@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { assert } from '../../src/lib/assert'
 import {
     PALETTE_DEFAULT,
     THEME_STORAGE_KEY,
@@ -9,10 +10,16 @@ import {
     theme_storage_read,
     theme_storage_write,
 } from '../../src/lib/theme'
+import type { Mock } from 'vitest'
 
 
-function match_media_stub(matches: boolean) {
-    return vi.fn((query: string) => ({ matches, media: query }) as MediaQueryList)
+type MediaQueryStub = Pick<MediaQueryList, 'matches' | 'media'>
+
+function match_media_stub(matches: boolean): Mock<(query: string) => MediaQueryStub> {
+    assert(typeof matches === 'boolean')
+    assert(typeof vi.fn === 'function')
+
+    return vi.fn((query: string) => ({ matches, media: query }))
 }
 
 beforeEach(() => {
@@ -154,6 +161,6 @@ describe('palette_apply_to_html', () => {
 
         palette_apply_to_html(PALETTE_DEFAULT)
 
-        expect(document.documentElement.dataset['palette']).toBe('graphite')
+        expect(document.documentElement.dataset['palette']).toBe('cubist')
     })
 })

@@ -1,73 +1,125 @@
 import { describe, expect, it } from 'vitest'
+import { assert } from '../../src/lib/assert'
 import { clipboard_plain_text } from '../../src/lib/clipboard_text'
-import type { ClipboardNode } from '../../src/lib/clipboard_text'
+import type { ClipboardFragment, ClipboardNode } from '../../src/lib/clipboard_text'
 
 
-type Attrs = Record<string, unknown>
+const IS_TEXT = 'isText'
+const KEY_ATTRIBUTES = 'attrs'
+const TEXT_CONTENT = 'textContent'
 
-function node(type: string, children: ClipboardNode[] = [], attrs: Attrs = {}): ClipboardNode {
+
+type Attributes = Record<string, unknown>
+
+function bullet_list(...items: ClipboardNode[]): ClipboardNode {
+    assert(Array.isArray(items))
+    assert(items.every((item) => item.type.name === 'listItem'))
+
+    return node('bulletList', items)
+}
+
+function code_block(value: string): ClipboardNode {
+    assert(typeof value === 'string')
+    assert(value.length >= 0)
+
+    return node('codeBlock', [text(value)])
+}
+
+function fragment(...blocks: ClipboardNode[]): ClipboardFragment {
+    assert(Array.isArray(blocks))
+    assert(blocks.every((block) => block.type.name.length > 0))
+
+    return blocks
+}
+
+function hard_break(): ClipboardNode {
+    const breaking = node('hardBreak')
+
+    assert(!breaking.isText)
+    assert(breaking.textContent.length === 0)
+
+    return breaking
+}
+
+function heading(value: string, level: number): ClipboardNode {
+    assert(typeof value === 'string')
+    assert(level > 0)
+
+    return node('heading', [text(value)], { level })
+}
+
+function list_item(...blocks: ClipboardNode[]): ClipboardNode {
+    assert(Array.isArray(blocks))
+    assert(blocks.every((block) => block.type.name.length > 0))
+
+    return node('listItem', blocks)
+}
+
+function node(
+    type: string,
+    children: ClipboardNode[] = [],
+    attributes: Attributes = {},
+): ClipboardNode {
+    assert(type.length > 0)
+    assert(Array.isArray(children))
+    assert(typeof attributes === 'object')
+
     return {
-        attrs,
-        content: {
-            forEach: (callback) => {
-                children.forEach(callback)
-            },
-        },
-        isText: false,
+        [KEY_ATTRIBUTES]: attributes,
+        content: children,
+        [IS_TEXT]: false,
         text: undefined,
-        textContent: children.map((child) => child.textContent).join(''),
+        [TEXT_CONTENT]: children.map((child) => child.textContent).join(''),
         type: { name: type },
     }
 }
 
-function text(value: string): ClipboardNode {
-    return {
-        attrs: {},
-        content: { forEach: () => undefined },
-        isText: true,
-        text: value,
-        textContent: value,
-        type: { name: 'text' },
-    }
-}
+function ordered_list(items: ClipboardNode[], attributes: Attributes = {}): ClipboardNode {
+    assert(Array.isArray(items))
+    assert(typeof attributes === 'object')
 
-function hard_break(): ClipboardNode {
-    return node('hardBreak')
+    return node('orderedList', items, attributes)
 }
 
 function paragraph(...inline: (string | ClipboardNode)[]): ClipboardNode {
+    assert(Array.isArray(inline))
+    assert(inline.length >= 0)
+
     return node('paragraph', inline.map((part) => (typeof part === 'string' ? text(part) : part)))
 }
 
-function heading(value: string, level: number): ClipboardNode {
-    return node('heading', [text(value)], { level })
+function table_cell(...blocks: ClipboardNode[]): ClipboardNode {
+    assert(Array.isArray(blocks))
+    assert(blocks.length > 0)
+
+    return node('tableCell', blocks)
 }
 
-function code_block(value: string): ClipboardNode {
-    return node('codeBlock', [text(value)])
-}
+function table_row(...cells: ClipboardNode[]): ClipboardNode {
+    assert(Array.isArray(cells))
+    assert(cells.length > 0)
 
-function list_item(...blocks: ClipboardNode[]): ClipboardNode {
-    return node('listItem', blocks)
-}
-
-function bullet_list(...items: ClipboardNode[]): ClipboardNode {
-    return node('bulletList', items)
-}
-
-function ordered_list(items: ClipboardNode[], attrs: Attrs = {}): ClipboardNode {
-    return node('orderedList', items, attrs)
+    return node('tableRow', cells)
 }
 
 function task_item(checked: boolean, ...blocks: ClipboardNode[]): ClipboardNode {
+    assert(typeof checked === 'boolean')
+    assert(Array.isArray(blocks))
+
     return node('taskItem', blocks, { checked })
 }
 
-function fragment(...blocks: ClipboardNode[]): ClipboardNode['content'] {
+function text(value: string): ClipboardNode {
+    assert(typeof value === 'string')
+    assert(value.length >= 0)
+
     return {
-        forEach: (callback) => {
-            blocks.forEach(callback)
-        },
+        [KEY_ATTRIBUTES]: {},
+        content: [],
+        [IS_TEXT]: true,
+        text: value,
+        [TEXT_CONTENT]: value,
+        type: { name: 'text' },
     }
 }
 
@@ -134,7 +186,9 @@ describe('clipboard_plain_text', () => {
 
         expect(result).toBe('1. first\n2. second')
     })
+})
 
+describe('clipboard_plain_text', () => {
     it('honours the start attribute of an ordered list', () => {
         const result = clipboard_plain_text(fragment(ordered_list(
             [list_item(paragraph('nine')), list_item(paragraph('ten'))],
@@ -177,10 +231,12 @@ describe('clipboard_plain_text', () => {
     })
 
     it('marks task items with their checked state', () => {
-        const result = clipboard_plain_text(fragment(node('taskList', [
+        const tasks = [
             task_item(true, paragraph('done')),
             task_item(false, paragraph('open')),
-        ])))
+        ]
+
+        const result = clipboard_plain_text(fragment(node('taskList', tasks)))
 
         expect(result).toBe('[x] done\n[ ] open')
     })
@@ -192,15 +248,14 @@ describe('clipboard_plain_text', () => {
 
         expect(result).toBe('quoted\nagain')
     })
+})
 
+describe('clipboard_plain_text', () => {
     it('renders table rows as tab separated cells', () => {
-        const cell = (...blocks: ClipboardNode[]) => node('tableCell', blocks)
-        const row = (...cells: ClipboardNode[]) => node('tableRow', cells)
-
-        const table = node('table', [
-            row(cell(paragraph('Who')), cell(paragraph('What'))),
-            row(cell(paragraph('Sam')), cell(paragraph('copy', hard_break(), 'draft'))),
-        ])
+        const header = table_row(table_cell(paragraph('Who')), table_cell(paragraph('What')))
+        const cell_last = table_cell(paragraph('copy', hard_break(), 'draft'))
+        const row = table_row(table_cell(paragraph('Sam')), cell_last)
+        const table = node('table', [header, row])
 
         expect(clipboard_plain_text(fragment(table))).toBe('Who\tWhat\nSam\tcopy draft')
     })

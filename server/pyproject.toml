@@ -1,0 +1,32 @@
+[project]
+name = "remi-server"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "django>=6.0.9",
+    "django-ninja>=1.7.0",
+    "django-spire>=1.4.4",
+    "gunicorn>=27.0.0",
+    "psycopg[binary]>=3.3.8",
+    "stripe>=16.1.0",
+    "typing-extensions>=4.16.0",
+    "whitenoise>=6.12.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "system.testing.settings"
+norecursedirs = [".*", ".venv", "static"]
+
+[dependency-groups]
+dev = [
+    "django-stubs>=6.1.2",
+    "pytest>=9.2.0",
+    "pytest-django>=4.14.0",
+    "pytest-xdist>=3.8.0",
+    "python-dotenv>=1.2.1",
+    "ruff>=0.17.4",
+    "ty>=0.0.100",
+]

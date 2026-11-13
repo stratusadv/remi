@@ -1,4 +1,5 @@
 import { computed, watch } from 'vue'
+import { assert } from '../lib/assert'
 import {
     PALETTE_DEFAULT,
     palette_apply_to_html,
@@ -26,10 +27,10 @@ export interface Palette {
 
 export const PALETTES = Object.freeze<Palette[]>([
     {
-        id: 'graphite',
-        label: 'Graphite',
-        dark: { surface: '#0b0b0b', accent: '#39b0dc' },
-        light: { surface: '#f7f7f6', accent: '#1a7ea6' },
+        id: 'cubist',
+        label: 'Cubist',
+        dark: { surface: '#0b1018', accent: '#00a2d2' },
+        light: { surface: '#efe8dc', accent: '#005f86' },
     },
     {
         id: 'rose-pine',
@@ -106,7 +107,7 @@ export const PALETTES = Object.freeze<Palette[]>([
 ])
 
 const { settings, update } = use_settings()
-const palette_effective = computed<PaletteChoice>(() => settings.value.palette ?? PALETTE_DEFAULT)
+const palette_effective = computed<PaletteChoice>(() => palette_resolve(settings.value.palette))
 const theme_effective = computed<ThemeEffective>(() => theme_resolve(settings.value.theme))
 
 
@@ -122,24 +123,54 @@ watch(
 watch(
     () => settings.value.palette,
     (palette) => {
-        palette_apply_to_html(palette ?? PALETTE_DEFAULT)
+        palette_apply_to_html(palette_resolve(palette))
     },
     { immediate: true },
 )
 
-function listener_system_attach() {
+export function use_theme(): typeof api {
+    assert(Object.isFrozen(api))
+    assert(typeof palette_effective.value === 'string')
+
+    return api
+}
+
+listener_system_attach()
+
+function listener_system_attach(): void {
     const query = system_media_query()
 
     if (query === null) return
+
+    assert(typeof query.addEventListener === 'function')
+    assert(PALETTES.length > 0)
 
     query.addEventListener('change', () => {
         if (settings.value.theme === null) theme_apply_to_html(theme_resolve(null))
     })
 }
 
-listener_system_attach()
+export function palette_resolve(saved: string | null): PaletteChoice {
+    assert(saved === null || saved.length > 0)
+    assert(PALETTES.some((candidate) => candidate.id === PALETTE_DEFAULT))
 
-function theme_set(choice: ThemeChoice) {
+    const known = PALETTES.find((candidate) => candidate.id === saved)
+
+    return known === undefined ? PALETTE_DEFAULT : known.id
+}
+
+function palette_set(palette: PaletteChoice): void {
+    assert(palette.length > 0)
+    assert(PALETTES.some((candidate) => candidate.id === palette))
+
+    void update({ palette })
+    palette_apply_to_html(palette)
+}
+
+function theme_set(choice: ThemeChoice): void {
+    assert(choice.length > 0)
+    assert(typeof update === 'function')
+
     const next = choice === 'system' ? null : choice
 
     void update({ theme: next })
@@ -147,15 +178,17 @@ function theme_set(choice: ThemeChoice) {
     theme_storage_write(next)
 }
 
-function theme_toggle() {
+const api = Object.freeze({
+    theme_set,
+    theme_toggle,
+    theme_effective,
+    palette_set,
+    palette_effective,
+})
+
+function theme_toggle(): void {
+    assert(theme_effective.value.length > 0)
+    assert(typeof settings.value === 'object')
+
     theme_set(theme_effective.value === 'light' ? 'dark' : 'light')
-}
-
-function palette_set(palette: PaletteChoice) {
-    void update({ palette })
-    palette_apply_to_html(palette)
-}
-
-export function use_theme() {
-    return { theme_set, theme_toggle, theme_effective, palette_set, palette_effective }
 }

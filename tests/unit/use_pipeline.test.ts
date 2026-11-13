@@ -1,28 +1,45 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
-import { ipc } from '../../src/lib/ipc'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { use_notes_templates } from '../../src/composables/use_notes_templates'
 import { use_pipeline } from '../../src/composables/use_pipeline'
 import { use_settings } from '../../src/composables/use_settings'
-import { job_meta_build, transcript_build } from './fixtures'
-import type { Waveform } from '../../src/types'
+import { assert } from '../../src/lib/assert'
+import { ipc } from '../../src/lib/ipc'
+import { deferred_new, job_meta_build, search_hit_build, transcript_build } from './fixtures'
+import type { TemplateID, Waveform } from '../../src/types'
 
 
 vi.mock('../../src/lib/ipc')
 
-const WAVEFORM: Waveform = { peaks: [0.1, 0.5], duration_seconds: 20 }
+const WAVEFORM = Object.freeze<Waveform>({ peaks: [0.1, 0.5], duration_seconds: 20 })
+const output = globalThis.console
 const pipeline = use_pipeline()
 
-function job_open_mocks(engines: string[], notes: string | null) {
+
+function job_open_mocks(engines: string[], notes: string | null): void {
+    assert(Array.isArray(engines))
+    assert(notes === null || typeof notes === 'string')
+
     vi.mocked(ipc.job_transcript_engines_list).mockResolvedValue(engines)
     vi.mocked(ipc.job_transcript_load).mockResolvedValue(transcript_build(['hello', 'world']))
     vi.mocked(ipc.notes_load).mockResolvedValue(notes)
     vi.mocked(ipc.job_waveform_get).mockResolvedValue(WAVEFORM)
 }
 
-async function settle() {
+async function settle(): Promise<void> {
+    assert(typeof nextTick === 'function')
+    assert(typeof pipeline.view_current.value === 'string')
+
     await nextTick()
     await Promise.resolve()
+}
+
+function template_select(id: TemplateID): void {
+    assert(id.length > 0)
+
+    pipeline.template_id_selected.value = id
+
+    assert(pipeline.template_id_selected.value === id)
 }
 
 beforeEach(() => {
@@ -30,7 +47,7 @@ beforeEach(() => {
     pipeline.pipeline_reset()
     pipeline.view_set('transcribe')
     pipeline.view_set('jobs')
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    vi.spyOn(output, 'warn').mockImplementation(() => undefined)
 })
 
 afterEach(() => {
@@ -63,6 +80,42 @@ describe('view_reopen', () => {
 
         expect(pipeline.view_current.value).toBe('templates')
         expect(pipeline.view_reopen_count.value).toBe(0)
+    })
+})
+
+describe('view intents', () => {
+    it('opens the view an intent belongs to and hands the intent over exactly once', () => {
+        pipeline.view_intent_open('person_add')
+
+        expect(pipeline.view_current.value).toBe('people')
+        expect(pipeline.view_intent_take()).toBe('person_add')
+        expect(pipeline.view_intent_take()).toBeNull()
+    })
+
+    it('remounts the view already shown so the fresh view can act on the intent', () => {
+        pipeline.view_set('settings')
+
+        const count = pipeline.view_reopen_count.value
+
+        pipeline.view_intent_open('settings_ai')
+
+        expect(pipeline.view_current.value).toBe('settings')
+        expect(pipeline.view_reopen_count.value).toBe(count + 1)
+        expect(pipeline.view_intent_take()).toBe('settings_ai')
+    })
+
+    it('drops an intent nobody took once a view is opened without one', () => {
+        pipeline.view_intent_open('template_add')
+        pipeline.view_reopen('templates')
+
+        expect(pipeline.view_current.value).toBe('templates')
+        expect(pipeline.view_intent_take()).toBeNull()
+
+        pipeline.view_intent_open('group_add')
+        pipeline.view_set('jobs')
+        pipeline.view_set('people')
+
+        expect(pipeline.view_intent_take()).toBeNull()
     })
 })
 
@@ -114,15 +167,13 @@ describe('job_open', () => {
 
         expect(pipeline.view_current.value).toBe('details')
     })
+})
 
+describe('job_open', () => {
     it('ignores a second open while the first is still loading', async () => {
-        let release: (engines: string[]) => void = () => undefined
+        const engines = deferred_new<string[]>()
 
-        vi.mocked(ipc.job_transcript_engines_list).mockReturnValue(
-            new Promise<string[]>((resolve) => {
-                release = resolve
-            }),
-        )
+        vi.mocked(ipc.job_transcript_engines_list).mockReturnValue(engines.promise)
 
         vi.mocked(ipc.notes_load).mockResolvedValue(null)
         vi.mocked(ipc.job_waveform_get).mockResolvedValue(null)
@@ -135,7 +186,7 @@ describe('job_open', () => {
 
         expect(ipc.job_transcript_engines_list).toHaveBeenCalledTimes(1)
 
-        release([])
+        engines.resolve([])
         await first
 
         expect(pipeline.job_id_current.value).toBe('first')
@@ -159,7 +210,7 @@ describe('job_open', () => {
 
         expect(pipeline.waveform_current.value).toBeNull()
 
-        expect(console.warn).toHaveBeenCalledWith(
+        expect(output.warn).toHaveBeenCalledWith(
             '[pipeline] waveform unavailable',
             'job-1',
             expect.any(Error),
@@ -174,7 +225,7 @@ describe('pipeline_reset', () => {
         await pipeline.job_open(job_meta_build(), null)
         await settle()
 
-        pipeline.template_id_selected.value = 'tpl'
+        template_select('tpl')
         pipeline.pipeline_reset()
 
         expect(pipeline.job_id_current.value).toBeNull()
@@ -348,7 +399,7 @@ describe('meta_refresh', () => {
 
         expect(pipeline.meta_current.value).toEqual(meta)
 
-        expect(console.warn).toHaveBeenCalledWith(
+        expect(output.warn).toHaveBeenCalledWith(
             '[pipeline] meta refresh failed',
             'job-1',
             expect.any(Error),
@@ -364,5 +415,67 @@ describe('waveform_refresh', () => {
 
         expect(pipeline.waveform_current.value).toBeNull()
         expect(ipc.job_waveform_get).not.toHaveBeenCalled()
+    })
+})
+
+describe('job_open_at', () => {
+    it('opens a transcript hit on the transcript with its segments in focus', async () => {
+        job_open_mocks(['stratus.listen'], '# Notes')
+
+        const hit = search_hit_build({
+            job_id: 'job-7',
+            segment_index_first: 2,
+            segment_index_last: 4,
+            source: 'transcript',
+            start_seconds: 20,
+        })
+
+        await pipeline.job_open_at(job_meta_build({ id: 'job-7' }), hit)
+
+        expect(pipeline.view_current.value).toBe('transcribe')
+        expect(pipeline.job_id_current.value).toBe('job-7')
+
+        expect(pipeline.segment_focus.value).toEqual({
+            job_id: 'job-7',
+            segment_index_first: 2,
+            segment_index_last: 4,
+        })
+    })
+
+    it('opens a notes hit on the notes and an untimed hit without focus', async () => {
+        job_open_mocks(['stratus.listen'], '# Notes')
+
+        await pipeline.job_open_at(job_meta_build(), search_hit_build({ source: 'notes' }))
+
+        expect(pipeline.view_current.value).toBe('notes')
+        expect(pipeline.segment_focus.value).toBeNull()
+
+        await pipeline.job_open_at(job_meta_build(), search_hit_build({ source: 'transcript' }))
+
+        expect(pipeline.view_current.value).toBe('transcribe')
+        expect(pipeline.segment_focus.value).toBeNull()
+    })
+
+    it('drops the focus when another meeting opens or the pipeline resets', async () => {
+        job_open_mocks(['stratus.listen'], null)
+
+        const hit = search_hit_build({
+            segment_index_first: 1,
+            segment_index_last: 1,
+            source: 'transcript',
+        })
+
+        await pipeline.job_open_at(job_meta_build(), hit)
+
+        expect(pipeline.segment_focus.value?.job_id).toBe('job-1')
+
+        await pipeline.job_open(job_meta_build({ id: 'job-8' }), null)
+
+        expect(pipeline.segment_focus.value).toBeNull()
+
+        await pipeline.job_open_at(job_meta_build(), hit)
+        pipeline.pipeline_reset()
+
+        expect(pipeline.segment_focus.value).toBeNull()
     })
 })

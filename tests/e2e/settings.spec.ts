@@ -1,59 +1,68 @@
 import { expect, test } from '@playwright/test'
-import { app_open, dialog, nav_to, setting } from './helpers'
+import { assert } from '../../src/lib/assert'
+import { HAS_TEXT, app_open, nav_to, setting } from './helpers'
 import type { Page } from '@playwright/test'
 
 
-const RECORDINGS_DIRECTORY_DEFAULT = 'C:\\Users\\mock\\Music\\scribe'
+const RECORDINGS_DIRECTORY_DEFAULT = 'C:\\Users\\mock\\Music\\Remi Remembers'
 const RECORDINGS_DIRECTORY_PICKED = '/home/you/Music/meetings'
-const KEY_PLACEHOLDER_SET = '•'.repeat(24)
-const KEY_PLACEHOLDER_EMPTY = 'Paste your key'
+const API_HOST_BUILTIN = 'https://ai.example.invalid'
+const CREDIT = 'Powered by Stratus Advanced Technologies'
+const KEY_PLACEHOLDER = 'Paste your key'
+const KEY_SEEDED = 'mock-key'
 
-async function ai_tab_open(page: Page) {
+
+async function ai_tab_open(page: Page): Promise<void> {
+    assert(!page.isClosed())
+
     await page.getByRole('tab', { name: 'AI' }).click()
     await expect(page.getByRole('tab', { name: 'AI' })).toHaveAttribute('aria-selected', 'true')
 }
 
-async function key_field_check(page: Page, label: string) {
+async function field_leave(page: Page): Promise<void> {
+    assert(!page.isClosed())
+    assert(page.url().length > 0)
+
+    await page.getByRole('heading', { name: 'Settings' }).click()
+}
+
+async function key_field_check(page: Page, label: string): Promise<void> {
+    assert(!page.isClosed())
+    assert(label.length > 0)
+
     const field = setting(page, label)
     const input = field.locator('input[type="password"]')
-    const remove = field.getByRole('button', { name: 'Remove' })
-    const save = field.getByRole('button', { name: 'Save' })
 
-    await expect(input).toHaveAttribute('placeholder', KEY_PLACEHOLDER_SET)
-    await expect(remove).toBeEnabled()
-    await expect(save).toBeDisabled()
+    await expect(input).toHaveValue(key_mask(KEY_SEEDED))
+    await expect(field.getByRole('button', { name: 'Save' })).toHaveCount(0)
+    await expect(field.getByRole('button', { name: 'Remove' })).toHaveCount(0)
 
-    await input.fill('fresh-key')
+    await input.fill('a-fresh-key')
+    await field_leave(page)
 
-    await expect(save).toBeEnabled()
+    await expect(input).toHaveValue(key_mask('a-fresh-key'))
 
-    await save.click()
+    await field.getByRole('button', { name: 'Clear' }).click()
 
     await expect(input).toHaveValue('')
-    await expect(input).toHaveAttribute('placeholder', KEY_PLACEHOLDER_SET)
+    await expect(input).toBeFocused()
 
-    await remove.click()
+    await field_leave(page)
 
-    const confirm = dialog(page, 'Remove key')
+    await expect(input).toHaveValue('')
+    await expect(input).toHaveAttribute('placeholder', KEY_PLACEHOLDER)
 
-    await expect(confirm)
-        .toContainText('Remove your key? scribe will not work until you add another one.')
-
-    await confirm.getByRole('button', { name: 'Cancel' }).click()
-
-    await expect(remove).toBeEnabled()
-
-    await remove.click()
-    await confirm.getByRole('button', { name: 'Remove' }).click()
-
-    await expect(input).toHaveAttribute('placeholder', KEY_PLACEHOLDER_EMPTY)
-    await expect(remove).toBeDisabled()
-
-    await input.fill('another-key')
+    await input.fill('yet-another-key')
     await input.press('Enter')
 
-    await expect(input).toHaveAttribute('placeholder', KEY_PLACEHOLDER_SET)
-    await expect(remove).toBeEnabled()
+    await expect(input).toHaveValue(key_mask('yet-another-key'))
+}
+
+function key_mask(key: string): string {
+    assert(key.length > 0)
+    assert(!key.includes('•'))
+
+    return '•'.repeat(key.length)
 }
 
 test.beforeEach(async ({ page }) => {
@@ -62,7 +71,7 @@ test.beforeEach(async ({ page }) => {
 })
 
 test('the theme select updates the html class', async ({ page }) => {
-    const theme = page.getByRole('combobox').filter({ hasText: 'Match my computer' })
+    const theme = page.getByRole('combobox').filter({ [HAS_TEXT]: 'Match my computer' })
     const html = page.locator('html')
 
     await expect(theme).toHaveValue('dark')
@@ -86,17 +95,17 @@ test('the theme select updates the html class', async ({ page }) => {
 
 test('the palette swatches update data-palette', async ({ page }) => {
     const html = page.locator('html')
-    const graphite = page.getByRole('radio', { name: 'Graphite' })
+    const cubist = page.getByRole('radio', { name: 'Cubist' })
     const nord = page.getByRole('radio', { name: 'Nord' })
 
-    await expect(html).toHaveAttribute('data-palette', 'graphite')
-    await expect(graphite).toHaveAttribute('aria-checked', 'true')
+    await expect(html).toHaveAttribute('data-palette', 'cubist')
+    await expect(cubist).toHaveAttribute('aria-checked', 'true')
 
     await nord.click()
 
     await expect(html).toHaveAttribute('data-palette', 'nord')
     await expect(nord).toHaveAttribute('aria-checked', 'true')
-    await expect(graphite).toHaveAttribute('aria-checked', 'false')
+    await expect(cubist).toHaveAttribute('aria-checked', 'false')
 
     await page.getByRole('radio', { name: 'Dracula' }).click()
 
@@ -104,7 +113,7 @@ test('the palette swatches update data-palette', async ({ page }) => {
 })
 
 test('the default template select feeds the Templates page', async ({ page }) => {
-    const template = page.getByRole('combobox').filter({ hasText: 'Ask each time' })
+    const template = page.getByRole('combobox').filter({ [HAS_TEXT]: 'Ask each time' })
 
     await expect(template).toHaveValue('default-meeting-notes')
 
@@ -114,8 +123,10 @@ test('the default template select feeds the Templates page', async ({ page }) =>
 
     await nav_to(page, 'Templates')
 
-    await expect(page.locator('li').filter({ hasText: 'Stand-up digest' }).locator('.pill-active'))
-        .toHaveText('Default')
+    const row = page.locator('li').filter({ [HAS_TEXT]: 'Stand-up digest' })
+    const pill = row.locator('.pill-active')
+
+    await expect(pill).toHaveText('Default')
 
     await nav_to(page, 'Settings')
     await template.selectOption({ label: 'Ask each time' })
@@ -127,10 +138,11 @@ test('the default template select feeds the Templates page', async ({ page }) =>
     await expect(page.locator('.pill-active')).toHaveCount(0)
 
     await nav_to(page, 'Home')
-    await page.locator('.recording-tile').filter({ hasText: 'discovery-call.wav' }).click()
+    await page.locator('.recording-tile').filter({ [HAS_TEXT]: 'discovery-call.wav' }).click()
 
     await expect(page.getByLabel('Template').locator('option:checked'))
         .toHaveText('Choose a template')
+
     await expect(page.getByRole('button', { name: 'Next' })).toBeDisabled()
 })
 
@@ -155,11 +167,18 @@ test('the recordings folder can be chosen and reset', async ({ page }) => {
 test('About shows the version and checks for updates', async ({ page }) => {
     const about = setting(page, 'About')
 
-    await expect(about).toContainText('scribe 0.1.0-browser-mock')
+    await expect(about).toContainText('Remi Remembers 0.1.0-browser-mock')
 
     await about.getByRole('button', { name: 'Check for updates' }).click()
 
-    await expect(about).toContainText('scribe is up to date.')
+    await expect(about).toContainText('Remi is up to date.')
+})
+
+test('About credits Stratus with a link that opens in the browser', async ({ page }) => {
+    const credit = setting(page, 'About').getByRole('link', { name: CREDIT })
+
+    await expect(credit).toHaveAttribute('href', 'https://stratusadv.com')
+    await expect(credit).toHaveAttribute('target', '_blank')
 })
 
 test('the API address can be set and removed', async ({ page }) => {
@@ -167,20 +186,11 @@ test('the API address can be set and removed', async ({ page }) => {
 
     const field = setting(page, 'API address')
     const input = field.getByRole('textbox')
-    const remove = field.getByRole('button', { name: 'Remove' })
-    const save = field.getByRole('button', { name: 'Save' })
 
-    await expect(input).toHaveValue('')
-    await expect(remove).toBeDisabled()
-    await expect(save).toBeDisabled()
+    await expect(input).toHaveValue(API_HOST_BUILTIN)
 
     await input.fill('https://api.example.test')
-
-    await expect(save).toBeEnabled()
-
-    await save.click()
-
-    await expect(remove).toBeEnabled()
+    await input.press('Enter')
 
     await nav_to(page, 'Home')
     await nav_to(page, 'Settings')
@@ -188,22 +198,10 @@ test('the API address can be set and removed', async ({ page }) => {
 
     await expect(input).toHaveValue('https://api.example.test')
 
-    await remove.click()
+    await field.getByRole('button', { name: 'Clear' }).click()
+    await field_leave(page)
 
-    const confirm = dialog(page, 'Remove address')
-
-    await expect(confirm)
-        .toContainText('Remove your address? scribe will go back to the built-in one.')
-
-    await confirm.getByRole('button', { name: 'Cancel' }).click()
-
-    await expect(input).toHaveValue('https://api.example.test')
-
-    await remove.click()
-    await confirm.getByRole('button', { name: 'Remove' }).click()
-
-    await expect(input).toHaveValue('')
-    await expect(remove).toBeDisabled()
+    await expect(input).toHaveValue(API_HOST_BUILTIN)
 })
 
 test('the transcription key can be set and removed', async ({ page }) => {
@@ -221,16 +219,16 @@ test('removing the notes key blocks note generation until it is back', async ({ 
 
     const field = setting(page, 'Notes key')
 
-    await field.getByRole('button', { name: 'Remove' }).click()
-    await dialog(page, 'Remove key').getByRole('button', { name: 'Remove' }).click()
+    await field.getByRole('button', { name: 'Clear' }).click()
+    await field_leave(page)
 
-    await expect(field.getByRole('button', { name: 'Remove' })).toBeDisabled()
+    await expect(field.locator('input[type="password"]')).toHaveValue('')
 
     await nav_to(page, 'Home')
-    await page.locator('.recording-tile').filter({ hasText: 'discovery-call.wav' }).click()
+    await page.locator('.recording-tile').filter({ [HAS_TEXT]: 'discovery-call.wav' }).click()
     await page.getByRole('button', { name: 'Next' }).click()
 
-    await expect(page.getByText('scribe needs the API address and keys set up')).toBeVisible()
+    await expect(page.getByText('Remi needs the API address and keys set up')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Generate notes' })).toBeDisabled()
 })
 
@@ -260,6 +258,41 @@ test('the notes model and thinking selects persist', async ({ page }) => {
 
     await expect(model).toHaveValue('')
     await expect(thinking).toHaveValue('xhigh')
+})
+
+test('the search model reports progress and its address defaults to the API', async ({ page }) => {
+    await ai_tab_open(page)
+
+    const model = setting(page, 'Search model').first()
+    const address = setting(page, 'Search model address')
+    const model_input = model.getByRole('textbox')
+    const address_input = address.getByRole('textbox')
+
+    await expect(model_input).toHaveValue('')
+    await expect(model_input).toHaveAttribute('placeholder', 'Off')
+    await expect(address_input).toHaveAttribute('placeholder', API_HOST_BUILTIN)
+    await expect(model).not.toContainText('by meaning')
+
+    await model_input.fill('qwen3-embedding:0.6b')
+    await model_input.press('Enter')
+
+    await expect(model).toContainText(/Ask can search all \d+ passages by meaning\./)
+
+    await address_input.fill('http://localhost:11434')
+    await field_leave(page)
+
+    await nav_to(page, 'Home')
+    await nav_to(page, 'Settings')
+    await ai_tab_open(page)
+
+    await expect(model_input).toHaveValue('qwen3-embedding:0.6b')
+    await expect(address_input).toHaveValue('http://localhost:11434')
+
+    await model.getByRole('button', { name: 'Clear' }).click()
+    await field_leave(page)
+
+    await expect(model_input).toHaveValue('')
+    await expect(model).not.toContainText('by meaning')
 })
 
 test('the tabs switch between General and AI', async ({ page }) => {

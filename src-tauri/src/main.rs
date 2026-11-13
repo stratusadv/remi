@@ -1,5 +1,7 @@
-#![cfg_attr(optimized, windows_subsystem = "windows")] // tigerstyle-ignore: TS035
+#![cfg_attr(optimized, windows_subsystem = "windows")]
 
-fn main() {
-    scribe_lib::run();
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    remi_lib::run()
 }
