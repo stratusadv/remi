@@ -1,17 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import MenuIcon from './menu_icon.vue'
+import type { MenuItem } from '../lib/menu'
 
-
-export interface RowMenuItem {
-    id: string
-    label: string
-    icon: 'edit' | 'delete' | 'star'
-    danger?: boolean
-}
 
 const props = defineProps<{
     label: string
-    items: RowMenuItem[]
+    items: MenuItem[]
 }>()
 
 const emit = defineEmits<{
@@ -30,32 +25,6 @@ const popover_style = computed(() => ({
     top: `${String(popover_top_px.value)}px`,
     right: `${String(popover_right_px.value)}px`,
 }))
-
-const ICON_PATH_PEN = 'M16.862 4.487l1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82'
-    + 'a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Z'
-
-const ICON_PATH_STAR = 'M11.48 3.5a.56.56 0 0 1 1.04 0l2.12 5.11a.56.56 0 0 0 .48.35l5.52.44'
-    + 'c.5.04.7.66.32.99l-4.2 3.6a.56.56 0 0 0-.18.56l1.28 5.39a.56.56 0 0 1-.84.61'
-    + 'l-4.73-2.89a.56.56 0 0 0-.58 0l-4.73 2.89a.56.56 0 0 1-.84-.61l1.28-5.39'
-    + 'a.56.56 0 0 0-.18-.56l-4.2-3.6a.56.56 0 0 1 .32-.99l5.52-.44a.56.56 0 0 0 .48-.35'
-    + 'L11.48 3.5Z'
-
-const ICON_PATHS: Record<RowMenuItem['icon'], string[]> = {
-    edit: [
-        ICON_PATH_PEN,
-        'M16.862 4.487 19.5 7.125',
-    ],
-    delete: [
-        'M4.5 6.75h15',
-        'M9.75 6.75V4.5h4.5v2.25',
-        'M6.75 6.75l.75 12.75h9l.75-12.75',
-        'M10.5 10.5v5.25',
-        'M13.5 10.5v5.25',
-    ],
-    star: [
-        ICON_PATH_STAR,
-    ],
-}
 
 
 function close_on_escape(event: KeyboardEvent): void {
@@ -155,22 +124,7 @@ onBeforeUnmount(listeners_detach)
                         role="menuitem"
                         @click.stop="select(item.id)"
                     >
-                        <svg
-                            class="menu-item-icon"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="1.5"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            aria-hidden="true"
-                        >
-                            <path
-                                v-for="(path_data, index) in ICON_PATHS[item.icon]"
-                                :key="index"
-                                :d="path_data"
-                            />
-                        </svg>
+                        <MenuIcon :name="item.icon" />
                         {{ item.label }}
                     </button>
                 </li>

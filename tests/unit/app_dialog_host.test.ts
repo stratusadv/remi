@@ -1,5 +1,5 @@
 import { shallowRef } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import AppDialogHost from '../../src/components/app_dialog_host.vue'
 import { use_dialog } from '../../src/composables/use_dialog'
@@ -188,6 +188,23 @@ describe('AppDialogHost', () => {
 
         expect(answer_second).toBe(true)
         expect(enter.defaultPrevented).toBe(true)
+    })
+
+    it('focuses the prompt field with its text selected so typing replaces it', async () => {
+        void dialog.prompt('Folder name', 'Acme', { title: 'Rename folder' })
+
+        await flushPromises()
+
+        const field = document.body.querySelector<HTMLInputElement>('.app-dialog-input')
+
+        expect(field).not.toBeNull()
+        expect(document.activeElement).toBe(field)
+        expect(field?.selectionStart).toBe(0)
+        expect(field?.selectionEnd).toBe('Acme'.length)
+
+        key_press('Escape')
+
+        expect(dialog.current.value).toBeNull()
     })
 
     it('ignores keys while no dialog is open', () => {

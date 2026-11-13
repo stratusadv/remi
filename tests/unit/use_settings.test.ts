@@ -15,6 +15,8 @@ const SETTINGS_EMPTY = Object.freeze<Settings>({
     notes_thinking: null,
     api_host: null,
     jobs_view: null,
+    embeddings_host: null,
+    embeddings_model: null,
 })
 
 const settings_state = use_settings()

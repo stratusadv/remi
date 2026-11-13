@@ -4,9 +4,10 @@ import { HAS_TEXT, app_open, nav_to, setting } from './helpers'
 import type { Page } from '@playwright/test'
 
 
-const RECORDINGS_DIRECTORY_DEFAULT = 'C:\\Users\\mock\\Music\\scribe'
+const RECORDINGS_DIRECTORY_DEFAULT = 'C:\\Users\\mock\\Music\\Remi Remembers'
 const RECORDINGS_DIRECTORY_PICKED = '/home/you/Music/meetings'
 const API_HOST_BUILTIN = 'https://ai.example.invalid'
+const CREDIT = 'Powered by Stratus Advanced Technologies'
 const KEY_PLACEHOLDER = 'Paste your key'
 const KEY_SEEDED = 'mock-key'
 
@@ -94,17 +95,17 @@ test('the theme select updates the html class', async ({ page }) => {
 
 test('the palette swatches update data-palette', async ({ page }) => {
     const html = page.locator('html')
-    const graphite = page.getByRole('radio', { name: 'Graphite' })
+    const cubist = page.getByRole('radio', { name: 'Cubist' })
     const nord = page.getByRole('radio', { name: 'Nord' })
 
-    await expect(html).toHaveAttribute('data-palette', 'graphite')
-    await expect(graphite).toHaveAttribute('aria-checked', 'true')
+    await expect(html).toHaveAttribute('data-palette', 'cubist')
+    await expect(cubist).toHaveAttribute('aria-checked', 'true')
 
     await nord.click()
 
     await expect(html).toHaveAttribute('data-palette', 'nord')
     await expect(nord).toHaveAttribute('aria-checked', 'true')
-    await expect(graphite).toHaveAttribute('aria-checked', 'false')
+    await expect(cubist).toHaveAttribute('aria-checked', 'false')
 
     await page.getByRole('radio', { name: 'Dracula' }).click()
 
@@ -166,11 +167,18 @@ test('the recordings folder can be chosen and reset', async ({ page }) => {
 test('About shows the version and checks for updates', async ({ page }) => {
     const about = setting(page, 'About')
 
-    await expect(about).toContainText('scribe 0.1.0-browser-mock')
+    await expect(about).toContainText('Remi Remembers 0.1.0-browser-mock')
 
     await about.getByRole('button', { name: 'Check for updates' }).click()
 
-    await expect(about).toContainText('scribe is up to date.')
+    await expect(about).toContainText('Remi is up to date.')
+})
+
+test('About credits Stratus with a link that opens in the browser', async ({ page }) => {
+    const credit = setting(page, 'About').getByRole('link', { name: CREDIT })
+
+    await expect(credit).toHaveAttribute('href', 'https://stratusadv.com')
+    await expect(credit).toHaveAttribute('target', '_blank')
 })
 
 test('the API address can be set and removed', async ({ page }) => {
@@ -220,7 +228,7 @@ test('removing the notes key blocks note generation until it is back', async ({ 
     await page.locator('.recording-tile').filter({ [HAS_TEXT]: 'discovery-call.wav' }).click()
     await page.getByRole('button', { name: 'Next' }).click()
 
-    await expect(page.getByText('scribe needs the API address and keys set up')).toBeVisible()
+    await expect(page.getByText('Remi needs the API address and keys set up')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Generate notes' })).toBeDisabled()
 })
 
@@ -250,6 +258,41 @@ test('the notes model and thinking selects persist', async ({ page }) => {
 
     await expect(model).toHaveValue('')
     await expect(thinking).toHaveValue('xhigh')
+})
+
+test('the search model reports progress and its address defaults to the API', async ({ page }) => {
+    await ai_tab_open(page)
+
+    const model = setting(page, 'Search model').first()
+    const address = setting(page, 'Search model address')
+    const model_input = model.getByRole('textbox')
+    const address_input = address.getByRole('textbox')
+
+    await expect(model_input).toHaveValue('')
+    await expect(model_input).toHaveAttribute('placeholder', 'Off')
+    await expect(address_input).toHaveAttribute('placeholder', API_HOST_BUILTIN)
+    await expect(model).not.toContainText('by meaning')
+
+    await model_input.fill('qwen3-embedding:0.6b')
+    await model_input.press('Enter')
+
+    await expect(model).toContainText(/Ask can search all \d+ passages by meaning\./)
+
+    await address_input.fill('http://localhost:11434')
+    await field_leave(page)
+
+    await nav_to(page, 'Home')
+    await nav_to(page, 'Settings')
+    await ai_tab_open(page)
+
+    await expect(model_input).toHaveValue('qwen3-embedding:0.6b')
+    await expect(address_input).toHaveValue('http://localhost:11434')
+
+    await model.getByRole('button', { name: 'Clear' }).click()
+    await field_leave(page)
+
+    await expect(model_input).toHaveValue('')
+    await expect(model).not.toContainText('by meaning')
 })
 
 test('the tabs switch between General and AI', async ({ page }) => {

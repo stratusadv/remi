@@ -357,7 +357,7 @@ pub(crate) async fn transcript_correct_streaming(
     transcript_text_validate(&numbered)?;
 
     let user_prompt =
-        format!("Instruction: {instruction_trimmed}\n\nTranscript:\n{numbered}\n\nChanged lines:");
+        format!("Transcript:\n{numbered}\n\nInstruction: {instruction_trimmed}\n\nChanged lines:");
 
     let prompts = ChatPrompts { system: PROMPT_TRANSCRIPT_CORRECT_SYSTEM, user: &user_prompt };
     let reply = chat_completion_streaming(app, stream_id, &endpoint, &prompts).await?;
@@ -538,12 +538,6 @@ fn prompt_build(parts: &PromptParts<'_>) -> String {
         instructions.len() + transcript.len() + usize_of!(PROMPT_DETAILS_BYTES_ESTIMATE),
     );
 
-    prompt.push_str("Template:\n");
-    prompt.push_str(instructions.trim());
-    prompt.push_str("\n\n");
-
-    let details_start = prompt.len();
-
     for (label, value) in details {
         if !value.is_empty() {
             prompt.push_str(label);
@@ -552,12 +546,14 @@ fn prompt_build(parts: &PromptParts<'_>) -> String {
         }
     }
 
-    if prompt.len() > details_start {
+    if !prompt.is_empty() {
         prompt.push('\n');
     }
 
     prompt.push_str("Transcript:\n");
     prompt.push_str(transcript);
+    prompt.push_str("\n\nTemplate:\n");
+    prompt.push_str(instructions.trim());
     prompt.push_str(PROMPT_REMINDERS);
 
     assert!(prompt.ends_with(PROMPT_REMINDERS));
@@ -745,10 +741,10 @@ mod tests {
         });
 
         let head = concat!(
-            "Template:\nSummarize.\n\n",
             "Tags: a, b\n",
             "Recorded on: 2025-01-21\n",
             "\nTranscript:\nwords",
+            "\n\nTemplate:\nSummarize.",
         );
 
         assert!(prompt.starts_with(head));
@@ -829,8 +825,8 @@ mod tests {
             transcript: "words",
         });
 
-        assert!(prompt.starts_with("Template:\nSummarize.\n"));
-        assert!(prompt.ends_with(PROMPT_REMINDERS));
+        assert!(prompt.starts_with("Transcript:\nwords\n\nTemplate:\nSummarize."));
+        assert!(prompt.ends_with(&format!("Template:\nSummarize.{PROMPT_REMINDERS}")));
     }
 
     #[test]
@@ -890,7 +886,6 @@ mod tests {
         });
 
         let details = concat!(
-            "Template:\nWrite a summary.\n\n",
             "Title: Kickoff\n",
             "Project: Website\n",
             "People present: Jane Doe (project manager): runs the delivery side\n",
@@ -898,6 +893,7 @@ mod tests {
             "Tags: weekly\n",
             "Recorded on: 2025-01-11\n",
             "\nTranscript:\nhello",
+            "\n\nTemplate:\nWrite a summary.",
         );
 
         assert_eq!(prompt, format!("{details}{PROMPT_REMINDERS}"));
@@ -912,7 +908,7 @@ mod tests {
             transcript: "hello",
         });
 
-        let details = "Template:\nWrite a summary.\n\nTranscript:\nhello";
+        let details = "Transcript:\nhello\n\nTemplate:\nWrite a summary.";
 
         assert_eq!(prompt, format!("{details}{PROMPT_REMINDERS}"));
     }

@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { defineConfig, devices } from '@playwright/test'
 
 
+const PORT_PLAYWRIGHT = 1_520
 const RETRIES_CI = 2
-const URL_DEV = 'http://127.0.0.1:1420'
+const URL_PLAYWRIGHT = `http://127.0.0.1:${String(PORT_PLAYWRIGHT)}`
 const WEB_SERVER_TIMEOUT_MILLISECONDS = 120_000
 
 
@@ -14,7 +15,7 @@ export default defineConfig({
     retries: ci_running() ? RETRIES_CI : 0,
     reporter: ci_running() ? 'github' : 'list',
     use: {
-        baseURL: URL_DEV,
+        baseURL: URL_PLAYWRIGHT,
         trace: 'on-first-retry',
     },
     projects: [
@@ -24,8 +25,8 @@ export default defineConfig({
         },
     ],
     webServer: {
-        command: 'bun run dev --host 127.0.0.1',
-        url: URL_DEV,
+        command: `bun run dev --host 127.0.0.1 --port ${String(PORT_PLAYWRIGHT)}`,
+        url: URL_PLAYWRIGHT,
         reuseExistingServer: !ci_running(),
         timeout: WEB_SERVER_TIMEOUT_MILLISECONDS,
     },

@@ -5,9 +5,23 @@ import type {
     APIEndpoint,
     APIEndpointPurpose,
     APIKey,
+    Account,
+    AccountSignUp,
+    AccountStatus,
+    AskScope,
+    AskTurn,
     AudioPath,
+    ChatExchange,
+    ChatID,
+    ChatOpened,
+    ChatSummary,
+    CheckoutFinished,
+    CheckoutSessionID,
+    CheckoutStarted,
     EndpointID,
     EngineID,
+    FolderName,
+    FolderRename,
     Group,
     Instruction,
     JobID,
@@ -20,11 +34,14 @@ import type {
     NotesModels,
     NotesTemplate,
     Person,
+    PromoCode,
     RecordID,
+    SearchStatus,
     SecondsEnd,
     SecondsStart,
     ServiceStatus,
     Settings,
+    SignInCode,
     StreamID,
     TargetPath,
     TemplateID,
@@ -52,8 +69,86 @@ function query<Reply>(command: string): () => Promise<Reply> {
 }
 
 export const ipc = Object.freeze({
+    async account_checkout_finish(session_id: CheckoutSessionID): Promise<CheckoutFinished> {
+        assert(session_id.startsWith('cs_'))
+        assert(!session_id.includes(' '))
+
+        return invoke<CheckoutFinished>('account_checkout_finish', { session_id })
+    },
+    async account_checkout_start(hours: number): Promise<CheckoutStarted> {
+        assert(Number.isSafeInteger(hours))
+        assert(hours > 0)
+
+        return invoke<CheckoutStarted>('account_checkout_start', { hours })
+    },
+    account_code_get: query<SignInCode | null>('account_code_get'),
+    async account_create(sign_up: AccountSignUp): Promise<Account> {
+        assert(sign_up.name.trim().length > 0)
+        assert(sign_up.email.trim().length > 0)
+
+        return invoke<Account>('account_create', { sign_up })
+    },
+    account_get: query<Account | null>('account_get'),
+    async account_promo_redeem(code: PromoCode): Promise<Account> {
+        assert(typeof code === 'string')
+        assert(code.trim().length > 0)
+
+        return invoke<Account>('account_promo_redeem', { code })
+    },
+    async account_sign_in(code: SignInCode): Promise<Account> {
+        assert(typeof code === 'string')
+        assert(code.trim().length > 0)
+
+        return invoke<Account>('account_sign_in', { code })
+    },
+    account_status: query<AccountStatus>('account_status'),
     app_relaunch: query<undefined>('app_relaunch'),
+    async chat_get(id: ChatID): Promise<ChatOpened> {
+        assert(id.length > 0)
+        assert(id.trim() === id)
+
+        return invoke<ChatOpened>('chat_get', { id })
+    },
+    async chat_remove(id: ChatID): Promise<void> {
+        assert(id.length > 0)
+        assert(id.trim() === id)
+
+        return invoke_void('chat_remove', { id })
+    },
+    async chat_save(id: ChatID, exchanges: readonly ChatExchange[]): Promise<void> {
+        assert(id.length > 0)
+        assert(exchanges.length > 0)
+
+        return invoke_void('chat_save', { id, exchanges })
+    },
+    chats_list: query<ChatSummary[]>('chats_list'),
+    desktop_export_open: query<undefined>('desktop_export_open'),
+    async desktop_notification_show(title: Title, body: string): Promise<void> {
+        assert(title.length > 0)
+        assert(typeof body === 'string')
+
+        return invoke_void('desktop_notification_show', { title, body })
+    },
     endpoints_list: query<APIEndpoint[]>('endpoints_list'),
+    async folder_create(name: FolderName): Promise<void> {
+        assert(name.length > 0)
+        assert(name.trim() === name)
+
+        return invoke_void('folder_create', { name })
+    },
+    async folder_remove(name: FolderName): Promise<void> {
+        assert(name.length > 0)
+        assert(name.trim() === name)
+
+        return invoke_void('folder_remove', { name })
+    },
+    async folder_rename(rename: FolderRename): Promise<void> {
+        assert(rename.from.length > 0)
+        assert(rename.to.trim() === rename.to)
+
+        return invoke_void('folder_rename', { rename })
+    },
+    folders_list: query<FolderName[]>('folders_list'),
     async group_remove(id: RecordID): Promise<void> {
         assert(typeof id === 'string')
 
@@ -137,6 +232,28 @@ export const ipc = Object.freeze({
 
         return invoke<string>('markdown_render_html', { markdown })
     },
+    async notes_ask_streaming(
+        stream_id: StreamID,
+        endpoint_id: EndpointID,
+        question: Instruction,
+        scope: AskScope,
+        history: readonly AskTurn[],
+    ): Promise<string> {
+        assert(stream_id.length > 0)
+        assert(endpoint_id.length > 0)
+        assert(question.trim().length > 0)
+        assert(scope.kind !== 'project' || scope.project.trim().length > 0)
+        assert(history.every((turn) => turn.question.trim().length > 0))
+
+        return invoke<string>('notes_ask_streaming', {
+            stream_id,
+            endpoint_id,
+            question,
+            scope,
+            history,
+        })
+    },
+    notes_ask_warm: query<undefined>('notes_ask_warm'),
     async notes_export(job_id: JobID, target_path: TargetPath): Promise<string> {
         assert(job_id.length > 0)
         assert(target_path.length > 0)
@@ -251,6 +368,8 @@ export const ipc = Object.freeze({
         return invoke<string>('recording_start', { sample_rate })
     },
     recordings_directory_default: query<string>('recordings_directory_default'),
+    search_status: query<SearchStatus>('search_status'),
+    search_vectors_refresh: query<undefined>('search_vectors_refresh'),
     async service_api_key_set(purpose: APIEndpointPurpose, api_key: APIKey): Promise<void> {
         assert(purpose.length > 0)
         assert(typeof api_key === 'string')

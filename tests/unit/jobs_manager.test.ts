@@ -1,7 +1,9 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import JobsManager from '../../src/components/jobs_manager.vue'
+import { use_ask } from '../../src/composables/use_ask'
 import { use_dialog } from '../../src/composables/use_dialog'
+import { use_folders } from '../../src/composables/use_folders'
 import { use_jobs } from '../../src/composables/use_jobs'
 import { use_people } from '../../src/composables/use_people'
 import { use_pipeline } from '../../src/composables/use_pipeline'
@@ -14,6 +16,7 @@ import {
     deferred_new,
     job_listing_build,
     person_build,
+    search_hit_build,
     transcript_build,
 } from './fixtures'
 import type { DOMWrapper, VueWrapper } from '@vue/test-utils'
@@ -60,6 +63,7 @@ const JOBS = Object.freeze<JobListing[]>([
 ])
 
 const mounted = new Set<VueWrapper>()
+const folders_state = use_folders()
 const jobs_state = use_jobs()
 const people_state = use_people()
 const settings_state = use_settings()
@@ -84,6 +88,17 @@ function header(wrapper: VueWrapper, label: string): DOMWrapper<Element> {
     if (button === undefined) throw new Error(`no sort header labelled ${label}`)
 
     return button
+}
+
+function menu_item_click(label: string): void {
+    assert(label.length > 0)
+
+    const item = [...document.body.querySelectorAll('[role="menuitem"]')]
+        .find((candidate) => candidate.textContent.trim() === label)
+
+    assert(item !== undefined, `no menu item reads ${label}`)
+
+    item.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 }
 
 async function mount_manager(view: 'grid' | 'list' = 'list'): Promise<VueWrapper> {
@@ -114,9 +129,10 @@ function titles(wrapper: VueWrapper): string[] {
     return wrapper.findAll('.recording-table-title').map((cell) => cell.text())
 }
 
-beforeEach(() => {
+beforeEach(async () => {
     vi.useFakeTimers({ [TO_FAKE]: ['setTimeout', 'clearTimeout'] })
     vi.resetAllMocks()
+    vi.mocked(ipc.folders_list).mockResolvedValue([])
     vi.mocked(ipc.jobs_list).mockResolvedValue([...JOBS])
     vi.mocked(ipc.job_waveform_get).mockResolvedValue(null)
     vi.mocked(ipc.settings_update).mockResolvedValue(undefined)
@@ -129,6 +145,9 @@ beforeEach(() => {
     ]
 
     pipeline.pipeline_reset()
+    folders_state.folder_close()
+
+    await folders_state.refresh()
 })
 
 afterEach(() => {
@@ -352,7 +371,7 @@ describe('JobsManager search', () => {
 
     it('debounces the backend search and shows its snippets in the participants cell', async () => {
         vi.mocked(ipc.jobs_search).mockResolvedValue([
-            { job_id: 'gamma', source: 'notes', snippet: 'retry policy' },
+            search_hit_build({ job_id: 'gamma', source: 'notes', snippet: 'retry policy' }),
         ])
 
         const wrapper = await mount_manager()
@@ -410,7 +429,7 @@ describe('JobsManager search', () => {
         vi.mocked(ipc.jobs_search).mockReturnValueOnce(search.promise)
 
         vi.mocked(ipc.jobs_search).mockResolvedValue([
-            { job_id: 'alpha', source: 'transcript', snippet: 'late' },
+            search_hit_build({ job_id: 'alpha', source: 'transcript', snippet: 'late' }),
         ])
 
         const wrapper = await mount_manager()
@@ -488,9 +507,7 @@ describe('JobsManager actions', () => {
 
         await wrapper.findAll('.recording-table-row')[3]?.get('.menu-icon-btn').trigger('click')
 
-        document.body.querySelector('[role="menuitem"]')?.dispatchEvent(
-            new MouseEvent('click', { bubbles: true }),
-        )
+        menu_item_click('Rename')
 
         await flushPromises()
 
@@ -514,9 +531,7 @@ describe('JobsManager actions', () => {
 
         await wrapper.findAll('.recording-table-row')[3]?.get('.menu-icon-btn').trigger('click')
 
-        document.body.querySelector('[role="menuitem"]')?.dispatchEvent(
-            new MouseEvent('click', { bubbles: true }),
-        )
+        menu_item_click('Rename')
 
         await flushPromises()
 
@@ -552,9 +567,7 @@ describe('JobsManager actions', () => {
 
         await wrapper.findAll('.recording-table-row')[0]?.get('.menu-icon-btn').trigger('click')
 
-        document.body.querySelectorAll('[role="menuitem"]')[1]?.dispatchEvent(
-            new MouseEvent('click', { bubbles: true }),
-        )
+        menu_item_click('Delete')
 
         await flushPromises()
 
@@ -573,9 +586,7 @@ describe('JobsManager actions', () => {
 
         await wrapper.findAll('.recording-table-row')[0]?.get('.menu-icon-btn').trigger('click')
 
-        document.body.querySelectorAll('[role="menuitem"]')[1]?.dispatchEvent(
-            new MouseEvent('click', { bubbles: true }),
-        )
+        menu_item_click('Delete')
 
         await flushPromises()
         dialog.close(false)
@@ -598,15 +609,66 @@ describe('JobsManager actions', () => {
     })
 })
 
+describe('JobsManager search hits', () => {
+    it('labels a transcript hit with its moment and opens the meeting there', async () => {
+        vi.mocked(ipc.job_transcript_engines_list).mockResolvedValue(['engine'])
+        vi.mocked(ipc.job_transcript_load).mockResolvedValue(transcript_build(['hi']))
+        vi.mocked(ipc.notes_load).mockResolvedValue('# Notes')
+
+        vi.mocked(ipc.jobs_search).mockResolvedValue([
+            search_hit_build({
+                job_id: 'alpha',
+                segment_index_first: 4,
+                segment_index_last: 5,
+                snippet: 'ship it',
+                source: 'transcript',
+                start_seconds: 65,
+            }),
+        ])
+
+        const wrapper = await mount_manager()
+
+        await wrapper.get('input[type="search"]').setValue('ship')
+        vi.advanceTimersByTime(250)
+        await flushPromises()
+
+        expect(wrapper.get('.recording-table-row td:nth-child(2)').text())
+            .toBe('In transcript: 1:05 · ship it')
+
+        await wrapper.get('.recording-table-row').trigger('click')
+        await flushPromises()
+
+        expect(pipeline.view_current.value).toBe('transcribe')
+
+        expect(pipeline.segment_focus.value).toEqual({
+            job_id: 'alpha',
+            segment_index_first: 4,
+            segment_index_last: 5,
+        })
+    })
+
+    it('finds a meeting by the people in it or mentioned in it', async () => {
+        vi.mocked(ipc.jobs_search).mockResolvedValue([])
+
+        const wrapper = await mount_manager()
+
+        await wrapper.get('input[type="search"]').setValue('young')
+
+        expect(titles(wrapper)).toEqual(['Alpha review'])
+
+        await wrapper.get('input[type="search"]').setValue('mia')
+
+        expect(titles(wrapper)).toEqual(['beta planning'])
+    })
+})
+
 describe('JobsManager wording', () => {
     it('tells the person the original file stays when a recording is deleted', async () => {
         const wrapper = await mount_manager()
 
         await wrapper.findAll('.recording-table-row')[0]?.get('.menu-icon-btn').trigger('click')
 
-        document.body.querySelectorAll('[role="menuitem"]')[1]?.dispatchEvent(
-            new MouseEvent('click', { bubbles: true }),
-        )
+        menu_item_click('Delete')
 
         await flushPromises()
 
@@ -616,9 +678,7 @@ describe('JobsManager wording', () => {
     })
 
     it('does not call a match in the title a match in the transcript', async () => {
-        vi.mocked(ipc.jobs_search).mockResolvedValue([
-            { job_id: 'alpha', source: 'title', snippet: 'Alpha review' },
-        ])
+        vi.mocked(ipc.jobs_search).mockResolvedValue([])
 
         const wrapper = await mount_manager()
 
@@ -630,5 +690,108 @@ describe('JobsManager wording', () => {
 
         expect(wrapper.get('.recording-table-row td:nth-child(2)').text())
             .toBe('adam Brown, Zoe Young')
+    })
+})
+
+describe('JobsManager folders', () => {
+    it('shows only the open folder and leaves New recording to Home', async () => {
+        folders_state.folder_open('Apollo')
+
+        const wrapper = await mount_manager()
+
+        expect(titles(wrapper)).toEqual(['Delta sync'])
+        expect(wrapper.get('.folder-heading-title').text()).toBe('Apollo')
+        expect(wrapper.find('.btn-primary').exists()).toBe(false)
+
+        await wrapper.get('.folder-crumb').trigger('click')
+
+        expect(folders_state.folder_current.value).toBeNull()
+        expect(titles(wrapper)).toHaveLength(JOBS.length)
+        expect(wrapper.get('.btn-primary').text()).toBe('New recording')
+    })
+
+    it('hides the New recording tile inside a folder', async () => {
+        folders_state.folder_open('Apollo')
+
+        const wrapper = await mount_manager('grid')
+
+        expect(wrapper.findAll('.recording-tile')).toHaveLength(1)
+        expect(wrapper.find('.recording-tile-new').exists()).toBe(false)
+    })
+})
+
+describe('JobsManager folders', () => {
+    it('explains how to fill an empty folder', async () => {
+        vi.mocked(ipc.folders_list).mockResolvedValue(['Board'])
+
+        await folders_state.refresh()
+
+        folders_state.folder_open('Board')
+
+        const wrapper = await mount_manager()
+
+        expect(wrapper.text()).toContain('This folder is empty')
+        expect(wrapper.text()).toContain('Move to folder')
+        expect(wrapper.find('input[type="search"]').exists()).toBe(false)
+    })
+
+    it('moves a recording into a folder from its menu', async () => {
+        vi.mocked(ipc.job_meta_update).mockResolvedValue(JOBS[0] ?? job_listing_build())
+
+        const wrapper = await mount_manager()
+
+        await wrapper.findAll('.recording-table-row')[3]?.get('.menu-icon-btn').trigger('click')
+
+        menu_item_click('Move to folder')
+
+        await flushPromises()
+
+        const options = [
+            ...document.body.querySelectorAll<HTMLButtonElement>('.folder-move-option'),
+        ]
+
+        expect(options.map((option) => option.textContent.trim())).toEqual(['No folder', 'Apollo'])
+        expect(options[0]?.getAttribute('aria-current')).toBe('true')
+
+        options[1]?.click()
+        await flushPromises()
+
+        expect(ipc.job_meta_update).toHaveBeenCalledWith('alpha', { project: 'Apollo' })
+        expect(document.body.querySelector('.folder-move-option')).toBeNull()
+    })
+
+    it('still offers New recording on an empty Home in the list layout', async () => {
+        vi.mocked(ipc.jobs_list).mockResolvedValue([])
+
+        const wrapper = await mount_manager('list')
+
+        expect(wrapper.find('.recording-table').exists()).toBe(false)
+        expect(wrapper.get('.recording-tile-new').text()).toBe('New recording')
+    })
+})
+
+describe('JobsManager ask', () => {
+    it('asks about a row from its speech bubble and offers none before transcription', async () => {
+        const wrapper = await mount_manager()
+        const rows = wrapper.findAll('.recording-table-row')
+        const delta = rows.find((row) => row.text().includes('Delta sync'))
+
+        const offered = Object.fromEntries(rows.map((row) => [
+            row.get('.recording-table-title').text(),
+            row.find('.recording-tile-ask').exists(),
+        ]))
+
+        expect(offered).toEqual({
+            'Alpha review': true,
+            'beta planning': true,
+            'Gamma call': false,
+            'Delta sync': true,
+        })
+
+        await delta?.get('.recording-tile-ask').trigger('click')
+        await flushPromises()
+
+        expect(pipeline.view_current.value).toBe('ask')
+        expect(use_ask().scope.value).toEqual({ kind: 'meeting', job_id: 'delta' })
     })
 })

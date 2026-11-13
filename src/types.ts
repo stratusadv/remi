@@ -1,14 +1,19 @@
 export type APIKey = string
 export type AudioPath = string
+export type ChatExchangeState = 'done' | 'failed' | 'stopped'
+export type ChatID = string
+export type CheckoutSessionID = string
 export type EndpointID = string
 export type EngineID = string
 export type EventCallback = (payload: unknown) => void
 export type Instruction = string
 export type JobID = string
 export type Markdown = string
+export type PromoCode = string
 export type RecordID = string
 export type SecondsEnd = number
 export type SecondsStart = number
+export type SignInCode = string
 export type StreamID = string
 export type TargetPath = string
 export type TemplateID = string
@@ -82,6 +87,18 @@ export interface Group {
     person_ids: string[]
 }
 
+export interface AskScopeChip {
+    kind: 'folder' | 'meeting'
+    label: string
+}
+
+export type FolderName = string
+
+export interface FolderRename {
+    from: FolderName
+    to: FolderName
+}
+
 export interface JobMeta {
     id: string
     source_path: string
@@ -139,7 +156,7 @@ export type ThinkingChoice = 'low' | 'medium' | 'xhigh'
 export type JobsViewChoice = 'grid' | 'list'
 
 export type PaletteChoice =
-    | 'graphite'
+    | 'cubist'
     | 'rose-pine'
     | 'catppuccin'
     | 'nord'
@@ -162,6 +179,15 @@ export interface Settings {
     notes_thinking: ThinkingChoice | null
     api_host: string | null
     jobs_view: JobsViewChoice | null
+    embeddings_host: string | null
+    embeddings_model: string | null
+}
+
+export interface SearchStatus {
+    error: string | null
+    model: string | null
+    passages: number
+    passages_embedded: number
 }
 
 export interface NotesModels {
@@ -186,12 +212,107 @@ export interface ServiceStatus {
     transcription: KeyStatus
 }
 
-export type JobSearchSource = 'title' | 'notes' | 'transcript'
+export interface Account {
+    balance_seconds: number
+    email: string
+    name: string
+    offers: AccountOffer[]
+    payments: boolean
+    publishable_key: string
+}
+
+export interface AccountOffer {
+    currency: string
+    hours: number
+    price_cents: number
+}
+
+export interface AccountSignUp {
+    email: string
+    name: string
+    promo_code: PromoCode
+}
+
+export interface AccountStatus {
+    billing: boolean
+    signed_in: boolean
+}
+
+export interface CheckoutFinished {
+    account: Account
+    paid: boolean
+}
+
+export interface CheckoutStarted {
+    client_secret: string
+    session_id: CheckoutSessionID
+}
+
+export type ChunkSource = 'notes' | 'transcript'
 
 export interface JobSearchHit {
-    job_id: string
-    source: JobSearchSource
+    job_id: JobID
+    segment_index_first: number | null
+    segment_index_last: number | null
     snippet: string
+    source: ChunkSource
+    start_seconds: number | null
+}
+
+export type AskScope =
+    | { kind: 'all' }
+    | { kind: 'meeting', job_id: JobID }
+    | { kind: 'project', project: string }
+
+export interface AskSource {
+    end_seconds: number | null
+    heading: string | null
+    job_id: JobID
+    marker: string
+    segment_index_first: number | null
+    segment_index_last: number | null
+    snippet: string
+    source: ChunkSource
+    start_seconds: number | null
+}
+
+export interface AskSources {
+    meetings: JobMeta[]
+    sources: AskSource[]
+    stream_id: StreamID
+}
+
+export interface AskTurn {
+    answer: string
+    question: string
+}
+
+export interface ChatExchange {
+    answer: string
+    error: string | null
+    id: string
+    question: string
+    scope: AskScope
+    sources: AskSource[]
+    state: ChatExchangeState
+}
+
+export interface ChatOpened {
+    exchanges: ChatExchange[]
+    id: ChatID
+    meetings: JobMeta[]
+}
+
+export interface ChatSummary {
+    id: ChatID
+    title: string
+    updated_at_unix_ms: number
+}
+
+export interface SegmentFocus {
+    job_id: JobID
+    segment_index_first: number
+    segment_index_last: number
 }
 
 export interface AIRewriteArgs {

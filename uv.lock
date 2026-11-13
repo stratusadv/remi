@@ -198,7 +198,7 @@ wheels = [
 ]
 
 [[package]]
-name = "scribe"
+name = "remi"
 version = "0.0.1"
 source = { virtual = "." }
 

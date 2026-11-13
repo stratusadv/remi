@@ -73,7 +73,7 @@ pub(super) struct ChatPrompts<'prompt> {
 }
 
 #[derive(Debug, serde::Serialize)]
-struct ChatRequest<'prompt> {
+pub(super) struct ChatRequest<'prompt> {
     model: &'prompt str,
     messages: [ChatMessage<'prompt>; 2],
     stream: bool,
@@ -83,6 +83,8 @@ struct ChatRequest<'prompt> {
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'prompt str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<Value>,
     chat_template_kwargs: ChatTemplateKwargs,
 }
 
@@ -118,8 +120,22 @@ struct ChatResponse {
     choices: Vec<ReplyChoice>,
 }
 
+#[derive(Debug)]
+struct ChatSend<'prompt> {
+    api_key: &'prompt str,
+    body: ChatRequest<'prompt>,
+    url: String,
+}
+
+#[derive(Debug)]
+pub(super) struct ReplySchema<'schema> {
+    pub(super) name: &'static str,
+    pub(super) schema: &'schema Value,
+    pub(super) tokens_max: u32,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ReplyShape {
+pub(super) enum ReplyShape {
     Streamed,
     Whole,
 }
@@ -135,30 +151,18 @@ pub(super) async fn chat_completion(
     prompts: &ChatPrompts<'_>,
 ) -> AppResult<String> {
     let (url, body, api_key) = build_request(endpoint, prompts, ReplyShape::Whole);
-    let client = client_get(&HTTP_CLIENT)?;
 
-    let parsed: ChatResponse = retry_run(|| async {
-        let mut request = client.post(&url);
+    chat_completion_send(&ChatSend { api_key, body, url }).await
+}
 
-        if !api_key.is_empty() {
-            request = request.bearer_auth(api_key);
-        }
+pub(super) async fn chat_completion_structured(
+    endpoint: &APIEndpoint,
+    prompts: &ChatPrompts<'_>,
+    reply: &ReplySchema<'_>,
+) -> AppResult<String> {
+    let (url, body, api_key) = build_request_structured(endpoint, prompts, reply);
 
-        let sent = request.json(&body).send().await?;
-        let response = response_ensure_ok(sent, LABEL_CHAT).await?;
-
-        response_json_bounded::<ChatResponse>(response).await
-    })
-    .await?;
-
-    parsed
-        .choices
-        .into_iter()
-        .next()
-        .and_then(|choice| choice.message)
-        .and_then(|message| message.content)
-        .map(|content| content.trim().to_owned())
-        .ok_or_else(|| AppError::Service("no content in chat response".into()))
+    chat_completion_send(&ChatSend { api_key, body, url }).await
 }
 
 pub(super) async fn chat_completion_streaming(
@@ -227,7 +231,7 @@ pub(super) async fn models_list(endpoint: &APIEndpoint) -> AppResult<Vec<String>
     Ok(models)
 }
 
-fn build_request<'prompt>(
+pub(super) fn build_request<'prompt>(
     endpoint: &'prompt APIEndpoint,
     prompts: &ChatPrompts<'prompt>,
     shape: ReplyShape,
@@ -248,12 +252,65 @@ fn build_request<'prompt>(
         temperature: endpoint.temperature,
         max_tokens: endpoint.output_tokens_max,
         reasoning_effort: endpoint.reasoning_effort.as_deref(),
+        response_format: None,
         chat_template_kwargs: ChatTemplateKwargs {
             enable_thinking: endpoint.reasoning_effort.is_some(),
         },
     };
 
     (url, body, endpoint.api_key_resolved())
+}
+
+async fn chat_completion_send(outgoing: &ChatSend<'_>) -> AppResult<String> {
+    let client = client_get(&HTTP_CLIENT)?;
+
+    let parsed: ChatResponse = retry_run(|| async {
+        let mut request = client.post(&outgoing.url);
+
+        if !outgoing.api_key.is_empty() {
+            request = request.bearer_auth(outgoing.api_key);
+        }
+
+        let sent = request.json(&outgoing.body).send().await?;
+        let response = response_ensure_ok(sent, LABEL_CHAT).await?;
+
+        response_json_bounded::<ChatResponse>(response).await
+    })
+    .await?;
+
+    parsed
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|choice| choice.message)
+        .and_then(|message| message.content)
+        .map(|content| content.trim().to_owned())
+        .ok_or_else(|| AppError::Service("no content in chat response".into()))
+}
+
+fn build_request_structured<'prompt>(
+    endpoint: &'prompt APIEndpoint,
+    prompts: &ChatPrompts<'prompt>,
+    reply: &ReplySchema<'_>,
+) -> (String, ChatRequest<'prompt>, &'prompt str) {
+    assert_ne!(reply.name, "");
+    assert!(reply.tokens_max > 0);
+
+    let (url, mut body, api_key) = build_request(endpoint, prompts, ReplyShape::Whole);
+
+    body.chat_template_kwargs = ChatTemplateKwargs { enable_thinking: false };
+    body.max_tokens = Some(reply.tokens_max);
+    body.reasoning_effort = None;
+    body.temperature = Some(0.0);
+
+    body.response_format = Some(serde_json::json!({
+        "type": "json_schema",
+        "json_schema": { "name": reply.name, "schema": reply.schema, "strict": true },
+    }));
+
+    assert!(!body.stream);
+
+    (url, body, api_key)
 }
 
 fn chat_completion_stream_drain(app: &AppHandle, stream_id: &str, state: &mut StreamState) {
@@ -535,6 +592,30 @@ mod tests {
         assert!(value_bare.get("max_tokens").is_none());
         assert_eq!(value_bare["reasoning_effort"], "high");
         assert_eq!(value_bare["chat_template_kwargs"]["enable_thinking"], true);
+    }
+
+    #[test]
+    fn a_structured_request_asks_for_the_schema_without_thinking_or_sampling_noise() {
+        let endpoint = endpoint_with("https://api.example.test", Some("high"));
+        let schema = serde_json::json!({ "type": "object" });
+        let reply = ReplySchema { name: "meeting_search", schema: &schema, tokens_max: 300 };
+        let (url, body, _) = build_request_structured(&endpoint, &PROMPTS, &reply);
+        let value = serde_json::to_value(&body).unwrap();
+
+        assert_eq!(url, "https://api.example.test/v1/chat/completions");
+        assert_eq!(value["stream"], false);
+        assert_eq!(value["temperature"], 0.0_f64);
+        assert_eq!(value["max_tokens"], 300_i32);
+        assert!(value.get("reasoning_effort").is_none());
+        assert_eq!(value["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(value["response_format"]["type"], "json_schema");
+        assert_eq!(value["response_format"]["json_schema"]["name"], "meeting_search");
+        assert_eq!(value["response_format"]["json_schema"]["schema"], schema);
+        assert_eq!(value["response_format"]["json_schema"]["strict"], true);
+
+        let plain = serde_json::to_value(build_request(&endpoint, &PROMPTS, ReplyShape::Whole).1);
+
+        assert!(plain.unwrap().get("response_format").is_none());
     }
 
     #[test]

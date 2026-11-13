@@ -1,7 +1,9 @@
 use crate::cancellation::stream_id_validate;
 use crate::error::{AppError, AppResult};
+use crate::jobs::folders::folder_name_validate;
+use crate::notes::chats::chat_id_validate;
 use crate::workspace::job_id_validate;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 
 macro_rules! text_wrapper {
@@ -21,12 +23,15 @@ macro_rules! text_wrapper {
 }
 
 text_wrapper!(APIKey);
+text_wrapper!(CheckoutSessionID);
 text_wrapper!(EndpointID);
 text_wrapper!(EngineID);
 text_wrapper!(Instruction);
 text_wrapper!(Markdown);
+text_wrapper!(PromoCode);
 text_wrapper!(RecordID);
 text_wrapper!(SearchQuery);
+text_wrapper!(SignInCode);
 text_wrapper!(TemplateID);
 text_wrapper!(TextRaw);
 text_wrapper!(Title);
@@ -46,6 +51,20 @@ pub(crate) struct ClipStart(pub(crate) f64);
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(try_from = "TextRaw")]
+pub(crate) struct ChatID(String);
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "TextRaw")]
+pub(crate) struct FolderName(String);
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct FolderRename {
+    pub(crate) from: FolderName,
+    pub(crate) to: FolderName,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(try_from = "TextRaw")]
 pub(crate) struct JobID(String);
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -61,6 +80,22 @@ pub(crate) struct StreamID(String);
 pub(crate) enum TranscriptReuse {
     Allowed,
     Refused,
+}
+
+impl Deref for ChatID {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Deref for FolderName {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
 }
 
 impl Deref for JobID {
@@ -92,6 +127,33 @@ impl From<bool> for TranscriptReuse {
         }
 
         Self::Refused
+    }
+}
+
+impl TryFrom<TextRaw> for ChatID {
+    type Error = AppError;
+
+    fn try_from(raw: TextRaw) -> AppResult<Self> {
+        chat_id_validate(&raw)?;
+
+        assert!(raw.is_ascii());
+
+        Ok(Self(raw.0))
+    }
+}
+
+impl TryFrom<TextRaw> for FolderName {
+    type Error = AppError;
+
+    fn try_from(raw: TextRaw) -> AppResult<Self> {
+        let name = raw.trim();
+
+        folder_name_validate(name)?;
+
+        assert_ne!(name, "");
+        assert_eq!(name, name.trim());
+
+        Ok(Self(name.to_owned()))
     }
 }
 

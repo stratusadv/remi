@@ -1,16 +1,20 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { use_context_menu } from '../composables/use_context_menu'
 import { use_dialog } from '../composables/use_dialog'
 import { person_name_full, use_people } from '../composables/use_people'
+import { use_pipeline } from '../composables/use_pipeline'
 import { use_shortcuts } from '../composables/use_shortcuts'
+import { assert } from '../lib/assert'
 import { error_dialog_show } from '../lib/errors'
 import GroupForm from './group_form.vue'
 import InfoHint from './info_hint.vue'
+import MonogramTile from './monogram_tile.vue'
 import NoticeBanner from './notice_banner.vue'
 import PersonForm from './person_form.vue'
 import RowMenu from './row_menu.vue'
+import type { MenuItem } from '../lib/menu'
 import type { Group, Person } from '../types'
-import type { RowMenuItem } from './row_menu.vue'
 
 
 interface EditState {
@@ -30,12 +34,14 @@ const HINT_PEOPLE = 'These are the people who turn up in your meetings. Add each
 
 const MESSAGE_REMOVE = 'The meetings they were added to keep their notes.'
 
-const MENU_ITEMS: RowMenuItem[] = [
+const MENU_ITEMS: MenuItem[] = [
     { id: 'edit', label: 'Edit', icon: 'edit' },
     { id: 'delete', label: 'Delete', icon: 'delete', danger: true },
 ]
 
+const { open: context_menu_open } = use_context_menu()
 const { confirm: dialog_confirm } = use_dialog()
+const { view_intent_take } = use_pipeline()
 
 const {
     people_sorted,
@@ -93,6 +99,13 @@ function group_add_click(): void {
     group_edit.value = { group: null }
 }
 
+function group_context_menu(event: MouseEvent, group: Group): void {
+    assert(event.type === 'contextmenu')
+    assert(group.id.length > 0)
+
+    context_menu_open(event, MENU_ITEMS, group_menu_select.bind(undefined, group))
+}
+
 async function group_delete_click(group: Group): Promise<void> {
     const ok = await dialog_confirm(
         `Delete the "${group.name}" group? The people in it stay in People.`,
@@ -146,6 +159,17 @@ async function group_save_click(group: Group): Promise<void> {
     }
 }
 
+function intent_apply(): void {
+    const intent = view_intent_take()
+
+    assert(intent === null || intent === 'group_add' || intent === 'person_add')
+    assert(edit.value === null)
+    assert(group_edit.value === null)
+
+    if (intent === 'group_add') group_add_click()
+    if (intent === 'person_add') add_click()
+}
+
 async function menu_select(person: Person, id: string): Promise<void> {
     if (id === 'edit') {
         edit_click(person)
@@ -154,6 +178,13 @@ async function menu_select(person: Person, id: string): Promise<void> {
     }
 
     if (id === 'delete') await delete_click(person)
+}
+
+function person_context_menu(event: MouseEvent, person: Person): void {
+    assert(event.type === 'contextmenu')
+    assert(person.id.length > 0)
+
+    context_menu_open(event, MENU_ITEMS, menu_select.bind(undefined, person))
 }
 
 async function save_click(person: Person): Promise<void> {
@@ -172,6 +203,8 @@ async function save_click(person: Person): Promise<void> {
     }
 }
 
+intent_apply()
+
 use_shortcuts({
     escape: () => { if (edit.value !== null || group_edit.value !== null) cancel_click() },
 })
@@ -181,6 +214,7 @@ use_shortcuts({
     <section class="view-fill">
         <header class="page-header">
             <div>
+                <p class="eyebrow page-eyebrow">Meeting participants</p>
                 <h2 class="!mb-1 flex items-center">
                     People
                     <InfoHint :text="HINT_PEOPLE" />
@@ -202,7 +236,9 @@ use_shortcuts({
                     v-for="person in people_sorted"
                     :key="person.id"
                     class="flex justify-between items-center py-3 gap-4"
+                    @contextmenu="person_context_menu($event, person)"
                 >
+                    <MonogramTile :text="person_name_full(person)" />
                     <button type="button" class="list-row-main" @click="edit_click(person)">
                         <span class="flex items-center gap-2 min-w-0">
                             <span class="font-medium truncate">{{ person_name_full(person) }}</span>
@@ -236,7 +272,9 @@ use_shortcuts({
                     v-for="group in groups_sorted"
                     :key="group.id"
                     class="flex justify-between items-center py-3 gap-4"
+                    @contextmenu="group_context_menu($event, group)"
                 >
+                    <MonogramTile :text="group.name" />
                     <button type="button" class="list-row-main" @click="group_edit_click(group)">
                         <span class="flex items-center gap-2 min-w-0">
                             <span class="font-medium truncate">{{ group.name }}</span>

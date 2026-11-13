@@ -17,7 +17,6 @@ import type { APIEndpoint, StreamID, TranscriptionResult } from '../../src/types
 vi.mock('../../src/lib/ipc')
 vi.mock('@tauri-apps/api/event')
 vi.mock('@tauri-apps/plugin-dialog')
-vi.mock('@tauri-apps/plugin-notification')
 
 const EVENT_SEGMENT = 'transcription_segment'
 const LINE_FIRST = 'The launch moves to Friday.'

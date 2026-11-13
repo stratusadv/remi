@@ -13,7 +13,7 @@ describe('confirm', () => {
         void dialog.confirm('Delete it?')
 
         expect(dialog.current.value).toMatchObject({
-            title: 'scribe',
+            title: 'Remi',
             message: 'Delete it?',
             kind: 'warning',
             ok_label: 'OK',
@@ -96,7 +96,7 @@ describe('message', () => {
         void dialog.message('Saved.')
 
         expect(dialog.current.value).toMatchObject({
-            title: 'scribe',
+            title: 'Remi',
             message: 'Saved.',
             kind: 'info',
             ok_label: 'OK',

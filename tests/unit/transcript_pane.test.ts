@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TranscriptPane from '../../src/components/transcript_pane.vue'
+import { use_context_menu } from '../../src/composables/use_context_menu'
 import { use_pipeline } from '../../src/composables/use_pipeline'
 import { assert } from '../../src/lib/assert'
 import { ipc } from '../../src/lib/ipc'
@@ -28,6 +29,8 @@ const LINES = Object.freeze([
 const TITLE_CLIP_ATTACHED = 'attaches the clip for a line to the audio element '
     + 'only when that line is played'
 
+const LINE_SECOND = 'The retry work (v2) is close.'
+const context_menu = use_context_menu()
 const mounted = new Set<VueWrapper>()
 const pipeline = use_pipeline()
 
@@ -55,6 +58,15 @@ function core_mock(): Record<string, unknown> {
         ['convertFileSrc', asset_url_of],
         ['invoke', vi.fn()],
     ])
+}
+
+function menu_ids(): string[] {
+    const shown = context_menu.menu.value
+
+    assert(shown !== null)
+    assert(shown.items.length > 0)
+
+    return shown.items.map((item) => item.id)
 }
 
 function mount_pane(
@@ -96,6 +108,7 @@ beforeEach(() => {
 afterEach(() => {
     for (const wrapper of mounted) wrapper.unmount()
 
+    context_menu.close()
     mounted.clear()
     vi.restoreAllMocks()
     document.body.innerHTML = ''
@@ -481,6 +494,191 @@ describe('TranscriptPane', () => {
         expect(wrapper.find('audio').exists()).toBe(false)
         expect(wrapper.get('.transcript-pane-row').attributes('data-playing')).toBe('false')
         expect(revoke).toHaveBeenCalledWith('blob:clip')
+
+        vi.unstubAllGlobals()
+    })
+})
+
+describe('TranscriptPane focus', () => {
+    it('highlights the focused segments and scrolls the first into view', async () => {
+        const scrolled = vi.spyOn(Element.prototype, 'scrollIntoView')
+
+        pipeline.segment_focus.value = {
+            job_id: 'job-1',
+            segment_index_first: 1,
+            segment_index_last: 3,
+        }
+
+        const wrapper = mount_pane()
+
+        await flushPromises()
+        await flushPromises()
+
+        const rows = wrapper.findAll('.transcript-pane-row')
+
+        expect(rows.map((row) => row.attributes('data-highlighted'))).toEqual([
+            'false',
+            'true',
+            'true',
+        ])
+
+        expect(scrolled).toHaveBeenCalledOnce()
+        expect(scrolled).toHaveBeenCalledWith({ block: 'center' })
+        expect(scrolled.mock.contexts[0]).toBe(rows[1]?.element)
+    })
+
+    it('clears the filter so a focus that arrives later can be shown', async () => {
+        const wrapper = mount_pane()
+
+        await flushPromises()
+        await wrapper.get('.transcript-pane-filter').setValue('retry')
+
+        expect(row_texts(wrapper)).toHaveLength(1)
+
+        const scrolled = vi.spyOn(Element.prototype, 'scrollIntoView')
+
+        pipeline.segment_focus.value = {
+            job_id: 'job-1',
+            segment_index_first: 3,
+            segment_index_last: 3,
+        }
+
+        await flushPromises()
+        await flushPromises()
+
+        expect(scrolled.mock.contexts[0]).toBe(wrapper.findAll('.transcript-pane-row')[2]?.element)
+        expect(wrapper.get<HTMLInputElement>('.transcript-pane-filter').element.value).toBe('')
+        expect(row_texts(wrapper)).toHaveLength(3)
+    })
+})
+
+describe('TranscriptPane focus', () => {
+    it('ignores a focus left over from another meeting', async () => {
+        const scrolled = vi.spyOn(Element.prototype, 'scrollIntoView')
+
+        pipeline.segment_focus.value = {
+            job_id: 'job-2',
+            segment_index_first: 0,
+            segment_index_last: 3,
+        }
+
+        const wrapper = mount_pane()
+
+        await flushPromises()
+        await flushPromises()
+
+        const highlighted = wrapper.findAll('.transcript-pane-row[data-highlighted="true"]')
+
+        expect(highlighted).toHaveLength(0)
+        expect(scrolled).not.toHaveBeenCalled()
+    })
+})
+
+describe('TranscriptPane row menu', () => {
+    it('offers copying, playback, correction, and Ask for the line clicked', async () => {
+        vi.mocked(ipc.job_audio_path_get).mockResolvedValue('/tmp/take.wav')
+
+        const wrapper = mount_pane()
+
+        await flushPromises()
+        await wrapper.findAll('.transcript-pane-row')[1]?.trigger('contextmenu')
+
+        expect(menu_ids()).toEqual(['line_copy', 'play', 'line_edit', 'ask'])
+
+        context_menu.close()
+        pipeline.job_id_current.value = null
+
+        const jobless = mount_pane()
+
+        await flushPromises()
+        await jobless.findAll('.transcript-pane-row')[1]?.trigger('contextmenu')
+
+        expect(menu_ids()).toEqual(['line_copy', 'line_edit'])
+    })
+
+    it('copies the line and opens its editor from the menu', async () => {
+        const write_text = vi.fn().mockResolvedValue(undefined)
+
+        vi.stubGlobal('navigator', { clipboard: { [WRITE_TEXT]: write_text } })
+
+        const wrapper = mount_pane()
+
+        await flushPromises()
+        await wrapper.findAll('.transcript-pane-row')[1]?.trigger('contextmenu')
+        await context_menu.choose('line_copy')
+
+        expect(write_text).toHaveBeenCalledWith(LINE_SECOND)
+
+        await wrapper.findAll('.transcript-pane-row')[1]?.trigger('contextmenu')
+        await context_menu.choose('line_edit')
+        await flushPromises()
+
+        expect(wrapper.get('textarea').element.value).toBe(LINE_SECOND)
+
+        vi.unstubAllGlobals()
+    })
+})
+
+describe('TranscriptPane row menu', () => {
+    it('never starts the clip when Pause is chosen after the clip has ended', async () => {
+        const fetch_mock = vi.fn()
+            .mockResolvedValueOnce(new Response(new Blob(['wav'])))
+            .mockResolvedValueOnce(new Response(new Blob(['wav'])))
+
+        vi.mocked(ipc.job_audio_path_get).mockResolvedValue('/tmp/take.wav')
+        vi.mocked(ipc.job_audio_clip_get).mockResolvedValue('/tmp/clip.wav')
+        vi.stubGlobal('fetch', fetch_mock)
+        vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:clip')
+
+        const wrapper = mount_pane()
+        const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+
+        await flushPromises()
+        await wrapper.get('.transcript-pane-row').trigger('contextmenu')
+        await context_menu.choose('play')
+        await flushPromises()
+
+        expect(play).toHaveBeenCalledOnce()
+        expect(wrapper.get('.transcript-pane-row').attributes('data-playing')).toBe('true')
+
+        await wrapper.get('.transcript-pane-row').trigger('contextmenu')
+
+        expect(menu_ids()).toContain('pause')
+
+        await wrapper.get('audio').trigger('pause')
+        await context_menu.choose('pause')
+        await flushPromises()
+
+        expect(ipc.job_audio_clip_get).toHaveBeenCalledOnce()
+        expect(play).toHaveBeenCalledOnce()
+        expect(wrapper.get('.transcript-pane-row').attributes('data-playing')).toBe('false')
+
+        vi.unstubAllGlobals()
+    })
+
+    it('never stops the clip when Play is chosen after the clip has started', async () => {
+        const fetch_mock = vi.fn().mockResolvedValue(new Response(new Blob(['wav'])))
+
+        vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+        vi.mocked(ipc.job_audio_path_get).mockResolvedValue('/tmp/take.wav')
+        vi.mocked(ipc.job_audio_clip_get).mockResolvedValue('/tmp/clip.wav')
+        vi.stubGlobal('fetch', fetch_mock)
+        vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:clip')
+
+        const wrapper = mount_pane()
+
+        await flushPromises()
+        await wrapper.get('.transcript-pane-row').trigger('contextmenu')
+
+        expect(menu_ids()).toContain('play')
+
+        await wrapper.get('.transcript-pane-play').trigger('click')
+        await flushPromises()
+        await context_menu.choose('play')
+        await flushPromises()
+
+        expect(ipc.job_audio_clip_get).toHaveBeenCalledOnce()
+        expect(wrapper.get('.transcript-pane-row').attributes('data-playing')).toBe('true')
 
         vi.unstubAllGlobals()
     })

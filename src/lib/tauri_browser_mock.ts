@@ -1,9 +1,25 @@
 import { assert } from './assert'
+import { folder_key } from './folders'
 import { log_information, log_warn } from './log'
 import type {
     APIEndpoint,
     APIEndpointPurpose,
+    Account,
+    AccountOffer,
+    AccountStatus,
+    AskScope,
+    AskSource,
+    AskSources,
+    AskTurn,
+    ChatExchange,
+    ChatID,
+    ChatOpened,
+    ChatSummary,
+    CheckoutFinished,
+    CheckoutStarted,
     EventCallback,
+    FolderName,
+    FolderRename,
     Group,
     JobID,
     JobListing,
@@ -15,6 +31,7 @@ import type {
     NotesTemplate,
     Person,
     RecordID,
+    SearchStatus,
     ServiceStatus,
     Settings,
     StreamID,
@@ -24,6 +41,7 @@ import type {
 } from '../types'
 
 
+type AskSourceDraft = Omit<AskSource, 'marker'>
 type CommandCall = Record<string, unknown>
 type ListTag = 'ul' | 'ol'
 type Segment = Transcript['segments'][number]
@@ -38,13 +56,26 @@ interface ListenerEntry {
     callback_id: number
 }
 
+interface PromoClaim {
+    code: string
+    email: string
+}
+
 interface MockStore {
+    account: Account | null
+    account_status: AccountStatus
+    charges: Set<string>
+    checkouts_credited: Set<string>
+    checkouts_started: Map<string, number>
+    promos_redeemed: Set<string>
     settings: Settings
     service_api_keys: Record<APIEndpointPurpose, string>
     endpoints: APIEndpoint[]
     notes_templates: NotesTemplate[]
     people: Person[]
     groups: Group[]
+    folders: FolderName[]
+    chats: Map<ChatID, ChatStored>
     jobs: JobMeta[]
     notes_markdown: Map<string, string>
     transcripts: Map<string, Transcript>
@@ -55,12 +86,20 @@ interface MockStore {
     listener_id_next: number
 }
 
+interface ChatStored {
+    exchanges: ChatExchange[]
+    id: ChatID
+    updated_at_unix_ms: number
+}
+
 interface Identified {
     id: string
 }
 
 interface PayloadFields {
+    exchanges: ChatExchange[]
     group: Group
+    rename: FolderRename
     patch: JobMetaPatch
     person: Person
     settings: Settings
@@ -68,20 +107,45 @@ interface PayloadFields {
     transcript: Transcript
 }
 
+const ACCOUNT_EMAIL_SAMPLE = 'jordan@example.com'
+const ACCOUNT_NAME_SAMPLE = 'Jordan Lee'
+const ACCOUNT_PROMO_CODE = 'WIB2026'
+const ACCOUNT_PROMO_SECONDS = 900_000
+const ACCOUNT_SCENARIO_EMPTY = 'empty'
+const ACCOUNT_SCENARIO_SIGNED_IN = 'signed-in'
+const ACCOUNT_SIGN_IN_CODE = 'mock-sign-in-code'
 const API_HOST = 'https://ai.example.invalid'
+const ASK_ANSWER_BANNER = 'Sam is drafting the offline banner copy'
+const ASK_ANSWER_SAMPLE = 'The team agreed to ship the transcription retry work this week [M1].'
+const ASK_BANNER_WORD = 'banner'
+const ASK_MESSAGE_CANCELLED = 'api error: Cancelled'
+const ASK_MESSAGE_NOTHING = 'There are no notes or transcripts to search here yet.'
+const ASK_SEARCH_DELAY_MS = 240
+const ASK_SNIPPET_CHARS_MAX = 200
+const ASK_SOURCES_MAX = 6
+const ASK_SUMMARY_WORD = 'summar'
+const ASK_WORD_CHARS_MIN = 3
+const CHECKOUT_PUBLISHABLE_KEY = 'pk_test_mock'
+const CHECKOUT_SESSION_PREFIX = 'cs_test_mock'
 const CHUNK_DELAY_MS = 45
+const COMMAND_FAMILY_CHAT = /^chats?_/
+const COMMAND_FAMILY_FOLDER = /^folders?_/
 const COMMAND_FAMILY_JOB = /^(?:job|transcript)/
 const COMMAND_FAMILY_NOTES = /^(?:markdown|notes)_/
 const COMMAND_FAMILY_PEOPLE = /^(?:group|people|person)/
+const COMMAND_PREFIX_ACCOUNT = 'account_'
 const DURATION_SECONDS_SAMPLE = 144
 const ENDPOINT_ID_NOTES = 'builtin-notes'
 const ENDPOINT_ID_TRANSCRIPTION = 'builtin-transcription'
+const EVENT_ASK_SOURCES = 'notes_ask_sources'
 const JOB_ID_SAMPLE = '86dfb1d3b0140ecf2fd59075421f1cb5'
 const JOB_ID_SAMPLE_SECOND = '47ead100cc5cd956aa10b3c4d5e6f708'
 const KEY_LENGTH_MAX = 64
-const RECORDING_PATH_SAMPLE = 'C:\\Users\\mock\\Music\\scribe\\Recording mock.wav'
-const RECORDINGS_DIRECTORY_SAMPLE = 'C:\\Users\\mock\\Music\\scribe'
+const RECORDING_PATH_SAMPLE = 'C:\\Users\\mock\\Music\\Remi Remembers\\Recording mock.wav'
+const RECORDINGS_DIRECTORY_SAMPLE = 'C:\\Users\\mock\\Music\\Remi Remembers'
+const SECONDS_PER_HOUR = 3600
 const SECONDS_PER_LINE = 18
+const SECONDS_PER_MINUTE = 60
 const SEGMENT_DELAY_MS = 260
 const SNIPPET_CHARS_AFTER = 80
 const SNIPPET_CHARS_BEFORE = 40
@@ -89,8 +153,18 @@ const SOURCE_PATH_IMPORTED = '(imported transcript)'
 const STREAM_EVENT_NOTES = 'notes_generate_chunk'
 const TAURI_EVENT_INTERNALS = '__TAURI_EVENT_PLUGIN_INTERNALS__'
 const TAURI_INTERNALS = '__TAURI_INTERNALS__'
+const TENTHS_PER_HOUR = 10
 const TRANSCRIPTION_STAGE = 'transcription_stage'
 const WAVEFORM_BAR_COUNT_MAX = 2000
+
+const ASK_ANSWER_SUMMARY_LINES = Object.freeze([
+    'The last meeting covered three things:',
+    '- The team agreed to ship the transcription retry work this week [M1].',
+    '- The offline banner copy still needs a final review before it ships [M1].',
+    '- Everyone checks the rollout numbers again at the next sync [M1].',
+])
+
+const ASK_ANSWER_SUMMARY = ASK_ANSWER_SUMMARY_LINES.join('\n')
 
 const NOTES_SAMPLE_LINES = Object.freeze([
     '# Weekly platform sync',
@@ -114,6 +188,8 @@ const NOTES_SAMPLE_LINES = Object.freeze([
 const NOTES_SAMPLE = NOTES_SAMPLE_LINES.join('\n')
 
 const REPLIES_FIXED: ReadonlyMap<string, unknown> = new Map<string, unknown>([
+    ['desktop_export_open', null],
+    ['desktop_notification_show', null],
     ['job_audio_clip_get', null],
     ['job_audio_path_get', null],
     [
@@ -123,8 +199,8 @@ const REPLIES_FIXED: ReadonlyMap<string, unknown> = new Map<string, unknown>([
             model_default: 'stratus.thinking',
         },
     ],
-    ['plugin:app|identifier', 'com.stratusadv.scribe'],
-    ['plugin:app|name', 'scribe'],
+    ['plugin:app|identifier', 'com.stratusadv.remi'],
+    ['plugin:app|name', 'Remi Remembers'],
     ['plugin:app|tauri_version', '2.11.0'],
     ['plugin:app|version', '0.1.0-browser-mock'],
     ['plugin:dialog|save', '/home/you/Documents/notes.docx'],
@@ -183,7 +259,7 @@ const SEED_JOBS: readonly JobMeta[] = Object.freeze([
         attendees: ['John Doe', 'Jane Doe', 'Sam Smith'],
         person_ids: ['person-john', 'person-jane'],
         person_ids_mentioned: ['person-sam'],
-        project: 'scribe',
+        project: 'Remi',
         tags: ['meeting-notes', 'platform'],
         favourite: true,
     },
@@ -245,13 +321,19 @@ const SEED_NOTES_TEMPLATES: readonly NotesTemplate[] = Object.freeze([
     },
 ])
 
+const SEED_OFFERS: readonly Readonly<AccountOffer>[] = Object.freeze([
+    { currency: 'cad', hours: 10, price_cents: 300 },
+    { currency: 'cad', hours: 50, price_cents: 1000 },
+    { currency: 'cad', hours: 200, price_cents: 3000 },
+])
+
 const SEED_PEOPLE: readonly Person[] = Object.freeze([
     {
         id: 'person-john',
         name_first: 'John',
         name_last: 'Doe',
         role: 'Developer',
-        description: 'Builds scribe. Usually runs the platform sync.',
+        description: 'Builds Remi. Usually runs the platform sync.',
     },
     {
         id: 'person-jane',
@@ -278,6 +360,8 @@ const SEED_SETTINGS: Readonly<Settings> = Object.freeze({
     notes_thinking: null,
     api_host: null,
     jobs_view: null,
+    embeddings_host: null,
+    embeddings_model: null,
 })
 
 const store = store_new()
@@ -306,7 +390,389 @@ export function tauri_browser_mock_install(): void {
     Reflect.set(window, TAURI_INTERNALS, internals)
     Reflect.set(window, TAURI_EVENT_INTERNALS, event_internals)
 
-    log_information('[scribe] browser mock backend active: no Tauri, no real network calls')
+    log_information('[remi] browser mock backend active: no Tauri, no real network calls')
+}
+
+function account_charge(job_id: JobID, seconds: number): void {
+    assert(job_id.length > 0)
+    assert(Number.isSafeInteger(seconds))
+
+    const account = store.account
+
+    if (!store.account_status.billing) return
+    if (account === null) return
+    if (store.charges.has(job_id)) return
+
+    if (seconds > account.balance_seconds) {
+        const needed = account_duration_text(seconds, { rounded_up: true })
+        const held = account_duration_text(account.balance_seconds, { rounded_up: false })
+
+        throw new Error(
+            `api error: This recording needs ${needed} of transcription and the account has `
+            + `${held} left. Buy more hours to transcribe it.`,
+        )
+    }
+
+    account.balance_seconds -= seconds
+    store.charges.add(job_id)
+}
+
+function account_checkout_finish(call: CommandCall): CheckoutFinished {
+    assert(typeof call === 'object')
+    assert(store.account_status.signed_in)
+
+    const account = store.account
+    const session_id = text_field(call, 'session_id')
+
+    assert(account !== null)
+
+    if (!session_id.startsWith(CHECKOUT_SESSION_PREFIX)) {
+        throw new Error('api error: Stripe has no checkout session with that id.')
+    }
+
+    const hours = store.checkouts_started.get(session_id)
+
+    if (hours === undefined) {
+        throw new Error('api error: Stripe has no checkout session with that id.')
+    }
+
+    if (!store.checkouts_credited.has(session_id)) {
+        account.balance_seconds += hours * SECONDS_PER_HOUR
+        store.checkouts_credited.add(session_id)
+    }
+
+    return { account: structuredClone(account), paid: true }
+}
+
+function account_checkout_start(call: CommandCall): CheckoutStarted {
+    assert(typeof call === 'object')
+    assert(store.account_status.signed_in)
+    assert(store.account !== null)
+
+    const hours = number_field(call, 'hours')
+
+    if (!store.account.offers.some((offer) => offer.hours === hours)) {
+        throw new Error('api error: That pack of hours is no longer on offer. Choose another pack.')
+    }
+
+    const session_id = `${CHECKOUT_SESSION_PREFIX}${crypto.randomUUID().replaceAll('-', '')}`
+
+    store.checkouts_started.set(session_id, hours)
+
+    return { client_secret: `${session_id}_secret_mock`, session_id }
+}
+
+function account_create(call: CommandCall): Account {
+    assert(typeof call === 'object')
+    assert(store.account_status.billing)
+
+    const sign_up = field_of(call, 'sign_up')
+    const name = text_field(sign_up, 'name').trim()
+    const email = text_field(sign_up, 'email').trim()
+    const promo_code = text_field(sign_up, 'promo_code').trim()
+
+    if (name === '') throw new Error('api error: Enter a name of 1 to 200 characters.')
+    if (!email.includes('@')) throw new Error('api error: Enter a valid email address.')
+
+    const claim = { code: promo_code, email }
+    const promo_seconds = promo_code === '' ? 0 : account_promo_seconds(claim)
+
+    store.account = account_sample(promo_seconds, { email, name })
+    store.account_status = { billing: true, signed_in: true }
+
+    return structuredClone(store.account)
+}
+
+function account_duration_text(seconds: number, rounding: { rounded_up: boolean }): string {
+    assert(Number.isSafeInteger(seconds))
+    assert(seconds >= 0)
+    assert(typeof rounding.rounded_up === 'boolean')
+
+    const hourly = seconds >= SECONDS_PER_HOUR
+    const tenths = (seconds * TENTHS_PER_HOUR) / SECONDS_PER_HOUR
+    const minutes = seconds / SECONDS_PER_MINUTE
+    const quotient = hourly ? tenths : minutes
+    const rounded = rounding.rounded_up ? Math.ceil(quotient) : Math.floor(quotient)
+
+    if (!hourly) return rounded === 1 ? '1 minute' : `${String(rounded)} minutes`
+    if (rounded === TENTHS_PER_HOUR) return '1 hour'
+
+    return `${String(rounded / TENTHS_PER_HOUR)} hours`
+}
+
+function account_promo_redeem(call: CommandCall): Account {
+    assert(typeof call === 'object')
+    assert(store.account_status.signed_in)
+
+    const account = store.account
+    const code = text_field(call, 'code').trim()
+
+    assert(account !== null)
+
+    if (code === '') throw new Error('api error: Enter a promo code.')
+
+    account.balance_seconds += account_promo_seconds({ code, email: account.email })
+
+    return structuredClone(account)
+}
+
+function account_promo_seconds(claim: PromoClaim): number {
+    assert(claim.code.length > 0)
+    assert(claim.email.length > 0)
+
+    const redemption = account_redemption(claim)
+
+    if (claim.code.toUpperCase() !== ACCOUNT_PROMO_CODE) {
+        throw new Error('api error: That promo code is not valid.')
+    }
+
+    if (store.promos_redeemed.has(redemption)) {
+        throw new Error('api error: That promo code was already redeemed with this email address.')
+    }
+
+    store.promos_redeemed.add(redemption)
+
+    return ACCOUNT_PROMO_SECONDS
+}
+
+function account_redemption(claim: PromoClaim): string {
+    assert(claim.code.length > 0)
+    assert(claim.email.includes('@'))
+
+    return `${claim.code.toUpperCase()} ${claim.email.toLowerCase()}`
+}
+
+function account_redemptions_seed(): Set<string> {
+    const redemptions = new Set<string>()
+
+    if (account_scenario() === ACCOUNT_SCENARIO_SIGNED_IN) {
+        const claim = { code: ACCOUNT_PROMO_CODE, email: ACCOUNT_EMAIL_SAMPLE }
+
+        redemptions.add(account_redemption(claim))
+    }
+
+    return redemptions
+}
+
+function account_sample(balance_seconds: number, who: Pick<Account, 'email' | 'name'>): Account {
+    assert(Number.isSafeInteger(balance_seconds))
+    assert(who.email.length > 0)
+
+    const offers = structuredClone([...SEED_OFFERS])
+
+    return {
+        balance_seconds,
+        ...who,
+        offers,
+        payments: true,
+        publishable_key: CHECKOUT_PUBLISHABLE_KEY,
+    }
+}
+
+function account_scenario(): string | null {
+    assert(typeof window === 'object')
+
+    const scenario = new URLSearchParams(window.location.search).get('billing')
+
+    assert(scenario === null || typeof scenario === 'string')
+
+    return scenario
+}
+
+function account_seed(): Account | null {
+    const scenario = account_scenario()
+    const who = { email: ACCOUNT_EMAIL_SAMPLE, name: ACCOUNT_NAME_SAMPLE }
+
+    if (scenario === ACCOUNT_SCENARIO_SIGNED_IN) return account_sample(ACCOUNT_PROMO_SECONDS, who)
+    if (scenario === ACCOUNT_SCENARIO_EMPTY) return account_sample(0, who)
+
+    return null
+}
+
+function account_sign_in(call: CommandCall): Account {
+    assert(typeof call === 'object')
+    assert(store.account_status.billing)
+
+    const code = text_field(call, 'code').trim()
+    const who = { email: ACCOUNT_EMAIL_SAMPLE, name: ACCOUNT_NAME_SAMPLE }
+    const claim = { code: ACCOUNT_PROMO_CODE, email: who.email }
+
+    if (code !== ACCOUNT_SIGN_IN_CODE) {
+        throw new Error('config error: That sign-in code is not valid.')
+    }
+
+    store.account = account_sample(ACCOUNT_PROMO_SECONDS, who)
+    store.account_status = { billing: true, signed_in: true }
+    store.promos_redeemed.add(account_redemption(claim))
+
+    return structuredClone(store.account)
+}
+
+function account_status_seed(): AccountStatus {
+    const scenario = account_scenario()
+
+    if (scenario === null) return { billing: false, signed_in: false }
+
+    return { billing: true, signed_in: account_seed() !== null }
+}
+
+function ask_answer(question: string, history: readonly AskTurn[], sources: AskSource[]): string {
+    assert(question.trim().length > 0)
+    assert(history.every((turn) => turn.question.trim().length > 0))
+    assert(sources.length > 0)
+
+    const standalone = ask_question_standalone(question, history)
+    const transcript = sources.find((source) => source.source === 'transcript')
+
+    if (question.toLowerCase().includes(ASK_SUMMARY_WORD)) return ASK_ANSWER_SUMMARY
+    if (transcript === undefined) return ASK_ANSWER_SAMPLE
+    if (!standalone.toLowerCase().includes(ASK_BANNER_WORD)) return ASK_ANSWER_SAMPLE
+
+    return `${ASK_ANSWER_BANNER} [${transcript.marker}].`
+}
+
+function ask_jobs_scoped(scope: AskScope): JobMeta[] {
+    assert(Array.isArray(store.jobs))
+    assert(scope.kind !== 'meeting' || scope.job_id.length > 0)
+
+    if (scope.kind === 'all') return store.jobs.slice()
+    if (scope.kind === 'meeting') return store.jobs.filter((job) => job.id === scope.job_id)
+
+    const wanted = scope.project.trim().toLowerCase()
+
+    assert(wanted.length > 0, 'an ask scope names a blank project')
+
+    return store.jobs.filter((job) => (job.project ?? '').trim().toLowerCase() === wanted)
+}
+
+function ask_notes_sources(job: JobMeta): AskSourceDraft[] {
+    assert(job.id.length > 0)
+
+    const notes = store.notes_markdown.get(job.id)
+
+    if (notes === undefined) return []
+
+    return [
+        {
+            end_seconds: null,
+            heading: /^## (.+)$/m.exec(notes)?.[1] ?? null,
+            job_id: job.id,
+            segment_index_first: null,
+            segment_index_last: null,
+            snippet: ask_snippet(notes),
+            source: 'notes',
+            start_seconds: null,
+        },
+    ]
+}
+
+function ask_question_standalone(question: string, history: readonly AskTurn[]): string {
+    assert(question.trim().length > 0)
+    assert(history.every((turn) => turn.question.trim().length > 0))
+
+    const last = history.at(-1)
+
+    if (last === undefined) return question
+
+    return `${last.question} ${question}`
+}
+
+function ask_snippet(text: string): string {
+    assert(typeof text === 'string')
+
+    const plain = text
+        .replace(/^\s*#.*$/gm, '')
+        .replace(/^\s*(?:[-+*]|\d+[.)])\s+/gm, '')
+        .replace(/[#*_`>]+/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+
+    if (plain.length <= ASK_SNIPPET_CHARS_MAX) return plain
+
+    return `${plain.slice(0, ASK_SNIPPET_CHARS_MAX).trimEnd()}…`
+}
+
+function ask_sources_build(question: string, scope: AskScope): Omit<AskSources, 'stream_id'> {
+    assert(question.trim().length > 0)
+    assert(scope.kind !== 'project' || scope.project.trim().length > 0)
+
+    const words = question
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((word) => word.length >= ASK_WORD_CHARS_MIN)
+
+    const scoped = ask_jobs_scoped(scope)
+
+    const matched = scoped.filter((job) => {
+        const notes = store.notes_markdown.get(job.id) ?? ''
+        const transcript = store.transcripts.get(job.id)?.text ?? ''
+        const text = `${job.title ?? job.label ?? ''} ${notes} ${transcript}`.toLowerCase()
+
+        return words.some((word) => text.includes(word))
+    })
+
+    const drafts = (matched.length > 0 ? matched : scoped)
+        .flatMap((job) => [...ask_notes_sources(job), ...ask_transcript_sources(job, words)])
+        .slice(0, ASK_SOURCES_MAX)
+
+    const sources = drafts.map((draft, index) => ({ ...draft, marker: `M${String(index + 1)}` }))
+    const cited = new Set(sources.map((source) => source.job_id))
+    const meetings = scoped.filter((job) => cited.has(job.id)).map((job) => ({ ...job }))
+
+    assert(sources.length <= ASK_SOURCES_MAX)
+    assert(meetings.length <= sources.length)
+
+    return { meetings, sources }
+}
+
+async function ask_stream(call: CommandCall): Promise<string> {
+    assert(typeof call === 'object')
+
+    const stream_id = text_field(call, 'stream_id')
+    const question = text_field(call, 'question')
+    const history = turns_field(call)
+    const found = ask_sources_build(ask_question_standalone(question, history), scope_field(call))
+
+    return sleep(ASK_SEARCH_DELAY_MS).then(async () => {
+        if (store.streams_cancelled.delete(stream_id)) throw new Error(ASK_MESSAGE_CANCELLED)
+
+        event_emit(EVENT_ASK_SOURCES, { stream_id, ...found })
+
+        if (found.sources.length === 0) return ASK_MESSAGE_NOTHING
+
+        return stream_text_emit(stream_id, ask_answer(question, history, found.sources))
+    })
+}
+
+function ask_transcript_sources(job: JobMeta, words: string[]): AskSourceDraft[] {
+    assert(job.id.length > 0)
+    assert(words.every((word) => word.length >= ASK_WORD_CHARS_MIN))
+
+    const segments = store.transcripts.get(job.id)?.segments ?? []
+
+    const scores = segments.map((segment) => {
+        const text = segment.text.toLowerCase()
+
+        return words.filter((word) => text.includes(word)).length
+    })
+
+    const index = scores.indexOf(Math.max(0, ...scores))
+    const segment = segments[index]
+
+    if (segment === undefined) return []
+
+    return [
+        {
+            end_seconds: segment.end_seconds,
+            heading: null,
+            job_id: job.id,
+            segment_index_first: index,
+            segment_index_last: index,
+            snippet: ask_snippet(segment.text),
+            source: 'transcript',
+            start_seconds: segment.start_seconds,
+        },
+    ]
 }
 
 function callback_transform(callback: EventCallback, once: boolean): number {
@@ -332,12 +798,65 @@ function callback_unregister(id: number): void {
     void store.callbacks.delete(id)
 }
 
+async function chat_opened(id: ChatID): Promise<ChatOpened> {
+    assert(id.length > 0)
+    assert(store.chats.size >= 0)
+
+    const chat = store.chats.get(id)
+
+    if (chat === undefined) return Promise.reject(new Error('config error: this chat was deleted'))
+
+    const sources = chat.exchanges.flatMap((exchange) => exchange.sources)
+    const ids = new Set(sources.map((source) => source.job_id))
+    const meetings = structuredClone(store.jobs.filter((job) => ids.has(job.id)))
+
+    return Promise.resolve({ exchanges: structuredClone(chat.exchanges), id, meetings })
+}
+
+function chat_store(id: ChatID, exchanges: ChatExchange[]): null {
+    assert(id.length > 0)
+    assert(exchanges.length > 0)
+
+    const latest = Math.max(0, ...[...store.chats.values()].map(chat_updated))
+    const updated_at_unix_ms = Math.max(Date.now(), latest + 1)
+
+    store.chats.set(id, { exchanges: structuredClone(exchanges), id, updated_at_unix_ms })
+
+    return null
+}
+
+function chat_updated(chat: ChatStored): number {
+    assert(chat.id.length > 0)
+    assert(chat.updated_at_unix_ms > 0)
+
+    return chat.updated_at_unix_ms
+}
+
+function chats_summarized(): ChatSummary[] {
+    assert(store.chats.size >= 0)
+
+    const summaries = [...store.chats.values()]
+        .sort((left, right) => right.updated_at_unix_ms - left.updated_at_unix_ms)
+        .map((chat) => ({
+            id: chat.id,
+            title: chat.exchanges[0]?.question ?? '',
+            updated_at_unix_ms: chat.updated_at_unix_ms,
+        }))
+
+    assert(summaries.every((summary) => summary.title.length > 0))
+
+    return summaries
+}
+
 function command_dispatch(command: string, call: CommandCall): unknown {
     assert(command.length > 0)
     assert(typeof call === 'object')
 
     if (REPLIES_FIXED.has(command)) return REPLIES_FIXED.get(command)
     if (command.startsWith('plugin:')) return commands_plugin(command, call)
+    if (command.startsWith(COMMAND_PREFIX_ACCOUNT)) return commands_account(command, call)
+    if (COMMAND_FAMILY_CHAT.test(command)) return commands_chat(command, call)
+    if (COMMAND_FAMILY_FOLDER.test(command)) return commands_folder(command, call)
     if (COMMAND_FAMILY_JOB.test(command)) return commands_job(command, call)
     if (COMMAND_FAMILY_NOTES.test(command)) return commands_notes(command, call)
     if (COMMAND_FAMILY_PEOPLE.test(command)) return commands_people(command, call)
@@ -349,9 +868,55 @@ function command_unknown(command: string): null {
     assert(command.length > 0)
     assert(!REPLIES_FIXED.has(command))
 
-    log_warn(`[scribe] browser mock has no handler for "${command}"`)
+    log_warn(`[remi] browser mock has no handler for "${command}"`)
 
     return null
+}
+
+function commands_account(command: string, call: CommandCall): unknown {
+    assert(command.startsWith(COMMAND_PREFIX_ACCOUNT))
+    assert(typeof call === 'object')
+
+    switch (command) {
+        case 'account_checkout_finish':
+            return account_checkout_finish(call)
+        case 'account_checkout_start':
+            return account_checkout_start(call)
+        case 'account_code_get':
+            return store.account === null ? null : ACCOUNT_SIGN_IN_CODE
+        case 'account_create':
+            return account_create(call)
+        case 'account_get':
+            return store.account === null ? null : structuredClone(store.account)
+        case 'account_promo_redeem':
+            return account_promo_redeem(call)
+        case 'account_sign_in':
+            return account_sign_in(call)
+        case 'account_status':
+            return { ...store.account_status }
+        default:
+            return command_unknown(command)
+    }
+}
+
+function commands_chat(command: string, call: CommandCall): unknown {
+    assert(COMMAND_FAMILY_CHAT.test(command))
+    assert(typeof call === 'object')
+
+    switch (command) {
+        case 'chat_get':
+            return chat_opened(text_field(call, 'id'))
+        case 'chat_remove':
+            void store.chats.delete(text_field(call, 'id'))
+
+            return null
+        case 'chat_save':
+            return chat_store(text_field(call, 'id'), record_field(call, 'exchanges'))
+        case 'chats_list':
+            return chats_summarized()
+        default:
+            return command_unknown(command)
+    }
 }
 
 function commands_core(command: string, call: CommandCall): unknown {
@@ -365,6 +930,10 @@ function commands_core(command: string, call: CommandCall): unknown {
             return null
         case 'endpoints_list':
             return endpoints_list()
+        case 'search_status':
+            return search_status()
+        case 'search_vectors_refresh':
+            return null
         case 'service_api_key_set':
             return service_api_key_set(call)
         case 'service_status':
@@ -375,6 +944,24 @@ function commands_core(command: string, call: CommandCall): unknown {
             return Object.assign(store.settings, record_field(call, 'settings'))
         case 'task_cancel':
             return store.streams_cancelled.add(text_field(call, 'stream_id'))
+        default:
+            return command_unknown(command)
+    }
+}
+
+function commands_folder(command: string, call: CommandCall): unknown {
+    assert(command.length > 0)
+    assert(typeof call === 'object')
+
+    switch (command) {
+        case 'folder_create':
+            return folder_create(text_field(call, 'name'))
+        case 'folder_remove':
+            return folder_remove(text_field(call, 'name'))
+        case 'folder_rename':
+            return folder_rename(record_field(call, 'rename'))
+        case 'folders_list':
+            return [...store.folders]
         default:
             return command_unknown(command)
     }
@@ -424,6 +1011,10 @@ function commands_notes(command: string, call: CommandCall): unknown {
     switch (command) {
         case 'markdown_render_html':
             return markdown_html_render(text_field(call, 'markdown'))
+        case 'notes_ask_streaming':
+            return ask_stream(call)
+        case 'notes_ask_warm':
+            return null
         case 'notes_export':
             return field_of(call, 'target_path')
         case 'notes_generate_remote_streaming':
@@ -510,16 +1101,6 @@ function commands_plugin(command: string, call: CommandCall): unknown {
             return store.listeners.delete(number_field(call, 'eventId'))
         case 'plugin:path|join':
             return path_join(call)
-        case 'plugin:opener|open_path':
-            log_information('[scribe] mock openPath', field_of(call, 'path'))
-
-            return null
-        case 'plugin:opener|open_url':
-            return window.open(text_field(call, 'url'), '_blank', 'noopener')
-        case 'plugin:opener|reveal_item_in_dir':
-            log_information('[scribe] mock revealItemInDir', field_of(call, 'path'))
-
-            return null
         default:
             return command_unknown(command)
     }
@@ -648,6 +1229,52 @@ function job_find(job_id: JobID): JobMeta | null {
     return found
 }
 
+function folder_create(name: FolderName): null {
+    assert(name.length > 0)
+    assert(name.trim() === name)
+
+    const key = folder_key(name)
+
+    if (store.folders.some((folder) => folder_key(folder) === key)) {
+        throw new Error(`config error: a folder named "${name}" already exists`)
+    }
+
+    store.folders.push(name)
+
+    return null
+}
+
+function folder_remove(name: FolderName): null {
+    assert(name.length > 0)
+    assert(name.trim() === name)
+
+    const key = folder_key(name)
+
+    for (const job of store.jobs) {
+        if (folder_key(job.project ?? '') === key) job.project = null
+    }
+
+    store.folders = store.folders.filter((folder) => folder_key(folder) !== key)
+
+    return null
+}
+
+function folder_rename(rename: FolderRename): null {
+    assert(rename.from.length > 0)
+    assert(rename.to.trim() === rename.to)
+
+    const keys = [folder_key(rename.from), folder_key(rename.to)]
+
+    for (const job of store.jobs) {
+        if (folder_key(job.project ?? '') === keys[0]) job.project = rename.to
+    }
+
+    store.folders = store.folders.filter((folder) => !keys.includes(folder_key(folder)))
+    store.folders.push(rename.to)
+
+    return null
+}
+
 function job_meta_update(call: CommandCall): JobMeta {
     assert(typeof call === 'object')
 
@@ -708,25 +1335,32 @@ function jobs_search(query: string): JobSearchHit[] {
 
     for (const job of store.jobs) {
         const notes = store.notes_markdown.get(job.id) ?? ''
-        const transcript = store.transcripts.get(job.id)?.text ?? ''
         const notes_position = notes.toLowerCase().indexOf(needle)
-        const transcript_position = transcript.toLowerCase().indexOf(needle)
+        const segments = store.transcripts.get(job.id)?.segments ?? []
+        const index = segments.findIndex((segment) => segment.text.toLowerCase().includes(needle))
+        const segment = segments[index]
 
         if (notes_position >= 0) {
             hits.push({
                 job_id: job.id,
-                source: 'notes',
+                segment_index_first: null,
+                segment_index_last: null,
                 snippet: snippet_around(notes, notes_position),
+                source: 'notes',
+                start_seconds: null,
             })
 
             continue
         }
 
-        if (transcript_position >= 0) {
+        if (segment !== undefined) {
             hits.push({
                 job_id: job.id,
+                segment_index_first: index,
+                segment_index_last: index,
+                snippet: snippet_around(segment.text, segment.text.toLowerCase().indexOf(needle)),
                 source: 'transcript',
-                snippet: snippet_around(transcript, transcript_position),
+                start_seconds: segment.start_seconds,
             })
         }
     }
@@ -944,6 +1578,16 @@ function record_upsert<Item extends Identified>(items: Item[], item: Item): null
     return null
 }
 
+function search_status(): SearchStatus {
+    const model = store.settings.embeddings_model
+    const passages = store.transcripts.size
+
+    assert(model === null || model.trim() === model)
+    assert(passages >= 0)
+
+    return { error: null, model, passages, passages_embedded: model === null ? 0 : passages }
+}
+
 function service_api_key_set(call: CommandCall): null {
     assert(typeof call === 'object')
 
@@ -996,6 +1640,18 @@ async function sleep(milliseconds: number): Promise<void> {
     })
 }
 
+function scope_field(value: unknown): AskScope {
+    const scope = field_of(value, 'scope')
+    const kind = text_field(scope, 'kind')
+
+    if (kind === 'meeting') return { kind, job_id: text_field(scope, 'job_id') }
+    if (kind === 'project') return { kind, project: text_field(scope, 'project') }
+
+    assert(kind === 'all', `an ask scope has an unknown kind: ${kind}`)
+
+    return { kind }
+}
+
 function snippet_around(text: string, position: number): string {
     assert(position >= 0)
     assert(position <= text.length)
@@ -1014,6 +1670,12 @@ function store_new(): MockStore {
     assert(SEED_JOBS.length > 0)
 
     return {
+        account: account_seed(),
+        account_status: account_status_seed(),
+        charges: new Set<string>(),
+        checkouts_credited: new Set<string>(),
+        checkouts_started: new Map<string, number>(),
+        promos_redeemed: account_redemptions_seed(),
         settings: { ...SEED_SETTINGS },
         service_api_keys: service_api_keys_seed(),
         endpoints: [...structuredClone(SEED_ENDPOINTS)],
@@ -1022,6 +1684,8 @@ function store_new(): MockStore {
         groups: [
             { id: 'group-team', name: 'Product team', person_ids: ['person-john', 'person-jane'] },
         ],
+        folders: [],
+        chats: new Map<ChatID, ChatStored>(),
         jobs: [...structuredClone(SEED_JOBS)],
         notes_markdown: notes_markdown_seed(),
         transcripts: transcripts_seed(),
@@ -1174,6 +1838,8 @@ async function transcription_remote(call: CommandCall): Promise<TranscriptionRes
 
     assert(stream_id === null || typeof stream_id === 'string')
 
+    account_charge(JOB_ID_SAMPLE, DURATION_SECONDS_SAMPLE)
+
     const transcript = store.transcripts.get(JOB_ID_SAMPLE)
         ?? transcript_build(['No sample audio.'])
 
@@ -1253,6 +1919,21 @@ function transcripts_seed(): Map<string, Transcript> {
         [JOB_ID_SAMPLE, sample_first],
         [JOB_ID_SAMPLE_SECOND, sample_second],
     ])
+}
+
+function turns_field(value: unknown): AskTurn[] {
+    const field = field_of(value, 'history')
+
+    assert(Array.isArray(field), 'an ask call carries no history list')
+
+    const turns = field.map((turn: unknown) => ({
+        answer: text_field(turn, 'answer'),
+        question: text_field(turn, 'question'),
+    }))
+
+    assert(turns.length === field.length)
+
+    return turns
 }
 
 function waveform_build(bar_count: number): Waveform {

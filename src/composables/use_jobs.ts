@@ -8,7 +8,15 @@ const WAVEFORM_BAR_COUNT_TILE = 110
 const jobs = ref<JobListing[]>([])
 const error_message = ref<string | null>(null)
 const waveforms = ref<Map<string, Waveform | null>>(new Map())
-const api = Object.freeze({ error_message, favourite_set, jobs, refresh, remove, waveform_load })
+
+const api = Object.freeze({
+    error_message,
+    favourite_set,
+    jobs,
+    refresh,
+    remove,
+    waveform_load,
+})
 
 
 export function use_jobs(): typeof api {

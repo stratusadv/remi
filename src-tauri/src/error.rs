@@ -13,6 +13,9 @@ pub(crate) enum AppError {
     #[error("export error: {0}")]
     Export(String),
 
+    #[error("search index error: {0}")]
+    Index(String),
+
     #[error("io error: {0}")]
     IO(#[from] std::io::Error),
 
@@ -30,6 +33,12 @@ pub(crate) enum AppError {
 
     #[error("transcription error: {0}")]
     Transcription(String),
+}
+
+impl From<rusqlite::Error> for AppError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Index(error_chain_describe(&error))
+    }
 }
 
 impl Serialize for AppError {

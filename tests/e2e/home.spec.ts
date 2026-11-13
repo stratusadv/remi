@@ -216,6 +216,25 @@ test('the star toggles a favourite', async ({ page }) => {
     await expect(star).toHaveAttribute('aria-pressed', 'false')
 })
 
+test('a transcript search hit opens the recording at that moment', async ({ page }) => {
+    const search = page.getByRole('searchbox', {
+        name: 'Search recordings, notes, and transcripts',
+    })
+
+    await search.fill('nobody writes')
+
+    await expect(tiles(page)).toHaveCount(1)
+    await expect(tiles(page).locator('.recording-tile-people')).toContainText('0:18 ·')
+
+    await tiles(page).click()
+
+    const focused = page.locator('.transcript-pane-row[data-highlighted="true"]')
+
+    await expect(step_current(page)).toHaveText('Transcript')
+    await expect(focused).toHaveCount(1)
+    await expect(focused).toContainText('nobody writes it up')
+})
+
 test('search matches titles, notes, and transcripts with a snippet', async ({ page }) => {
     const search = page.getByRole('searchbox', {
         name: 'Search recordings, notes, and transcripts',
@@ -364,4 +383,15 @@ test('the tiles show duration and status', async ({ page }) => {
     await expect(titled.locator('.recording-tile-people')).toHaveText('Jane Doe, John Doe')
     await expect(untitled.locator('.recording-tile-status')).toHaveText('Transcribed')
     await expect(untitled.locator('.recording-tile-people')).toHaveText('No participants')
+})
+
+test('the speech bubble on a card asks about that meeting', async ({ page }) => {
+    const titled = tiles(page).filter({ [HAS_TEXT]: RECORDING_TITLED })
+    const main = page.locator('main')
+
+    await titled.hover()
+    await titled.getByRole('button', { name: `Ask about ${RECORDING_TITLED}` }).click()
+
+    await expect(main.getByRole('heading', { name: 'Ask', level: 2 })).toBeVisible()
+    await expect(main.locator('.ask-scope[data-kind="meeting"]')).toHaveText(RECORDING_TITLED)
 })

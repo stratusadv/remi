@@ -4,7 +4,7 @@ use docmux::markdown::Options;
 use docmux::{Document, Workspace, docx, html, markdown};
 use std::thread;
 
-const CONVERTER_THREAD_NAME: &str = "scribe-converter";
+const CONVERTER_THREAD_NAME: &str = "remi-converter";
 const DOCX_MAGIC: &[u8] = b"PK\x03\x04";
 const MARKDOWN_BYTES_MAX: usize = OUTPUT_BYTES_MAX >> 2;
 const OUTPUT_BYTES_MAX: usize = 16 << 20;

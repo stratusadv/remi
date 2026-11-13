@@ -1,13 +1,19 @@
 use crate::contract::BarCount;
 use crate::error::{AppError, AppResult};
-use crate::workspace::{AUDIO_HOURS_MAX, AUDIO_SECONDS_MAX, PCM16_SAMPLE_BYTES, wav_reader_open};
+use crate::workspace::{
+    self,
+    AUDIO_HOURS_MAX,
+    AUDIO_SECONDS_MAX,
+    PCM16_SAMPLE_BYTES,
+    wav_reader_open,
+};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
-use rubato::{Async, FixedAsync, PolynomialDegree, Resampler};
+use rubato::{Async, FixedAsync, Indexing, PolynomialDegree, Resampler};
 use serde::Serialize;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use symphonia::core::audio::{AudioSpec, Channels};
+use symphonia::core::audio::{AudioSpec, GenericAudioBufferRef};
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::common::Limit;
 use symphonia::core::formats::probe::Hint;
@@ -16,9 +22,9 @@ use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
 
 const DECODE_ERROR_COUNT_MAX: u32 = 64;
-const DECODE_SAMPLES_MAX: u64 = AUDIO_SECONDS_MAX * 48_000 * 2;
 const PACKET_COUNT_MAX: u32 = 4_000_000;
 const RESAMPLE_CHUNK_SIZE: u32 = 16384;
+const RESAMPLE_FLUSH_COUNT_MAX: u32 = 16;
 pub(crate) const SAMPLE_RATE_WHISPER: u32 = 16000;
 const SEEK_INDEX_FILL_PERIOD_MS: u16 = 1000;
 const STREAM_BUFFER_BYTES: u32 = 64 * 1024;
@@ -28,6 +34,9 @@ const WAVEFORM_READ_BLOCK_BYTES: u32 = 65536;
 const _: () = assert!(WAVEFORM_READ_BLOCK_BYTES.is_multiple_of(PCM16_SAMPLE_BYTES));
 const _: () = assert!(WAVEFORM_BAR_COUNT_MAX > 0);
 const _: () = assert!(DECODE_ERROR_COUNT_MAX < PACKET_COUNT_MAX);
+const _: () = assert!(RESAMPLE_FLUSH_COUNT_MAX > 0);
+
+type SampleSink<'sink> = dyn FnMut(&[f32]) -> AppResult<()> + 'sink;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Waveform {
@@ -39,13 +48,14 @@ struct DecodeTrack {
     format: Box<dyn FormatReader>,
     decoder: Box<dyn AudioDecoder>,
     track_id: u32,
-    samples_capacity_hint: u64,
 }
 
-struct DecodedAudio {
-    samples: Vec<f32>,
-    sample_rate: u32,
-    channels: u16,
+struct DecodeFlow {
+    decode_error_count: u32,
+    interleaved: Vec<f32>,
+    mono: Vec<f32>,
+    progress: DecodeProgress,
+    resampling: Option<Resampling>,
 }
 
 struct DecodeProgress {
@@ -59,18 +69,289 @@ struct RateChange {
     target: u32,
 }
 
-pub(crate) fn load_for_whisper(path: &Path) -> AppResult<Vec<f32>> {
-    let decoded = decode_packets(&mut decode_track_open(path)?)?;
-    let mono = mix_to_mono(&decoded.samples, decoded.channels);
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PreparePaths<'path> {
+    pub(crate) prepared: &'path Path,
+    pub(crate) source: &'path Path,
+}
 
-    assert!(decoded.sample_rate > 0);
-    assert!(mono.len() <= decoded.samples.len());
+struct Resampling {
+    delay_frames: u32,
+    frames_emitted: u64,
+    frames_received: u64,
+    held: Vec<f32>,
+    input: Vec<f32>,
+    output: Vec<f32>,
+    rates: RateChange,
+    resampler: Async<f32>,
+}
 
-    if decoded.sample_rate == SAMPLE_RATE_WHISPER {
-        return Ok(mono);
+impl DecodeFlow {
+    const fn new() -> Self {
+        Self {
+            decode_error_count: 0,
+            interleaved: Vec::new(),
+            mono: Vec::new(),
+            progress: DecodeProgress { sample_count: 0, sample_rate: 0, channels: 0 },
+            resampling: None,
+        }
     }
 
-    resample(&mono, &RateChange { source: decoded.sample_rate, target: SAMPLE_RATE_WHISPER })
+    fn buffer_accept(
+        &mut self,
+        buffer: &GenericAudioBufferRef<'_>,
+        sink: &mut SampleSink<'_>,
+    ) -> AppResult<()> {
+        let (channels, sample_rate) = decode_format_of(buffer.spec())?;
+
+        self.format_settle(channels, sample_rate)?;
+
+        buffer.copy_to_vec_interleaved(&mut self.interleaved);
+
+        let samples_decoded = u64::try_from(self.interleaved.len()).unwrap_or(u64::MAX);
+        self.progress.sample_count = self.progress.sample_count.saturating_add(samples_decoded);
+
+        decode_samples_bound_check(&self.progress)?;
+
+        self.mono.clear();
+        mix_to_mono(&self.interleaved, channels, &mut self.mono);
+
+        assert_eq!(self.mono.len(), self.interleaved.len().div_euclid(usize::from(channels)));
+        assert_eq!(self.progress.channels, channels);
+
+        match self.resampling.as_mut() {
+            Some(resampling) => resampling.push(&self.mono, sink),
+            None => sink(&self.mono),
+        }
+    }
+
+    fn decode_error_note(&mut self) -> AppResult<()> {
+        assert!(self.decode_error_count <= DECODE_ERROR_COUNT_MAX);
+
+        self.decode_error_count += 1;
+
+        decode_error_count_check(self.decode_error_count)
+    }
+
+    fn finish(self, sink: &mut SampleSink<'_>) -> AppResult<()> {
+        assert!(self.decode_error_count <= DECODE_ERROR_COUNT_MAX);
+
+        if self.progress.sample_rate == 0 {
+            return Err(AppError::Audio("no audio decoded from track".into()));
+        }
+
+        assert!(self.progress.channels > 0);
+
+        if self.decode_error_count > 0 {
+            tracing::warn!(
+                target: "remi_lib::transcription",
+                "{} packets could not be decoded and were skipped",
+                self.decode_error_count,
+            );
+        }
+
+        self.resampling.map_or_else(|| Ok(()), |mut resampling| resampling.finish(sink))
+    }
+
+    fn format_settle(&mut self, channels: u16, sample_rate: u32) -> AppResult<()> {
+        assert!(channels > 0);
+        assert!(sample_rate > 0);
+
+        if self.progress.sample_rate == 0 {
+            self.resampling = Resampling::for_rate(sample_rate)?;
+            self.progress.channels = channels;
+            self.progress.sample_rate = sample_rate;
+
+            return Ok(());
+        }
+
+        let unchanged =
+            self.progress.channels == channels && self.progress.sample_rate == sample_rate;
+
+        if !unchanged {
+            return Err(AppError::Audio(
+                "the recording changes its channels or sample rate partway through, which the \
+                 app does not read"
+                    .into(),
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+impl Resampling {
+    fn chunk_process(&mut self, indexing: &Indexing, sink: &mut SampleSink<'_>) -> AppResult<()> {
+        let frames_input = self.input.len();
+        let frames_output = self.output.len();
+
+        let buffer_in = InterleavedSlice::new(self.input.as_slice(), 1, frames_input)
+            .map_err(|error| AppError::Audio(format!("resampler input: {error}")))?;
+
+        let mut buffer_out =
+            InterleavedSlice::new_mut(self.output.as_mut_slice(), 1, frames_output)
+                .map_err(|error| AppError::Audio(format!("resampler output: {error}")))?;
+
+        let (_consumed, produced) = self
+            .resampler
+            .process_into_buffer(&buffer_in, &mut buffer_out, Some(indexing))
+            .map_err(|error| AppError::Audio(format!("resample: {error}")))?;
+
+        let trimmed = produced.min(usize_of!(self.delay_frames));
+
+        let fresh = self
+            .output
+            .get(trimmed..produced)
+            .ok_or_else(|| AppError::Audio("the resampler wrote past its output".into()))?;
+
+        sink(&self.held)?;
+
+        let emitted = u64::try_from(self.held.len()).unwrap_or(u64::MAX);
+        self.delay_frames = self.delay_frames.saturating_sub(u32::try_from(trimmed).unwrap_or(0));
+        self.frames_emitted = self.frames_emitted.saturating_add(emitted);
+
+        self.held.clear();
+        self.held.extend_from_slice(fresh);
+
+        assert!(self.held.len() <= frames_output);
+        assert!(produced <= frames_output);
+
+        Ok(())
+    }
+
+    fn finish(&mut self, sink: &mut SampleSink<'_>) -> AppResult<()> {
+        let expected = resample_output_length(self.frames_received, &self.rates);
+
+        if !self.input.is_empty() {
+            let partial = Indexing { partial_len: Some(self.input.len()), ..Indexing::default() };
+
+            self.chunk_process(&partial, sink)?;
+            self.input.clear();
+        }
+
+        let flush = Indexing { partial_len: Some(0), ..Indexing::default() };
+
+        for _flush_index in 0..RESAMPLE_FLUSH_COUNT_MAX {
+            if self.frames_produced() >= expected {
+                break;
+            }
+
+            self.chunk_process(&flush, sink)?;
+        }
+
+        let complete = self.frames_produced() >= expected && self.frames_emitted <= expected;
+
+        if !complete {
+            return Err(AppError::Audio("the resampler did not reach the end of the audio".into()));
+        }
+
+        let remaining = usize::try_from(expected - self.frames_emitted).unwrap_or(usize::MAX);
+        let tail_length = remaining.min(self.held.len());
+
+        sink(self.held.get(..tail_length).unwrap_or_default())?;
+
+        assert_eq!(self.frames_emitted + u64::try_from(tail_length).unwrap_or(0), expected);
+        assert!(tail_length <= self.held.len());
+
+        Ok(())
+    }
+
+    fn for_rate(sample_rate: u32) -> AppResult<Option<Self>> {
+        assert!(sample_rate > 0);
+
+        if sample_rate == SAMPLE_RATE_WHISPER {
+            return Ok(None);
+        }
+
+        let rates = RateChange { source: sample_rate, target: SAMPLE_RATE_WHISPER };
+        let ratio = f64::from(rates.target) / f64::from(rates.source);
+        let chunk = usize_of!(RESAMPLE_CHUNK_SIZE);
+
+        let resampler = Async::<f32>::new_poly(
+            ratio,
+            1.0,
+            PolynomialDegree::Cubic,
+            chunk,
+            1,
+            FixedAsync::Input,
+        )
+        .map_err(|error| AppError::Audio(format!("resampler init: {error}")))?;
+
+        let output = vec![0.0_f32; resampler.output_frames_max()];
+
+        assert_eq!(resampler.input_frames_next(), chunk);
+        assert_ne!(output.len(), 0);
+
+        Ok(Some(Self {
+            delay_frames: u32::try_from(resampler.output_delay()).unwrap_or(u32::MAX),
+            frames_emitted: 0,
+            frames_received: 0,
+            held: Vec::with_capacity(output.len()),
+            input: Vec::with_capacity(chunk.saturating_mul(2)),
+            output,
+            rates,
+            resampler,
+        }))
+    }
+
+    fn frames_produced(&self) -> u64 {
+        let held = u64::try_from(self.held.len()).unwrap_or(u64::MAX);
+
+        self.frames_emitted.saturating_add(held)
+    }
+
+    fn push(&mut self, mono: &[f32], sink: &mut SampleSink<'_>) -> AppResult<()> {
+        let chunk = usize_of!(RESAMPLE_CHUNK_SIZE);
+        let received = u64::try_from(mono.len()).unwrap_or(u64::MAX);
+
+        self.input.extend_from_slice(mono);
+        self.frames_received = self.frames_received.saturating_add(received);
+
+        let chunk_count = self.input.len().saturating_sub(1).div_euclid(chunk);
+
+        for chunk_index in 0..chunk_count {
+            let indexing = Indexing { input_offset: chunk_index * chunk, ..Indexing::default() };
+
+            self.chunk_process(&indexing, sink)?;
+        }
+
+        drop(self.input.drain(..chunk_count * chunk));
+
+        assert!(self.input.len() <= chunk);
+        assert!(!self.input.is_empty() || self.frames_received == 0);
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn load_for_whisper(path: &Path) -> AppResult<Vec<f32>> {
+    let mut track = decode_track_open(path)?;
+    let mut samples: Vec<f32> = Vec::new();
+
+    decode_packets(&mut track, &mut |block| {
+        samples.extend_from_slice(block);
+
+        Ok(())
+    })?;
+
+    assert!(samples.iter().all(|sample| sample.is_finite()));
+
+    Ok(samples)
+}
+
+pub(crate) fn prepare_for_whisper(paths: &PreparePaths<'_>) -> AppResult<()> {
+    assert_ne!(paths.prepared, paths.source);
+
+    let mut track = decode_track_open(paths.source)?;
+
+    workspace::audio_wav_save_streamed(paths.prepared, SAMPLE_RATE_WHISPER, |writer| {
+        decode_packets(&mut track, &mut |block| workspace::pcm16_append(writer, block))
+    })?;
+
+    assert!(paths.prepared.is_file());
+
+    Ok(())
 }
 
 pub(crate) fn waveform_compute(audio_path: &Path, bar_count: BarCount) -> AppResult<Waveform> {
@@ -146,30 +427,14 @@ fn decode_format_of(specification: &AudioSpec) -> AppResult<(u16, u32)> {
     Ok((channels, sample_rate))
 }
 
-fn decode_packets(track: &mut DecodeTrack) -> AppResult<DecodedAudio> {
-    let DecodeTrack { format, decoder, track_id, samples_capacity_hint } = track;
-    let capacity = usize::try_from(*samples_capacity_hint).unwrap_or(0);
-    let mut samples: Vec<f32> = Vec::new();
-    let mut packet_samples: Vec<f32> = Vec::new();
-    let mut channels: u16 = 0;
-    let mut sample_rate: u32 = 0;
-    let mut decode_error_count: u32 = 0;
-
-    if let Err(error) = samples.try_reserve_exact(capacity) {
-        tracing::warn!(
-            target: "scribe_lib::transcription",
-            "the track declares more samples than can be set aside: {error}",
-        );
-    }
+fn decode_packets(track: &mut DecodeTrack, sink: &mut SampleSink<'_>) -> AppResult<()> {
+    let DecodeTrack { format, decoder, track_id } = track;
+    let mut flow = DecodeFlow::new();
 
     for _packet_index in 0..PACKET_COUNT_MAX {
         let packet = match format.next_packet() {
             Ok(Some(packet)) => packet,
-            Ok(None) => {
-                let decoded = DecodedAudio { samples, sample_rate, channels };
-
-                return decode_packets_finish(decoded, decode_error_count);
-            }
+            Ok(None) => return flow.finish(sink),
             Err(error) => return Err(AppError::Audio(format!("packet read: {error}"))),
         };
 
@@ -177,68 +442,16 @@ fn decode_packets(track: &mut DecodeTrack) -> AppResult<DecodedAudio> {
             continue;
         }
 
-        let audio_buffer = match decoder.decode(&packet) {
-            Ok(audio_buffer) => audio_buffer,
-            Err(symphonia::core::errors::Error::DecodeError(_)) => {
-                decode_error_count += 1;
-
-                decode_error_count_check(decode_error_count)?;
-
-                continue;
-            }
+        match decoder.decode(&packet) {
+            Ok(buffer) => flow.buffer_accept(&buffer, sink)?,
+            Err(symphonia::core::errors::Error::DecodeError(_)) => flow.decode_error_note()?,
             Err(error) => return Err(AppError::Audio(format!("decode: {error}"))),
-        };
-
-        if channels == 0 {
-            (channels, sample_rate) = decode_format_of(audio_buffer.spec())?;
         }
-
-        audio_buffer.copy_to_vec_interleaved(&mut packet_samples);
-
-        samples.try_reserve(packet_samples.len()).map_err(|error| {
-            AppError::Audio(format!("there is not enough memory to decode this file: {error}"))
-        })?;
-
-        samples.extend_from_slice(&packet_samples);
-
-        decode_samples_bound_check(&DecodeProgress {
-            sample_count: u64::try_from(samples.len()).unwrap_or(u64::MAX),
-            sample_rate,
-            channels,
-        })?;
     }
 
     Err(AppError::Audio(format!(
         "this recording holds more than the {PACKET_COUNT_MAX} packets the app decodes in one pass",
     )))
-}
-
-fn decode_packets_finish(
-    decoded: DecodedAudio,
-    decode_error_count: u32,
-) -> AppResult<DecodedAudio> {
-    assert!(decoded.samples.is_empty() || decoded.channels > 0);
-    assert!(decode_error_count <= DECODE_ERROR_COUNT_MAX);
-
-    if decoded.channels == 0 {
-        return Err(AppError::Audio("no audio decoded from track".into()));
-    }
-
-    if decoded.sample_rate == 0 {
-        return Err(AppError::Audio("no audio decoded from track".into()));
-    }
-
-    if decode_error_count > 0 {
-        tracing::warn!(
-            target: "scribe_lib::transcription",
-            "{decode_error_count} packets could not be decoded and were skipped",
-        );
-    }
-
-    assert!(decoded.sample_rate > 0);
-    assert!(decoded.channels > 0);
-
-    Ok(decoded)
 }
 
 fn decode_samples_bound_check(progress: &DecodeProgress) -> AppResult<()> {
@@ -251,12 +464,6 @@ fn decode_samples_bound_check(progress: &DecodeProgress) -> AppResult<()> {
     if progress.sample_count > samples_max {
         return Err(AppError::Audio(format!(
             "this recording is longer than the {AUDIO_HOURS_MAX} hours this app transcribes",
-        )));
-    }
-
-    if progress.sample_count > DECODE_SAMPLES_MAX {
-        return Err(AppError::Audio(format!(
-            "this recording decodes to more than the {DECODE_SAMPLES_MAX} samples this app holds",
         )));
     }
 
@@ -296,73 +503,29 @@ fn decode_track_open(path: &Path) -> AppResult<DecodeTrack> {
         .ok_or_else(|| AppError::Audio("the audio track carries no codec parameters".into()))?;
 
     let track_id = track.id;
-    let frame_count_hint = track.num_frames;
-    let channels_hint = codec_parameters.channels.as_ref().map(Channels::count);
 
     let decoder = symphonia::default::get_codecs()
         .make_audio_decoder(codec_parameters, &AudioDecoderOptions::default())
         .map_err(|error| AppError::Audio(format!("decoder init: {error}")))?;
 
-    let samples_capacity_hint = match (frame_count_hint, channels_hint) {
-        (Some(frames), Some(channel_count)) => {
-            frames.saturating_mul(u64::try_from(channel_count).unwrap_or(0))
-        }
-        _ => 0,
-    };
-
-    Ok(DecodeTrack { format, decoder, track_id, samples_capacity_hint })
+    Ok(DecodeTrack { format, decoder, track_id })
 }
 
-fn mix_to_mono(interleaved: &[f32], channels: u16) -> Vec<f32> {
+fn mix_to_mono(interleaved: &[f32], channels: u16, mono: &mut Vec<f32>) {
     assert!(channels > 0);
 
-    if channels == 1 {
-        return interleaved.to_vec();
-    }
-
+    let mono_length_before = mono.len();
     let channel_count = usize::from(channels);
 
-    let mono: Vec<f32> = interleaved
-        .chunks_exact(channel_count)
-        .map(|frame| frame.iter().sum::<f32>() / f32::from(channels))
-        .collect();
+    if channels == 1 {
+        mono.extend_from_slice(interleaved);
+    } else {
+        let frames = interleaved.chunks_exact(channel_count);
 
-    assert_eq!(mono.len(), interleaved.len().div_euclid(channel_count));
+        mono.extend(frames.map(|frame| frame.iter().sum::<f32>() / f32::from(channels)));
+    }
 
-    mono
-}
-
-fn resample(input: &[f32], rates: &RateChange) -> AppResult<Vec<f32>> {
-    assert!(rates.source > 0);
-    assert!(rates.target > 0);
-    assert_ne!(rates.source, rates.target);
-
-    let ratio = f64::from(rates.target) / f64::from(rates.source);
-
-    let mut resampler = Async::<f32>::new_poly(
-        ratio,
-        1.0,
-        PolynomialDegree::Cubic,
-        usize_of!(RESAMPLE_CHUNK_SIZE),
-        1,
-        FixedAsync::Input,
-    )
-    .map_err(|error| AppError::Audio(format!("resampler init: {error}")))?;
-
-    let buffer_in = InterleavedSlice::new(input, 1, input.len())
-        .map_err(|error| AppError::Audio(format!("resampler input: {error}")))?;
-
-    let output = resampler
-        .process_all(&buffer_in, input.len(), None)
-        .map_err(|error| AppError::Audio(format!("resample: {error}")))?
-        .take_data();
-
-    let input_length = u64::try_from(input.len()).unwrap_or(0);
-    let output_length = resample_output_length(input_length, rates);
-
-    assert!(u64::try_from(output.len()).unwrap_or(0).abs_diff(output_length) <= 1);
-
-    Ok(output)
+    assert_eq!(mono.len() - mono_length_before, interleaved.len().div_euclid(channel_count));
 }
 
 fn resample_output_length(input_length: u64, rates: &RateChange) -> u64 {
@@ -454,9 +617,120 @@ fn waveform_peaks_scan<Data: Read + Seek>(
 mod tests {
     use super::*;
     use crate::workspace::test_support::root_scoped;
-    use crate::workspace::{audio_wav_save, root};
+    use crate::workspace::{audio_wav_save, root, samples_to_pcm16};
     use std::fs;
     use std::io::Cursor;
+    use std::num::NonZeroU32;
+    use symphonia::core::audio::Channels;
+
+    const PACKET_FRAMES: [u32; 3] = [1024, 1152, 4097];
+    const RATES_DELAYLESS: [u32; 2] = [44_100, 48_000];
+    const RATES_SWEPT: [u32; 11] =
+        [8000, 11_025, 12_000, 22_050, 24_000, 32_000, 44_100, 48_000, 88_200, 96_000, 192_000];
+
+    fn block_collect(collected: &mut Vec<f32>, block: &[f32]) {
+        let collected_length_before = collected.len();
+
+        collected.extend_from_slice(block);
+
+        assert_eq!(collected.len(), collected_length_before + block.len());
+    }
+
+    fn block_count(counted: &mut u64, block: &[f32]) {
+        let block_length = u64::try_from(block.len()).unwrap();
+
+        *counted += block_length;
+
+        assert!(*counted >= block_length);
+    }
+
+    fn frame_lengths() -> [u32; 7] {
+        let chunk = RESAMPLE_CHUNK_SIZE;
+
+        [0, 1, chunk - 1, chunk, chunk + 1, chunk * 3 + 17, 100_003]
+    }
+
+    fn mono_of(interleaved: &[f32], channels: u16) -> Vec<f32> {
+        assert!(channels > 0);
+
+        let mut mono = Vec::new();
+
+        mix_to_mono(interleaved, channels, &mut mono);
+
+        mono
+    }
+
+    fn resample(input: &[f32], rates: &RateChange) -> AppResult<Vec<f32>> {
+        let packet_frames = u32::try_from(input.len()).ok().and_then(NonZeroU32::new);
+
+        resample_in_packets(input, rates.source, packet_frames.unwrap_or(NonZeroU32::MIN))
+    }
+
+    fn resample_in_packets(
+        input: &[f32],
+        rate: u32,
+        packet_frames: NonZeroU32,
+    ) -> AppResult<Vec<f32>> {
+        assert!(rate > 0);
+        assert!(input.len() <= usize_of!(RESAMPLE_CHUNK_SIZE * 64));
+
+        let mut resampling = Resampling::for_rate(rate)?.unwrap();
+        let mut output: Vec<f32> = Vec::new();
+
+        for packet in input.chunks(usize_of!(packet_frames.get())) {
+            resampling.push(packet, &mut |block| {
+                block_collect(&mut output, block);
+
+                Ok(())
+            })?;
+
+            assert!(resampling.input.len() <= usize_of!(RESAMPLE_CHUNK_SIZE));
+            assert!(resampling.held.len() <= resampling.output.len());
+        }
+
+        resampling.finish(&mut |block| {
+            block_collect(&mut output, block);
+
+            Ok(())
+        })?;
+
+        Ok(output)
+    }
+
+    fn resample_reference(input: &[f32], rate: u32) -> Vec<f32> {
+        assert!(rate > 0);
+
+        let ratio = f64::from(SAMPLE_RATE_WHISPER) / f64::from(rate);
+        let chunk = usize_of!(RESAMPLE_CHUNK_SIZE);
+
+        let mut resampler = Async::<f32>::new_poly(
+            ratio,
+            1.0,
+            PolynomialDegree::Cubic,
+            chunk,
+            1,
+            FixedAsync::Input,
+        )
+        .unwrap();
+
+        let buffer_in = InterleavedSlice::new(input, 1, input.len()).unwrap();
+
+        resampler.process_all(&buffer_in, input.len(), None).unwrap().take_data()
+    }
+
+    fn signal_of(length: u32, rate: NonZeroU32) -> Vec<f32> {
+        assert!(length <= RESAMPLE_CHUNK_SIZE * 64);
+        assert!(rate.get() >= 8000);
+
+        (0..length)
+            .map(|index| {
+                let seconds = f64::from(index) / f64::from(rate.get());
+                let tone = (seconds * 440.0_f64 * std::f64::consts::TAU).sin() * 0.5_f64;
+
+                num_traits::cast::<f64, f32>(tone).unwrap()
+            })
+            .collect()
+    }
 
     #[test]
     fn a_waveform_has_one_peak_per_bucket_and_none_for_empty_audio_or_zero_bars() {
@@ -522,9 +796,9 @@ mod tests {
 
     #[test]
     fn stereo_frames_with_a_dangling_sample_drop_it() {
-        assert_eq!(mix_to_mono(&[1.0, 1.0, 1.0], 2), vec![1.0]);
-        assert_eq!(mix_to_mono(&[], 2).len(), 0);
-        assert_eq!(mix_to_mono(&[], 1).len(), 0);
+        assert_eq!(mono_of(&[1.0, 1.0, 1.0], 2), vec![1.0]);
+        assert_eq!(mono_of(&[], 2).len(), 0);
+        assert_eq!(mono_of(&[], 1).len(), 0);
     }
 
     #[test]
@@ -634,19 +908,35 @@ mod tests {
     }
 
     #[test]
-    fn a_decode_that_fits_the_hours_but_not_the_memory_is_refused() {
-        let channels_many = DecodeProgress {
-            sample_count: DECODE_SAMPLES_MAX + 1,
-            sample_rate: 48_000,
-            channels: 8,
-        };
+    fn a_decode_holds_one_chunk_of_audio_however_long_the_recording_is() {
+        let packets = vec![0.25_f32; 1152];
+        let mut resampling = Resampling::for_rate(48_000).unwrap().unwrap();
+        let mut emitted: u64 = 0;
+        let capacity_input = resampling.input.capacity();
+        let capacity_held = resampling.held.capacity();
 
-        let stereo_longest =
-            DecodeProgress { sample_count: DECODE_SAMPLES_MAX, sample_rate: 48_000, channels: 2 };
+        for _packet_index in 0..2000_u32 {
+            resampling
+                .push(&packets, &mut |block| {
+                    block_count(&mut emitted, block);
 
-        decode_samples_bound_check(&stereo_longest).unwrap();
+                    Ok(())
+                })
+                .unwrap();
+        }
 
-        assert!(decode_samples_bound_check(&channels_many).is_err());
+        assert_eq!(resampling.input.capacity(), capacity_input);
+        assert_eq!(resampling.held.capacity(), capacity_held);
+
+        resampling
+            .finish(&mut |block| {
+                block_count(&mut emitted, block);
+
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(emitted, (2000 * 1152_u64).div_euclid(3));
     }
 
     #[test]
@@ -669,8 +959,119 @@ mod tests {
 
     #[test]
     fn stereo_frames_are_averaged_into_one_channel() {
-        assert_eq!(mix_to_mono(&[1.0, 0.0, 0.5, 0.5], 2), vec![0.5, 0.5]);
-        assert_eq!(mix_to_mono(&[0.25, 0.75], 1), vec![0.25, 0.75]);
+        assert_eq!(mono_of(&[1.0, 0.0, 0.5, 0.5], 2), vec![0.5, 0.5]);
+        assert_eq!(mono_of(&[0.25, 0.75], 1), vec![0.25, 0.75]);
+    }
+
+    #[test]
+    fn streamed_resampling_matches_the_whole_clip_resampled_at_once() {
+        for rate in RATES_DELAYLESS {
+            for length in frame_lengths() {
+                let input = signal_of(length, NonZeroU32::new(rate).unwrap());
+                let reference = resample_reference(&input, rate);
+
+                for packet_frames in PACKET_FRAMES {
+                    let packet = NonZeroU32::new(packet_frames).unwrap();
+                    let streamed = resample_in_packets(&input, rate, packet).unwrap();
+
+                    assert_eq!(streamed.len(), reference.len());
+                    assert!(
+                        streamed
+                            .iter()
+                            .zip(&reference)
+                            .all(|(left, right)| left.to_bits() == right.to_bits())
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_resampling_keeps_the_rate_ratio_length_at_every_source_rate() {
+        for rate in RATES_SWEPT {
+            let rates = RateChange { source: rate, target: SAMPLE_RATE_WHISPER };
+
+            for length in frame_lengths() {
+                let input = vec![0.5_f32; usize_of!(length)];
+                let packet = NonZeroU32::new(1152).unwrap();
+                let streamed = resample_in_packets(&input, rate, packet).unwrap();
+                let wanted = resample_output_length(u64::from(length), &rates);
+
+                assert_eq!(u64::try_from(streamed.len()).unwrap(), wanted);
+                assert!(streamed.iter().all(|sample| sample.is_finite()));
+
+                if streamed.len() > 64 {
+                    assert!((streamed[streamed.len().div_euclid(2)] - 0.5).abs() < 1e-3);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_prepared_file_holds_the_mixed_and_resampled_pcm16_of_its_source() {
+        let _root = root_scoped();
+        let source = root().unwrap().join("stereo.wav");
+        let target = root().unwrap().join("prepared.wav");
+        let frames = frame_lengths()[6];
+        let left = signal_of(frames, NonZeroU32::new(48_000).unwrap());
+
+        let specification = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+
+        let mut writer = hound::WavWriter::create(&source, specification).unwrap();
+
+        for value in samples_to_pcm16(&left) {
+            writer.write_sample(value).unwrap();
+            writer.write_sample(0_i16).unwrap();
+        }
+
+        writer.finalize().unwrap();
+        prepare_for_whisper(&PreparePaths { prepared: &target, source: &source }).unwrap();
+
+        let mut reader = hound::WavReader::open(&source).unwrap();
+        let decoded: Vec<f32> =
+            reader.samples::<i16>().map(|sample| f32::from(sample.unwrap()) / 32768.0).collect();
+        let mono: Vec<f32> = decoded
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|frame| frame.iter().sum::<f32>() / 2.0)
+            .collect();
+        let wanted: Vec<i16> = samples_to_pcm16(&resample_reference(&mono, 48_000)).collect();
+        let prepared = hound::WavReader::open(&target).unwrap();
+
+        assert_eq!(prepared.spec().sample_rate, SAMPLE_RATE_WHISPER);
+        assert_eq!(prepared.spec().channels, 1);
+
+        let written: Vec<i16> = prepared.into_samples::<i16>().map(Result::unwrap).collect();
+
+        assert_eq!(written.len(), wanted.len());
+        assert_eq!(written, wanted);
+    }
+
+    #[test]
+    fn a_source_that_fails_to_decode_leaves_no_prepared_file_behind() {
+        let _root = root_scoped();
+        let source = root().unwrap().join("broken.wav");
+        let target = root().unwrap().join("prepared.wav");
+
+        fs::write(&source, b"RIFF but not really audio").unwrap();
+
+        let paths = PreparePaths { prepared: &target, source: &source };
+
+        assert_ne!(prepare_for_whisper(&paths).unwrap_err().to_string(), "");
+        assert!(!target.exists());
+
+        let leftovers = fs::read_dir(root().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with("tmp"));
+
+        assert_eq!(leftovers.count(), 0);
     }
 
     #[test]

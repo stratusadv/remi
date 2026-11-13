@@ -39,7 +39,7 @@ interface DialogState extends DialogFields {
 
 const CANCEL_LABEL_DEFAULT = 'Cancel'
 const OK_LABEL_DEFAULT = 'OK'
-const TITLE_DEFAULT = 'scribe'
+const TITLE_DEFAULT = 'Remi'
 const current = ref<DialogState | null>(null)
 const input = ref('')
 const api = Object.freeze({ current, input, confirm, message, prompt, close })

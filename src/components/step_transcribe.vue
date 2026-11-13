@@ -245,6 +245,8 @@ onUnmounted(() => {
     if (segment_unlisten !== null) segment_unlisten()
     if (stage_unlisten !== null) stage_unlisten()
     if (transcript_copied_timer !== null) clearTimeout(transcript_copied_timer)
+
+    typewriter_stop()
 })
 
 async function correction_undo_persist(originals: LineCorrection[]): Promise<void> {
@@ -482,7 +484,7 @@ use_shortcuts({
             v-if="!transcription_ready && !ready_banner_dismissed"
             @dismiss="ready_banner_dismissed = true"
         >
-            scribe needs the API address and keys set up before it can transcribe.
+            Remi needs the API address and keys set up before it can transcribe.
             <template #actions>
                 <button class="btn-primary" @click="view_set('settings')">Open settings</button>
             </template>

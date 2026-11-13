@@ -8,6 +8,8 @@ interface ShortcutRegistration {
     shortcuts: Record<string, Handler>
 }
 
+const COMBO_SELECT_ALL = 'ctrl+a'
+
 const INPUT_TYPES_NON_TEXT = Object.freeze([
     'button',
     'checkbox',
@@ -91,6 +93,7 @@ function event_target_is_text_input(event: KeyboardEvent): boolean {
 }
 
 window.addEventListener('keydown', listener_global_keydown)
+window.addEventListener('keydown', listener_select_all)
 
 function listener_global_keydown(event: KeyboardEvent): void {
     assert(event.type.length > 0)
@@ -111,6 +114,16 @@ function listener_global_keydown(event: KeyboardEvent): void {
 
     event.preventDefault()
     topmost(event)
+}
+
+function listener_select_all(event: KeyboardEvent): void {
+    assert(event.type === 'keydown')
+    assert(COMBO_SELECT_ALL.startsWith('ctrl+'))
+
+    if (combo_key_from(event) !== COMBO_SELECT_ALL) return
+    if (event_target_is_text_input(event)) return
+
+    event.preventDefault()
 }
 
 function registration_register(registration: ShortcutRegistration): void {

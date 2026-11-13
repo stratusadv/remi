@@ -1,17 +1,24 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { use_batch_transcribe } from '../composables/use_batch_transcribe'
+import { use_context_menu } from '../composables/use_context_menu'
 import { use_pipeline } from '../composables/use_pipeline'
 import { use_tasks } from '../composables/use_tasks'
+import { assert } from '../lib/assert'
 import { seconds_to_clock, unix_now } from '../lib/duration'
 import { error_dialog_show } from '../lib/errors'
 import { ipc } from '../lib/ipc'
+import { MENU_ITEM_OPEN_MEETING } from '../lib/menu'
 import type { View } from '../composables/use_pipeline'
 import type { Task } from '../composables/use_tasks'
+import type { MenuItem } from '../lib/menu'
 
 
 const TICK_INTERVAL_MS = 1000
 const MESSAGE_JOB_GONE = 'That recording is no longer saved on this computer.'
+const MENU_ITEM_CANCEL: MenuItem = { id: 'cancel', label: 'Cancel', icon: 'close' }
+const MENU_ITEM_DISMISS: MenuItem = { id: 'dismiss', label: 'Dismiss', icon: 'close' }
+const { open: context_menu_open } = use_context_menu()
 const { tasks, task_dismiss, task_cancel, tasks_clear_finished } = use_tasks()
 const { job_open, job_open_busy } = use_pipeline()
 
@@ -108,6 +115,36 @@ function task_action_available(task: Task): boolean {
 
     return true
 }
+
+function task_context_menu(event: MouseEvent, task: Task): void {
+    assert(event.type === 'contextmenu')
+    assert(task.id.length > 0)
+
+    context_menu_open(event, task_menu_items(task), task_menu_select.bind(undefined, task))
+}
+
+function task_menu_items(task: Task): MenuItem[] {
+    const items: MenuItem[] = []
+    const action = task.status === 'running' ? MENU_ITEM_CANCEL : MENU_ITEM_DISMISS
+
+    if (job_open_available(task) && !job_open_busy.value) items.push(MENU_ITEM_OPEN_MEETING)
+    if (task_action_available(task)) items.push(action)
+
+    assert(items.length <= 2)
+
+    return items
+}
+
+async function task_menu_select(task: Task, id: string): Promise<void> {
+    assert(task.id.length > 0)
+
+    if (id === MENU_ITEM_OPEN_MEETING.id) return job_open_from_task(task)
+    if (id === MENU_ITEM_CANCEL.id) return task_cancel(task.id)
+
+    assert(id === MENU_ITEM_DISMISS.id)
+
+    task_dismiss(task.id)
+}
 </script>
 
 <template>
@@ -129,7 +166,12 @@ function task_action_available(task: Task): boolean {
             <button type="button" @click="batch_clear">Dismiss</button>
         </p>
         <ul class="sidebar-tasks-list">
-            <li v-for="task in tasks_newest_first" :key="task.id" class="sidebar-task">
+            <li
+                v-for="task in tasks_newest_first"
+                :key="task.id"
+                class="sidebar-task"
+                @contextmenu="task_context_menu($event, task)"
+            >
                 <button
                     type="button"
                     class="sidebar-task-main"

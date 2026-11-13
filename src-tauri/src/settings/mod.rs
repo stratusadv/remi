@@ -25,6 +25,10 @@ pub(crate) struct Settings {
     pub(crate) api_host: Option<String>,
     #[serde(default)]
     pub(crate) jobs_view: Option<String>,
+    #[serde(default)]
+    pub(crate) embeddings_host: Option<String>,
+    #[serde(default)]
+    pub(crate) embeddings_model: Option<String>,
 }
 
 impl Settings {
@@ -44,7 +48,7 @@ pub(crate) fn settings_load() -> AppResult<Settings> {
 
     let settings = serde_json::from_str(&raw).unwrap_or_else(|error| {
         tracing::warn!(
-            target: "scribe_lib::settings",
+            target: "remi_lib::settings",
             "settings could not be read, falling back to defaults: {}",
             error,
         );
@@ -135,6 +139,8 @@ mod tests {
             notes_thinking: None,
             api_host: None,
             jobs_view: None,
+            embeddings_host: None,
+            embeddings_model: None,
         };
 
         let raw = serde_json::to_string(&settings).expect("serialize");

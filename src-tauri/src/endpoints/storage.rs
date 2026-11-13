@@ -1,13 +1,20 @@
-use super::types::{APIEndpoint, APIEndpointPurpose, KeyStatus, ServiceStatus, SourceStatus};
+use super::types::{
+    APIEndpoint,
+    APIEndpointPurpose,
+    EmbeddingsTarget,
+    KeyStatus,
+    ServiceStatus,
+    SourceStatus,
+};
 use crate::error::{AppError, AppResult};
 use crate::secrets::{protected_delete, protected_read, protected_write};
 use crate::settings::{Settings, settings_load};
 use crate::workspace;
 use std::collections::HashMap;
 
-const API_HOST_BUILTIN: Option<&str> = option_env!("SCRIBE_API_HOST");
-const API_KEY_BUILTIN_NOTES: Option<&str> = option_env!("SCRIBE_API_KEY_NOTES");
-const API_KEY_BUILTIN_TRANSCRIPTION: Option<&str> = option_env!("SCRIBE_API_KEY_TRANSCRIPTION");
+const API_HOST_BUILTIN: Option<&str> = option_env!("REMI_API_HOST");
+const API_KEY_BUILTIN_NOTES: Option<&str> = option_env!("REMI_API_KEY_NOTES");
+const API_KEY_BUILTIN_TRANSCRIPTION: Option<&str> = option_env!("REMI_API_KEY_TRANSCRIPTION");
 const API_KEY_CHARS_MAX: u32 = 1024;
 pub(crate) const ENDPOINT_ID_NOTES: &str = "builtin-notes";
 pub(crate) const ENDPOINT_ID_TRANSCRIPTION: &str = "builtin-transcription";
@@ -23,6 +30,24 @@ struct EndpointSeed {
     model: &'static str,
     name: &'static str,
     purpose: APIEndpointPurpose,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct KeySources<'key> {
+    builtin: Option<&'key str>,
+    host_builtin: bool,
+    user: Option<&'key str>,
+}
+
+pub(crate) fn api_key_builtin_used(id: &str) -> AppResult<bool> {
+    let keys = keys_load()?;
+    let settings = settings_load()?;
+    let status = api_key_status(id, &keys, &settings);
+
+    assert!(!status.builtin || api_key_builtin(id).is_some());
+    assert_eq!(status.user, api_key_user(id, &keys).is_some());
+
+    Ok(status.builtin && !status.user)
 }
 
 pub(crate) fn api_key_set(purpose: APIEndpointPurpose, api_key: &str) -> AppResult<()> {
@@ -48,6 +73,35 @@ pub(crate) fn api_key_set(purpose: APIEndpointPurpose, api_key: &str) -> AppResu
     keys_save(&keys)
 }
 
+pub(crate) fn embeddings_target_load() -> AppResult<Option<EmbeddingsTarget>> {
+    let settings = settings_load()?;
+    let model = settings.embeddings_model.as_deref().map(str::trim).unwrap_or_default();
+
+    if model.is_empty() {
+        return Ok(None);
+    }
+
+    let host_shared = host_resolve(&settings);
+    let host_own = settings.embeddings_host.as_deref().map(str::trim).unwrap_or_default();
+    let host = if host_own.is_empty() { host_shared.clone() } else { host_own.to_owned() };
+
+    host_validate(&host)?;
+
+    let api_key = if host == host_shared {
+        api_key_resolve(ENDPOINT_ID_NOTES, &keys_load()?, &settings)
+    } else {
+        String::new()
+    };
+
+    assert_ne!(host, "");
+
+    if !api_key.is_empty() {
+        assert_eq!(host, host_shared);
+    }
+
+    Ok(Some(EmbeddingsTarget { api_key, host, model: model.to_owned() }))
+}
+
 pub(crate) fn endpoint_load(id: &str) -> AppResult<APIEndpoint> {
     let mut endpoint = builtins()
         .into_iter()
@@ -57,7 +111,7 @@ pub(crate) fn endpoint_load(id: &str) -> AppResult<APIEndpoint> {
     let settings = settings_load()?;
 
     endpoint.host = host_resolve(&settings);
-    endpoint.api_key = api_key_resolve(id, &keys_load()?);
+    endpoint.api_key = api_key_resolve(id, &keys_load()?, &settings);
     endpoint.has_api_key = !endpoint.api_key.is_empty();
 
     host_validate(&endpoint.host)?;
@@ -93,7 +147,7 @@ pub(crate) fn endpoints_load_all() -> AppResult<Vec<APIEndpoint>> {
 
     for endpoint in &mut result {
         endpoint.host = host_resolve(&settings);
-        endpoint.has_api_key = !api_key_resolve(&endpoint.id, &keys).is_empty();
+        endpoint.has_api_key = !api_key_resolve(&endpoint.id, &keys, &settings).is_empty();
     }
 
     assert_eq!(result.len(), builtins().len());
@@ -108,8 +162,8 @@ pub(crate) fn service_status_load() -> AppResult<ServiceStatus> {
 
     Ok(ServiceStatus {
         host: host_status(&settings),
-        notes: api_key_status(ENDPOINT_ID_NOTES, &keys),
-        transcription: api_key_status(ENDPOINT_ID_TRANSCRIPTION, &keys),
+        notes: api_key_status(ENDPOINT_ID_NOTES, &keys, &settings),
+        transcription: api_key_status(ENDPOINT_ID_TRANSCRIPTION, &keys, &settings),
     })
 }
 
@@ -128,15 +182,32 @@ fn api_key_builtin(id: &str) -> Option<&'static str> {
     usable
 }
 
-fn api_key_resolve(id: &str, keys: &HashMap<String, String>) -> String {
-    api_key_user(id, keys).or_else(|| api_key_builtin(id)).unwrap_or_default().to_owned()
+fn api_key_resolve(id: &str, keys: &HashMap<String, String>, settings: &Settings) -> String {
+    let sources = KeySources {
+        builtin: api_key_builtin(id),
+        host_builtin: host_is_builtin(settings),
+        user: api_key_user(id, keys),
+    };
+
+    api_key_sent(&sources).unwrap_or_default().to_owned()
 }
 
-fn api_key_status(id: &str, keys: &HashMap<String, String>) -> KeyStatus {
-    let length = api_key_resolve(id, keys).chars().count();
+fn api_key_sent<'key>(sources: &KeySources<'key>) -> Option<&'key str> {
+    assert!(sources.builtin.is_none_or(|key| !key.is_empty()));
+    assert!(sources.user.is_none_or(|key| !key.is_empty()));
+
+    if sources.user.is_some() {
+        return sources.user;
+    }
+
+    sources.builtin.filter(|_key| sources.host_builtin)
+}
+
+fn api_key_status(id: &str, keys: &HashMap<String, String>, settings: &Settings) -> KeyStatus {
+    let length = api_key_resolve(id, keys, settings).chars().count();
 
     KeyStatus {
-        builtin: api_key_builtin(id).is_some(),
+        builtin: api_key_builtin(id).is_some() && host_is_builtin(settings),
         length: u32::try_from(length).unwrap_or(API_KEY_CHARS_MAX),
         user: api_key_user(id, keys).is_some(),
     }
@@ -191,6 +262,12 @@ fn host_builtin() -> Option<&'static str> {
     API_HOST_BUILTIN.map(str::trim).filter(|host| !host.is_empty())
 }
 
+fn host_is_builtin(settings: &Settings) -> bool {
+    let builtin = host_builtin().and_then(|host| reqwest::Url::parse(host).ok());
+
+    host_user_matches(host_user(settings), builtin.as_ref())
+}
+
 fn host_resolve(settings: &Settings) -> String {
     let host = host_user(settings)
         .map_or_else(|| host_builtin().unwrap_or_default().to_owned(), str::to_owned);
@@ -206,6 +283,17 @@ fn host_status(settings: &Settings) -> SourceStatus {
 
 fn host_user(settings: &Settings) -> Option<&str> {
     settings.api_host.as_deref().map(str::trim).filter(|host| !host.is_empty())
+}
+
+fn host_user_matches(user: Option<&str>, builtin: Option<&reqwest::Url>) -> bool {
+    let Some(user_host) = user else {
+        return true;
+    };
+
+    assert_ne!(user_host, "");
+    assert_eq!(user_host.trim(), user_host);
+
+    reqwest::Url::parse(user_host).is_ok_and(|parsed| Some(&parsed) == builtin)
 }
 
 fn host_validate(host: &str) -> AppResult<()> {
@@ -235,7 +323,7 @@ fn keys_load() -> AppResult<HashMap<String, String>> {
 
     let keys = serde_json::from_str(&payload).unwrap_or_else(|error| {
         tracing::warn!(
-            target: "scribe_lib::endpoints",
+            target: "remi_lib::endpoints",
             "the key store could not be read and will be replaced on the next save: {}",
             error,
         );
@@ -269,21 +357,98 @@ mod tests {
     #[test]
     fn api_key_user_overrides_builtin() {
         let builtin = API_KEY_BUILTIN_NOTES.unwrap_or_default();
+        let settings = Settings::initial();
         let mut keys = HashMap::new();
 
-        assert_eq!(api_key_resolve(ENDPOINT_ID_NOTES, &keys), builtin);
+        assert_eq!(api_key_resolve(ENDPOINT_ID_NOTES, &keys, &settings), builtin);
 
         drop(keys.insert(ENDPOINT_ID_NOTES.to_owned(), " user-key ".to_owned()));
-        assert_eq!(api_key_resolve(ENDPOINT_ID_NOTES, &keys), " user-key ");
+        assert_eq!(api_key_resolve(ENDPOINT_ID_NOTES, &keys, &settings), " user-key ");
 
         assert_eq!(
-            api_key_resolve(ENDPOINT_ID_TRANSCRIPTION, &keys).is_empty(),
+            api_key_resolve(ENDPOINT_ID_TRANSCRIPTION, &keys, &settings).is_empty(),
             api_key_builtin(ENDPOINT_ID_TRANSCRIPTION).is_none(),
         );
 
         drop(keys.insert(ENDPOINT_ID_NOTES.to_owned(), String::new()));
-        assert_eq!(api_key_resolve(ENDPOINT_ID_NOTES, &keys), builtin);
-        assert!(!api_key_status(ENDPOINT_ID_NOTES, &keys).user);
+        assert_eq!(api_key_resolve(ENDPOINT_ID_NOTES, &keys, &settings), builtin);
+        assert!(!api_key_status(ENDPOINT_ID_NOTES, &keys, &settings).user);
+    }
+
+    #[test]
+    fn the_builtin_key_goes_only_to_the_builtin_host_and_a_user_key_goes_anywhere() {
+        let host = Some("https://elsewhere.test".to_owned());
+        let elsewhere = Settings { api_host: host, ..Settings::initial() };
+        let mut keys = HashMap::new();
+
+        assert_eq!(api_key_resolve(ENDPOINT_ID_NOTES, &keys, &elsewhere), "");
+        assert!(!api_key_status(ENDPOINT_ID_NOTES, &keys, &elsewhere).builtin);
+        assert_eq!(api_key_status(ENDPOINT_ID_NOTES, &keys, &elsewhere).length, 0);
+
+        drop(keys.insert(ENDPOINT_ID_NOTES.to_owned(), "user-key".to_owned()));
+
+        assert_eq!(api_key_resolve(ENDPOINT_ID_NOTES, &keys, &elsewhere), "user-key");
+        assert!(api_key_status(ENDPOINT_ID_NOTES, &keys, &elsewhere).user);
+    }
+
+    #[test]
+    fn the_key_sent_is_the_user_key_else_the_builtin_key_for_the_builtin_host_alone() {
+        let cases = [
+            (None, Some("builtin"), true, Some("builtin")),
+            (None, Some("builtin"), false, None),
+            (Some("user"), Some("builtin"), true, Some("user")),
+            (Some("user"), Some("builtin"), false, Some("user")),
+            (Some("user"), None, false, Some("user")),
+            (None, None, true, None),
+        ];
+
+        for (user, builtin, host_builtin, expected) in cases {
+            let sources = KeySources { builtin, host_builtin, user };
+
+            assert_eq!(api_key_sent(&sources), expected, "{sources:?}");
+        }
+    }
+
+    #[test]
+    fn a_user_host_matches_the_builtin_one_only_when_both_name_the_same_address() {
+        let parsed = reqwest::Url::parse("https://api.example.test").unwrap();
+        let builtin = Some(&parsed);
+
+        assert!(host_user_matches(None, builtin));
+        assert!(host_user_matches(None, None));
+        assert!(host_user_matches(Some("https://api.example.test/"), builtin));
+        assert!(host_user_matches(Some("HTTPS://API.EXAMPLE.TEST"), builtin));
+        assert!(!host_user_matches(Some("https://api.example.test.evil"), builtin));
+        assert!(!host_user_matches(Some("http://api.example.test"), builtin));
+        assert!(!host_user_matches(Some("https://api.example.test:8443"), builtin));
+        assert!(!host_user_matches(Some("https://api.example.test"), None));
+        assert!(!host_user_matches(Some("not an address"), builtin));
+    }
+
+    #[test]
+    fn billing_follows_the_builtin_key_and_stops_for_a_user_key_or_a_user_host() {
+        let _root = root_scoped();
+        let builtin = api_key_builtin(ENDPOINT_ID_TRANSCRIPTION).is_some();
+
+        assert_eq!(api_key_builtin_used(ENDPOINT_ID_TRANSCRIPTION).unwrap(), builtin);
+
+        api_key_set(APIEndpointPurpose::Transcription, "user-key").unwrap();
+
+        assert!(!api_key_builtin_used(ENDPOINT_ID_TRANSCRIPTION).unwrap());
+
+        api_key_set(APIEndpointPurpose::Transcription, "").unwrap();
+
+        let elsewhere = Some("https://elsewhere.test".to_owned());
+
+        settings_save(&Settings { api_host: elsewhere, ..Settings::initial() }).unwrap();
+
+        assert!(!api_key_builtin_used(ENDPOINT_ID_TRANSCRIPTION).unwrap());
+
+        let named = host_builtin().map(str::to_owned);
+
+        settings_save(&Settings { api_host: named, ..Settings::initial() }).unwrap();
+
+        assert_eq!(api_key_builtin_used(ENDPOINT_ID_TRANSCRIPTION).unwrap(), builtin);
     }
 
     #[test]
@@ -416,12 +581,11 @@ mod tests {
         assert!(notes.has_api_key);
 
         let transcription = endpoint_load(ENDPOINT_ID_TRANSCRIPTION).unwrap();
-        let transcription_builtin_key = api_key_builtin(ENDPOINT_ID_TRANSCRIPTION);
 
         assert_eq!(transcription.host, "https://api.example.test/");
         assert_eq!(transcription.model, MODEL_TRANSCRIPTION);
         assert!(transcription.reasoning_effort.is_none());
-        assert_eq!(transcription.api_key.is_empty(), transcription_builtin_key.is_none());
+        assert_eq!(transcription.api_key, "");
         assert_ne!(endpoint_load("unknown").unwrap_err().to_string(), "");
     }
 
@@ -496,7 +660,50 @@ mod tests {
         assert!(notes.has_api_key);
         assert_eq!(notes.api_key, "");
         assert_eq!(notes.host, "https://h.test");
-        assert_eq!(transcription.has_api_key, api_key_builtin(ENDPOINT_ID_TRANSCRIPTION).is_some());
+        assert!(!transcription.has_api_key);
         assert_eq!(transcription.api_key, "");
+    }
+
+    #[test]
+    fn the_search_model_is_off_until_named_and_shares_the_notes_key_only_with_the_api_host() {
+        let _root = root_scoped();
+
+        assert!(embeddings_target_load().unwrap().is_none());
+
+        let shared = Settings {
+            api_host: Some("https://api.example.test".to_owned()),
+            embeddings_model: Some(" qwen3-embedding:0.6b ".to_owned()),
+            embeddings_host: Some("   ".to_owned()),
+            ..Settings::initial()
+        };
+
+        settings_save(&shared).unwrap();
+        api_key_set(APIEndpointPurpose::Notes, "notes-key").unwrap();
+
+        let target = embeddings_target_load().unwrap().unwrap();
+
+        assert_eq!(target.host, "https://api.example.test");
+        assert_eq!(target.model, "qwen3-embedding:0.6b");
+        assert_eq!(target.api_key, "notes-key");
+
+        let own = Settings {
+            embeddings_host: Some(" http://localhost:11434 ".to_owned()),
+            ..shared.clone()
+        };
+
+        settings_save(&own).unwrap();
+
+        let local = embeddings_target_load().unwrap().unwrap();
+
+        assert_eq!(local.host, "http://localhost:11434");
+        assert_eq!(local.api_key, "");
+
+        let refused = Settings { embeddings_host: Some("ftp://files.test".to_owned()), ..shared };
+
+        settings_save(&refused).unwrap();
+
+        let error = embeddings_target_load().unwrap_err().to_string();
+
+        assert!(error.contains("must start with https:// or http://"));
     }
 }

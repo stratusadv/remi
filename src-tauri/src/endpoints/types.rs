@@ -10,6 +10,13 @@ pub(crate) enum APIEndpointPurpose {
     Notes,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct EmbeddingsTarget {
+    pub(crate) api_key: String,
+    pub(crate) host: String,
+    pub(crate) model: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct KeyStatus {
     pub(crate) builtin: bool,

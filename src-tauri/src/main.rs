@@ -3,5 +3,5 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    scribe_lib::run()
+    remi_lib::run()
 }

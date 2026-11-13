@@ -63,7 +63,7 @@ impl TranscribeProgress {
 
         if let Err(error) = self.app.emit(EVENT_TRANSCRIPTION_STAGE, chunk) {
             tracing::warn!(
-                target: "scribe_lib::transcription",
+                target: "remi_lib::transcription",
                 "emit transcription_stage failed: {}",
                 error,
             );

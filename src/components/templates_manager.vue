@@ -1,17 +1,21 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { use_context_menu } from '../composables/use_context_menu'
 import { use_dialog } from '../composables/use_dialog'
 import { use_notes_templates } from '../composables/use_notes_templates'
+import { use_pipeline } from '../composables/use_pipeline'
 import { use_service } from '../composables/use_service'
 import { use_settings } from '../composables/use_settings'
 import { use_shortcuts } from '../composables/use_shortcuts'
+import { assert } from '../lib/assert'
 import { error_dialog_show } from '../lib/errors'
 import InfoHint from './info_hint.vue'
+import MonogramTile from './monogram_tile.vue'
 import NoticeBanner from './notice_banner.vue'
 import { rich_editor_async as RichEditorAsync } from './rich_editor_async'
 import RowMenu from './row_menu.vue'
+import type { MenuItem } from '../lib/menu'
 import type { NotesTemplate } from '../types'
-import type { RowMenuItem } from './row_menu.vue'
 
 
 interface EditState {
@@ -31,8 +35,10 @@ const MESSAGE_API_MISSING = 'Set up the API under Settings first.'
 const PLACEHOLDER_INSTRUCTIONS = 'Add a heading for each part of the notes, and under it say what '
     + 'goes there.'
 
+const { open: context_menu_open } = use_context_menu()
 const { confirm: dialog_confirm } = use_dialog()
 const { templates, error_message, save, remove, generate } = use_notes_templates()
+const { view_intent_take } = use_pipeline()
 const { notes_ready } = use_service()
 
 const {
@@ -93,8 +99,17 @@ function edit_click(template: NotesTemplate): void {
     edit.value = { template: { ...template } }
 }
 
-function menu_items_for(template: NotesTemplate): RowMenuItem[] {
-    const items: RowMenuItem[] = []
+function intent_apply(): void {
+    const intent = view_intent_take()
+
+    assert(intent === null || intent === 'template_add')
+    assert(edit.value === null)
+
+    if (intent === 'template_add') add_click()
+}
+
+function menu_items_for(template: NotesTemplate): MenuItem[] {
+    const items: MenuItem[] = []
 
     if (settings.value.notes_template_id_default !== template.id) {
         items.push({ id: 'default', label: 'Make default', icon: 'star' })
@@ -134,6 +149,13 @@ async function save_click(): Promise<void> {
     }
 }
 
+function template_context_menu(event: MouseEvent, template: NotesTemplate): void {
+    assert(event.type === 'contextmenu')
+    assert(template.id.length > 0)
+
+    context_menu_open(event, menu_items_for(template), menu_select.bind(undefined, template))
+}
+
 function template_new(): NotesTemplate {
     return {
         id: crypto.randomUUID(),
@@ -144,6 +166,8 @@ function template_new(): NotesTemplate {
     }
 }
 
+intent_apply()
+
 use_shortcuts({
     escape: () => { if (edit.value !== null) cancel_click() },
 })
@@ -153,6 +177,7 @@ use_shortcuts({
     <section class="view-fill">
         <header class="page-header">
             <div>
+                <p class="eyebrow page-eyebrow">Note formats</p>
                 <h2 class="!mb-1 flex items-center">
                     Templates
                     <InfoHint :text="HINT_TEMPLATES" />
@@ -214,7 +239,9 @@ use_shortcuts({
                 v-for="template in templates"
                 :key="template.id"
                 class="flex justify-between items-center py-3 gap-4"
+                @contextmenu="template_context_menu($event, template)"
             >
+                <MonogramTile :text="template.name" />
                 <button type="button" class="list-row-main" @click="edit_click(template)">
                     <span class="flex items-center gap-2 min-w-0">
                         <span class="font-medium truncate">{{ template.name }}</span>

@@ -18,8 +18,6 @@ import type { APIEndpoint, ChatChunk, Markdown, StreamID } from '../../src/types
 vi.mock('../../src/lib/ipc')
 vi.mock('@tauri-apps/api/event')
 vi.mock('@tauri-apps/plugin-dialog')
-vi.mock('@tauri-apps/plugin-opener')
-vi.mock('@tauri-apps/plugin-notification')
 
 const MARKDOWN = 'First paragraph\n\n- item one\n- item two'
 const INSTRUCTION_REWRITE = 'Rewrite this more clearly and concisely. Keep the same meaning.'

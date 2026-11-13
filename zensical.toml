@@ -1,10 +1,11 @@
 [project]
-site_name = "scribe"
+site_name = "Remi Remembers"
 site_description = "A desktop app that turns a meeting recording into formatted notes."
-site_url = "https://stratusadv.github.io/scribe/"
-repo_name = "stratusadv/scribe"
-repo_url = "https://github.com/stratusadv/scribe"
+site_url = "https://stratusadv.github.io/remi/"
+repo_name = "stratusadv/remi"
+repo_url = "https://github.com/stratusadv/remi"
 copyright = "Copyright (c) 2026 Stratus Advanced Technologies"
+dev_addr = "localhost:8007"
 extra_css = ["assets/stylesheets/brand.css"]
 nav = [
     { "Overview" = "overview.md" },
@@ -18,7 +19,8 @@ nav = [
 ]
 
 [project.theme]
-favicon = "assets/scribe-icon-32.png"
+custom_dir = "overrides"
+favicon = "assets/remi-icon-32.png"
 features = [
     "content.code.copy",
     "content.tabs.link",
@@ -32,12 +34,8 @@ features = [
     "navigation.tracking",
     "search.highlight",
 ]
+font = false
 language = "en"
-logo = "assets/scribe-mark-on-light.svg"
-
-[project.theme.font]
-code = "JetBrains Mono"
-text = "IBM Plex Sans"
 
 [[project.theme.palette]]
 media = "(prefers-color-scheme: light)"

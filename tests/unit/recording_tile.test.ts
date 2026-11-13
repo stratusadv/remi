@@ -44,6 +44,19 @@ function mount_tile(
     return wrapper
 }
 
+function bar_levels(wrapper: VueWrapper): number[] {
+    assert(wrapper.exists())
+    assert(mounted.has(wrapper))
+
+    return wrapper.findAll('.recording-tile-bars i').map((bar) => {
+        const match = /--level:\s*([\d.]+)/.exec(bar.attributes('style') ?? '')
+
+        assert(match !== null)
+
+        return Number(match[1])
+    })
+}
+
 function shape_of(wrapper: VueWrapper): string {
     assert(wrapper.exists())
     assert(mounted.has(wrapper))
@@ -103,7 +116,7 @@ describe('RecordingTile', () => {
         expect(with_duration.get('.recording-tile-duration').text()).toBe('1:02:05')
     })
 
-    it('draws one bar per waveform peak with a minimum height', async () => {
+    it('draws a short waveform bar for bar and lifts a silent peak to the minimum', async () => {
         vi.mocked(ipc.job_waveform_get).mockResolvedValue({
             peaks: [0, 0.5, 1],
             duration_seconds: 30,
@@ -113,13 +126,39 @@ describe('RecordingTile', () => {
 
         await flushPromises()
 
-        const bars = wrapper.findAll('rect')
-
         expect(ipc.job_waveform_get).toHaveBeenCalledWith('job-wave', 110)
-        expect(wrapper.get('svg').attributes('viewBox')).toBe('0 0 9 100')
-        expect(bars.map((bar) => bar.attributes('height'))).toEqual(['4', '50', '100'])
-        expect(bars.map((bar) => bar.attributes('x'))).toEqual(['0', '3', '6'])
-        expect(bars[1]?.attributes('y')).toBe('25')
+        expect(bar_levels(wrapper)).toEqual([0.08, 0.5, 1])
+    })
+})
+
+describe('RecordingTile art', () => {
+    it('groups a long waveform into 36 bars without losing its loudest moment', async () => {
+        const peaks = [...Array(110).keys()].map((index) => (index === 60 ? 0.95 : 0.1))
+
+        vi.mocked(ipc.job_waveform_get).mockResolvedValue({ peaks, duration_seconds: 600 })
+
+        const wrapper = mount_tile(job_listing_build({ id: 'job-long' }))
+
+        await flushPromises()
+
+        const levels = bar_levels(wrapper)
+
+        expect(levels).toHaveLength(36)
+        expect(levels.filter((level) => level === 0.95)).toHaveLength(1)
+        expect(levels.filter((level) => level === 0.1)).toHaveLength(35)
+    })
+
+    it('gives a recording the same art each time and a valid hue and layout', async () => {
+        const first = mount_tile(job_listing_build({ id: 'job-art' }))
+        const again = mount_tile(job_listing_build({ id: 'job-art' }))
+
+        await flushPromises()
+
+        const art = first.get('.recording-tile')
+
+        expect(['0', '1', '2', '3']).toContain(art.attributes('data-hue'))
+        expect(['0', '1', '2']).toContain(art.attributes('data-layout'))
+        expect(again.get('.recording-tile').attributes()).toEqual(art.attributes())
     })
 })
 
@@ -205,5 +244,28 @@ describe('RecordingTile', () => {
 
         expect(wrapper.emitted('menu')).toEqual([['rename']])
         expect(wrapper.emitted('open')).toBeUndefined()
+    })
+})
+
+describe('RecordingTile ask', () => {
+    it('offers Ask beside the star once transcribed and emits it without opening', async () => {
+        const wrapper = mount_tile(job_listing_build({ has_transcript: true }))
+        const ask = wrapper.get('.recording-tile-ask')
+
+        expect(ask.attributes('aria-label')).toBe('Ask about Weekly sync')
+        expect(ask.element.parentElement?.querySelector('.recording-tile-star')).not.toBeNull()
+
+        await ask.trigger('click')
+
+        expect(wrapper.emitted('ask')).toHaveLength(1)
+        expect(wrapper.emitted('open')).toBeUndefined()
+    })
+
+    it('leaves Ask out until there is something to ask about', () => {
+        const fresh = mount_tile(job_listing_build())
+        const noted = mount_tile(job_listing_build({ id: 'job-2', has_notes: true }))
+
+        expect(fresh.find('.recording-tile-ask').exists()).toBe(false)
+        expect(noted.find('.recording-tile-ask').exists()).toBe(true)
     })
 })

@@ -10,7 +10,6 @@ import {
 } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { save as dialog_save } from '@tauri-apps/plugin-dialog'
-import { openPath } from '@tauri-apps/plugin-opener'
 import { use_dialog } from '../composables/use_dialog'
 import { use_endpoints } from '../composables/use_endpoints'
 import { use_network } from '../composables/use_network'
@@ -333,9 +332,9 @@ async function export_open_offer(path_saved: string): Promise<void> {
     if (!open_wanted) return
 
     try {
-        await openPath(path_saved)
+        await ipc.desktop_export_open()
     } catch (error) {
-        log_warn('openPath failed', error)
+        log_warn('[notes] the exported file did not open', error)
 
         const failure = 'The notes were saved, but the file could not be opened automatically. '
             + `You can open it from ${path_saved}.`
@@ -550,7 +549,7 @@ use_shortcuts({
             v-if="!notes_ready && !ready_banner_dismissed"
             @dismiss="ready_banner_dismissed = true"
         >
-            scribe needs the API address and keys set up before it can write notes.
+            Remi needs the API address and keys set up before it can write notes.
             <template #actions>
                 <button class="btn-primary" @click="view_set('settings')">Open settings</button>
             </template>

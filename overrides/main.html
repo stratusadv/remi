@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block content %}
+    {%- set parts = super() | split("<table>") | list -%}
+    {{- parts | first | safe -}}
+    {%- for part in parts[1:] -%}
+        {%- set table = part | split("</table>", 1) | list -%}
+        <div class="md-typeset__scrollwrap"><div class="md-typeset__table"><table>{{ table[0] | safe }}</table></div></div>{{ table[1] | safe }}
+    {%- endfor -%}
+{% endblock %}
+
+{% block extrahead %}
+    <link rel="preload" href="{{ 'assets/fonts/geist.woff2' | url }}" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="{{ 'assets/fonts/jetbrains-mono.woff2' | url }}" as="font" type="font/woff2" crossorigin>
+    <script>
+        document.documentElement.classList.add("loading");
+        setTimeout(() => document.documentElement.classList.remove("loading"), 1000);
+    </script>
+{% endblock %}
+
+{% block header %}
+    {{ super() }}
+    <script>
+        if (!__md_get("__palette")) {
+            for (const input of document.querySelectorAll("[data-md-color-media]")) {
+                if (matchMedia(input.getAttribute("data-md-color-media")).matches) {
+                    for (const key of ["media", "scheme", "primary", "accent"]) {
+                        document.body.setAttribute(`data-md-color-${key}`, input.getAttribute(`data-md-color-${key}`));
+                    }
+
+                    break;
+                }
+            }
+        }
+    </script>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        if (location.hash && history.state === null) {
+            const controller = new AbortController();
+            const href = location.href;
+
+            const anchor = () => {
+                if (!controller.signal.aborted && location.href === href) {
+                    scrollTo(scrollX, 0);
+                    location.replace(href);
+                }
+            };
+
+            const observer = new ResizeObserver(anchor);
+
+            for (const type of ["keydown", "load", "pointerdown", "wheel"]) {
+                addEventListener(type, () => controller.abort(), {signal: controller.signal});
+            }
+
+            anchor();
+            observer.observe(document.body);
+            controller.signal.addEventListener("abort", () => observer.disconnect());
+        }
+
+        if (!CSS.supports("timeline-scope: --footer")) {
+            const controller = new AbortController();
+
+            const track = () => {
+                const footer = document.querySelector(".md-footer").getBoundingClientRect();
+                const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+
+                for (const sidebar of document.querySelectorAll(".md-sidebar")) {
+                    sidebar.style.setProperty("--sidebar-lift", `${Math.min(scrollY, 1.5 * rem)}px`);
+                    sidebar.style.setProperty("--sidebar-shift", `${Math.max(0, innerHeight - footer.top)}px`);
+                }
+            };
+
+            const observer = new ResizeObserver(track);
+
+            track();
+            observer.observe(document.body);
+            observer.observe(document.querySelector(".md-footer"));
+            controller.signal.addEventListener("abort", () => observer.disconnect());
+            addEventListener("DOMContentLoaded", () => controller.abort(), {once: true});
+            addEventListener("resize", track, {signal: controller.signal});
+            addEventListener("scroll", track, {signal: controller.signal});
+        }
+
+        if (document.documentElement.classList.contains("loading")) {
+            const reveal = () => document.documentElement.classList.remove("loading");
+
+            document.documentElement.getBoundingClientRect();
+
+            const faces = [...document.fonts].filter((face) => face.status === "loading");
+
+            Promise.allSettled(faces.map((face) => face.loaded)).then(reveal);
+            setTimeout(reveal, 100);
+        }
+    </script>
+    {{ super() }}
+{% endblock %}

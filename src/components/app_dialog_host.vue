@@ -1,9 +1,23 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { use_dialog } from '../composables/use_dialog'
+import { assert } from '../lib/assert'
 
 
 const { current, input, close } = use_dialog()
+const input_ref = ref<HTMLInputElement | null>(null)
+
+
+function input_focus(): void {
+    const field = input_ref.value
+
+    if (field === null) return
+
+    assert(field.isConnected)
+
+    field.focus()
+    field.select()
+}
 
 
 function on_backdrop_press(): void {
@@ -40,6 +54,10 @@ watch(current, (next) => {
     if (typeof document === 'undefined') return
 
     document.body.style.overflow = next !== null ? 'hidden' : ''
+
+    if (next?.input_shown !== true) return
+
+    void nextTick(input_focus)
 })
 </script>
 
@@ -128,6 +146,7 @@ watch(current, (next) => {
                     <p class="app-dialog-message">{{ current.message }}</p>
                     <input
                         v-if="current.input_shown"
+                        ref="input_ref"
                         v-model="input"
                         class="input app-dialog-input"
                         type="text"

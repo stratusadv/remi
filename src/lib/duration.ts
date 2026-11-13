@@ -2,9 +2,31 @@ import { assert } from './assert'
 
 
 const MILLISECONDS_PER_SECOND = 1000
-const SECONDS_PER_HOUR = 3600
+export const SECONDS_PER_HOUR = 3600
 const SECONDS_PER_MINUTE = 60
+const TENTHS_PER_UNIT = 10
 
+
+export function seconds_to_balance(seconds: number): string {
+    assert(typeof seconds === 'number')
+
+    const whole = seconds_valid(seconds) ? Math.floor(seconds) : 0
+
+    if (whole < SECONDS_PER_HOUR) {
+        const minutes = Math.floor(whole / SECONDS_PER_MINUTE)
+
+        return minutes === 1 ? '1 minute' : `${String(minutes)} minutes`
+    }
+
+    const tenths = Math.floor((whole * TENTHS_PER_UNIT) / SECONDS_PER_HOUR)
+
+    assert(tenths >= TENTHS_PER_UNIT)
+    assert(tenths * SECONDS_PER_HOUR <= whole * TENTHS_PER_UNIT)
+
+    if (tenths === TENTHS_PER_UNIT) return '1 hour'
+
+    return `${String(tenths / TENTHS_PER_UNIT)} hours`
+}
 
 export function seconds_to_clock(seconds: number): string {
     assert(typeof seconds === 'number')

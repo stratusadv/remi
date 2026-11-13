@@ -1,18 +1,13 @@
 import { computed, ref } from 'vue'
-import {
-    isPermissionGranted,
-    requestPermission,
-    sendNotification,
-} from '@tauri-apps/plugin-notification'
 import { assert } from '../lib/assert'
 import { unix_now } from '../lib/duration'
 import { ipc } from '../lib/ipc'
 import { log_warn } from '../lib/log'
+import { use_account } from './use_account'
 
 
 export type TaskKind = 'transcribe' | 'generate'
 export type TaskStatus = 'running' | 'succeeded' | 'failed' | 'cancelled'
-type PermissionState = 'unknown' | 'granted' | 'denied'
 
 export interface Task {
     id: string
@@ -41,7 +36,6 @@ const tasks_all = ref<Task[]>([])
 const tasks = computed(() => tasks_all.value)
 const tasks_running = computed(() => tasks_all.value.filter((task) => task.status === 'running'))
 const tasks_finished = computed(() => tasks_all.value.filter((task) => task.status !== 'running'))
-const permission_state = ref<PermissionState>('unknown')
 
 
 export function is_cancelled_error(error: unknown): boolean {
@@ -60,48 +54,20 @@ export function use_tasks(): typeof api {
     return api
 }
 
-async function notification_permission_ask(): Promise<PermissionState> {
-    const granted_already = await isPermissionGranted()
-
-    if (granted_already) return 'granted'
-
-    const result = await requestPermission()
-
-    assert(typeof result === 'string')
-    assert(result.length > 0)
-
-    return result === 'granted' ? 'granted' : 'denied'
-}
-
-async function notification_permission_ensure(): Promise<boolean> {
-    if (permission_state.value === 'granted') return true
-    if (permission_state.value === 'denied') return false
-
-    const state = await notification_permission_ask().catch((): PermissionState => 'denied')
-
-    permission_state_set(state)
-
-    assert(state !== 'unknown')
-
-    return state === 'granted'
-}
-
 function notification_send(task: Task): void {
     assert(task.id.length > 0)
     assert(task.status !== 'running')
 
-    try {
-        const title = task_notification_title(task)
-        const detail = task.error_message ?? ''
-        const body = task.status === 'failed' && detail.length > 0 ? detail : task.label
+    const title = task_notification_title(task)
+    const detail = task.error_message ?? ''
+    const body = task.status === 'failed' && detail.length > 0 ? detail : task.label
 
-        sendNotification({ title, body })
-    } catch (error) {
+    void ipc.desktop_notification_show(title, body).catch((error: unknown) => {
         log_warn('[tasks] notification not sent', error)
-    }
+    })
 }
 
-async function notification_send_if_appropriate(task: Task): Promise<void> {
+function notification_send_if_appropriate(task: Task): void {
     assert(task.id.length > 0)
     assert(typeof task.label === 'string')
 
@@ -111,17 +77,7 @@ async function notification_send_if_appropriate(task: Task): Promise<void> {
         if (window_is_visible()) return
     }
 
-    return notification_permission_ensure().then((granted) => {
-        if (granted) notification_send(task)
-    })
-}
-
-function permission_state_set(state: PermissionState): void {
-    assert(state.length > 0)
-
-    permission_state.value = state
-
-    assert(permission_state.value === state)
+    notification_send(task)
 }
 
 async function task_cancel(id: string): Promise<void> {
@@ -158,7 +114,7 @@ function task_find(id: string): Task | undefined {
     return found
 }
 
-async function task_finish_failure(id: string, error: unknown): Promise<void> {
+function task_finish_failure(id: string, error: unknown): void {
     assert(id.length > 0)
 
     const cancelled = is_cancelled_error(error)
@@ -173,7 +129,7 @@ async function task_finish_failure(id: string, error: unknown): Promise<void> {
 
     if (cancelled) return
 
-    return task_notify(id)
+    task_notify(id)
 }
 
 function task_notification_title(task: Task): string {
@@ -195,7 +151,7 @@ function task_notification_title(task: Task): string {
     }
 }
 
-async function task_notify(id: string): Promise<void> {
+function task_notify(id: string): void {
     assert(id.length > 0)
 
     const task = task_find(id)
@@ -204,7 +160,7 @@ async function task_notify(id: string): Promise<void> {
 
     assert(task.id === id)
 
-    return notification_send_if_appropriate(task)
+    notification_send_if_appropriate(task)
 }
 
 function task_prune(): void {
@@ -258,14 +214,17 @@ async function task_run<Result>(options: TaskRunOptions<Result>): Promise<Result
 
             if (task_find(id) !== undefined) await options.on_success?.(result)
 
-            await task_notify(id)
+            task_notify(id)
 
             return result
         })
-        .catch(async (error: unknown) => {
-            await task_finish_failure(id, error)
+        .catch((error: unknown) => {
+            task_finish_failure(id, error)
 
             throw error
+        })
+        .finally(() => {
+            if (options.kind === 'transcribe') void use_account().account_load()
         })
 }
 

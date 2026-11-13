@@ -1,6 +1,7 @@
-use super::audio::{SAMPLE_RATE_WHISPER, load_for_whisper};
+use super::audio::{PreparePaths, prepare_for_whisper};
 use super::remote::transcribe_audio_file;
 use super::types::{TranscribeProgress, Transcript, TranscriptSegment};
+use crate::account::{ChargeJob, charge_apply};
 use crate::contract::TranscriptReuse;
 use crate::endpoints::storage::endpoint_load;
 use crate::error::{AppError, AppResult};
@@ -55,9 +56,7 @@ pub(crate) fn audio_prepare_blocking(source_path: &Path) -> AppResult<(String, P
     let audio_path = workspace::job_audio_path(&job_id)?;
 
     if !workspace::audio_wav_is_prepared(&audio_path) {
-        let samples = load_for_whisper(source_path)?;
-
-        workspace::audio_wav_save(&samples, SAMPLE_RATE_WHISPER, &audio_path)?;
+        prepare_for_whisper(&PreparePaths { prepared: &audio_path, source: source_path })?;
     }
 
     Ok((job_id, audio_path))
@@ -93,6 +92,10 @@ pub(crate) async fn transcribe_remote_async(
 
         return Ok(TranscriptionResult { job_id, transcript: cached, cached: true });
     }
+
+    let charge = ChargeJob { audio_path: &audio_path, endpoint_id, job_id: &job_id };
+
+    charge_apply(&charge).await?;
 
     stage_emit(progress.as_ref(), "transcribing");
 
@@ -417,7 +420,10 @@ fn transcript_store(slot: &TranscriptSlot<'_>, transcript: &Transcript) -> AppRe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transcription::audio::SAMPLE_RATE_WHISPER;
     use crate::workspace::test_support::{meta_with, root_scoped};
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
 
     fn import_of(fields: &[&str; 2]) -> AppResult<TranscriptionResult> {
         let [title, transcript_text] = *fields;
@@ -487,8 +493,8 @@ mod tests {
 
     #[test]
     fn a_fresh_file_reports_a_recorded_time_near_now() {
-        let path = std::env::temp_dir()
-            .join(format!("scribe-recorded-at-test-{}.wav", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("remi-recorded-at-test-{}.wav", std::process::id()));
 
         std::fs::write(&path, b"x").unwrap();
 
@@ -665,13 +671,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual: hits the configured transcription endpoint with SCRIBE_MANUAL_AUDIO"]
+    #[ignore = "manual: hits the configured transcription endpoint with REMI_MANUAL_AUDIO"]
     fn manual_remote_transcription_of_a_local_file() {
-        let audio = std::env::var("SCRIBE_MANUAL_AUDIO").expect("SCRIBE_MANUAL_AUDIO");
-        let endpoint_id = std::env::var("SCRIBE_MANUAL_ENDPOINT").expect("SCRIBE_MANUAL_ENDPOINT");
+        let audio = std::env::var("REMI_MANUAL_AUDIO").expect("REMI_MANUAL_AUDIO");
+        let endpoint_id = std::env::var("REMI_MANUAL_ENDPOINT").expect("REMI_MANUAL_ENDPOINT");
         let runtime = tokio::runtime::Runtime::new().unwrap();
 
-        tracing_subscriber::fmt().with_env_filter("scribe_lib=debug,info").with_ansi(false).init();
+        let filter = crate::log_filter_of(Some("remi_lib=debug,info"));
+
+        tracing_subscriber::fmt().with_ansi(false).finish().with(filter).init();
 
         let started = std::time::Instant::now();
 

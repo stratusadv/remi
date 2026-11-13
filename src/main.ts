@@ -1,5 +1,7 @@
 import { createApp, shallowRef } from 'vue'
 import App from './app.vue'
+import { context_menu_listen } from './composables/use_context_menu'
+import { text_history_listen } from './composables/use_text_history'
 import { assert } from './lib/assert'
 import { ipc } from './lib/ipc'
 import { theme_apply_to_html, theme_resolve, theme_storage_read } from './lib/theme'
@@ -7,6 +9,7 @@ import './styles.css'
 
 
 const FIELDS = 'input, textarea, [contenteditable]'
+const MOUSE_BUTTON_MIDDLE = 1
 const USER_SELECT = '-webkit-user-select'
 
 
@@ -26,25 +29,23 @@ const selection_pressed = shallowRef<string | undefined>()
 createApp(App).mount('#app')
 
 window.addEventListener('click', main_selection_clear)
+window.addEventListener('mousedown', main_autoscroll_block)
 window.addEventListener('mousedown', main_press_note)
 window.addEventListener('resize', main_resize_note)
 
-if (!import.meta.env.DEV) {
-    window.addEventListener('contextmenu', main_context_menu_limit)
-}
+context_menu_listen()
+text_history_listen()
 
-function main_context_menu_limit(event: MouseEvent): void {
-    assert(event.type === 'contextmenu')
+function main_autoscroll_block(event: MouseEvent): void {
+    assert(event.type === 'mousedown')
     assert(event.cancelable)
 
+    if (event.button !== MOUSE_BUTTON_MIDDLE) return
+
     const { target } = event
+    const field = target instanceof Element ? target.closest(FIELDS) : null
 
-    if (target instanceof HTMLInputElement) return
-    if (target instanceof HTMLTextAreaElement) return
-
-    if (target instanceof HTMLElement) {
-        if (target.isContentEditable) return
-    }
+    if (field !== null) return
 
     event.preventDefault()
 }

@@ -9,6 +9,7 @@ export const RECORDING_UNTITLED = 'discovery-call.wav'
 export const STREAM_TIMEOUT_MS = 30_000
 
 const CORNER_PIXELS = 4
+const DIALOG_ENTERING = '.app-dialog-enter-active'
 const DIALOG_LEAVING = '.app-dialog-leave-active'
 const SELECTION_SETTLE_MS = 1_000
 const TITLE_SELECTION = 'Rewrite the selected text with AI'
@@ -35,7 +36,14 @@ export async function corner_drag(page: Page, from: Locator): Promise<void> {
     assert(!page.isClosed())
     assert(from.page() === page)
 
+    await expect(page.locator(DIALOG_ENTERING)).toHaveCount(0)
     await from.hover()
+
+    const box = await from.boundingBox()
+
+    assert(box !== null)
+
+    await page.mouse.move(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2))
     await page.mouse.down()
     await page.mouse.move(CORNER_PIXELS, CORNER_PIXELS, { steps: 5 })
     await page.mouse.up()
@@ -87,12 +95,45 @@ export async function editor_line_select(page: Page, text: string): Promise<void
     }).toPass()
 }
 
+export function folder_item(page: Page, name: string): Locator {
+    assert(!page.isClosed())
+    assert(name.length > 0)
+
+    const label = page.getByText(name, { exact: true })
+
+    return page.locator('aside .sidebar-folders li button').filter({ has: label })
+}
+
 export async function nav_to(page: Page, label: string): Promise<void> {
     assert(!page.isClosed())
     assert(label.length > 0)
 
     await page.locator('aside').getByRole('button', { name: label, exact: true }).click()
     await expect(page.getByRole('heading', { name: label })).toBeVisible()
+}
+
+export async function network_set(page: Page, state: 'offline' | 'online'): Promise<void> {
+    assert(!page.isClosed())
+    assert(['offline', 'online'].includes(state))
+
+    const dispatch = state === 'online' ? network_set_online : network_set_offline
+    const online = await page.evaluate(dispatch)
+
+    assert(online === (state === 'online'))
+}
+
+function network_set_offline(): boolean {
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: false })
+    window.dispatchEvent(new Event('offline'))
+
+    return navigator.onLine
+}
+
+function network_set_online(): boolean {
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
+    window.dispatchEvent(new Event('online'))
+
+    return navigator.onLine
 }
 
 export async function recording_open(page: Page, title: string): Promise<void> {

@@ -1,0 +1,100 @@
+indent-width = 4
+line-length = 100
+target-version = "py313"
+
+exclude = [
+    ".venv",
+    "__pycache__",
+    "migrations",
+    "static",
+]
+
+[lint]
+select = ["ALL"]
+ignore = [
+    "A003",
+    "ANN002",
+    "ANN003",
+    "ANN401",
+    "BLE001",
+    "C901",
+    "COM812",
+    "CPY001",
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D105",
+    "D106",
+    "D107",
+    "D202",
+    "D203",
+    "D205",
+    "D211",
+    "D212",
+    "D213",
+    "D400",
+    "D401",
+    "D406",
+    "D407",
+    "D415",
+    "D417",
+    "ERA001",
+    "FBT001",
+    "FBT002",
+    "G004",
+    "I001",
+    "ICN001",
+    "INP001",
+    "PLC0415",
+    "PLR0912",
+    "PLR0913",
+    "PLR0915",
+    "PLR0917",
+    "PLR2004",
+    "PLR5501",
+    "PLW2901",
+    "PT019",
+    "PTH123",
+    "RUF012",
+    "Q000",
+    "Q003",
+    "S101",
+    "S301",
+    "S311",
+    "S603",
+    "SIM102",
+    "SIM108",
+    "SLF001",
+    "T201",
+    "UP015",
+    "UP035",
+]
+
+[lint.flake8-type-checking]
+runtime-evaluated-base-classes = ["ninja.Schema"]
+
+[lint.per-file-ignores]
+"**/tests/**" = ["S105", "S106", "S107"]
+"conftest.py" = ["S105", "S106"]
+"harness/**" = ["S105", "S106"]
+"system/*/settings.py" = ["E402", "F403", "F405"]
+
+[format]
+quote-style = "single"
+indent-style = "space"
+skip-magic-trailing-comma = true
+
+[lint.isort]
+known-first-party = ["app", "harness", "system"]
+
+[lint.mccabe]
+max-complexity = 6
+
+[lint.pyflakes]
+extend-generics = [
+    "app.core.querysets.BaseQuerySet",
+    "django.db.models.QuerySet",
+    "django.db.models.query.QuerySet",
+]

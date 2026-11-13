@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { person_label, person_name_full, use_people } from '../composables/use_people'
+import MonogramTile from './monogram_tile.vue'
 import PeoplePicker from './people_picker.vue'
 import type { Group, Person } from '../types'
 
@@ -62,6 +63,7 @@ function save_click(): void {
                     + Add
                 </button>
                 <span v-for="person in members" :key="person.id" class="pill tag-chip">
+                    <MonogramTile class="tag-chip-monogram" :text="person_name_full(person)" />
                     {{ person_label(person) }}
                     <button
                         type="button"

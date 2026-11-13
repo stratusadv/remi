@@ -1,12 +1,13 @@
 use std::fs;
 use std::path::Path;
 
-const BUILTIN_VARIABLE_NAMES: [&str; 3] =
-    ["SCRIBE_API_HOST", "SCRIBE_API_KEY_NOTES", "SCRIBE_API_KEY_TRANSCRIPTION"];
+const BUILTIN_VARIABLE_NAMES: [&str; 4] =
+    ["REMI_ACCOUNT_HOST", "REMI_API_HOST", "REMI_API_KEY_NOTES", "REMI_API_KEY_TRANSCRIPTION"];
 
 const UPDATER_PLACEHOLDER: &str = "REPLACE_WITH_";
+const WINDOWS_MANIFEST_FILE: &str = "windows-app-manifest.xml";
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo::rustc-check-cfg=cfg(optimized)");
     println!("cargo::rerun-if-env-changed=OPT_LEVEL");
 
@@ -60,10 +61,14 @@ fn main() {
         }
     }
 
-    tauri_build::build();
+    tauri_build::try_build(tauri_attributes())?;
+
+    Ok(())
 }
 
 fn dotenv_value(lines: &[&str], name: &str) -> Option<String> {
+    assert_ne!(name, "");
+
     lines
         .iter()
         .map(|line| line.trim())
@@ -71,4 +76,30 @@ fn dotenv_value(lines: &[&str], name: &str) -> Option<String> {
         .filter_map(|line| line.split_once('='))
         .find(|(key, _value)| key.trim() == name)
         .map(|(_key, value)| value.trim().trim_matches('"').trim_matches('\'').to_owned())
+}
+
+fn tauri_attributes() -> tauri_build::Attributes {
+    let target_environment = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+
+    assert_ne!(target_os, "");
+
+    let host_windows = cfg!(windows);
+
+    match (host_windows, target_os.as_str(), target_environment.as_str()) {
+        (true, "windows", "msvc") => {
+            let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(WINDOWS_MANIFEST_FILE);
+
+            assert!(manifest_path.is_absolute());
+            assert!(manifest_path.is_file());
+
+            println!("cargo::rerun-if-changed={}", manifest_path.display());
+            println!("cargo::rustc-link-arg=/MANIFEST:EMBED");
+            println!("cargo::rustc-link-arg=/MANIFESTINPUT:{}", manifest_path.display());
+
+            let windows = tauri_build::WindowsAttributes::new_without_app_manifest();
+            tauri_build::Attributes::new().windows_attributes(windows)
+        }
+        _ => tauri_build::Attributes::new(),
+    }
 }

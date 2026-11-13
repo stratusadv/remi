@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { use_jobs } from '../composables/use_jobs'
-import { job_duration_text, job_status } from '../lib/job_status'
+import { assert } from '../lib/assert'
+import { hash_fnv } from '../lib/hash'
+import { job_askable, job_duration_text, job_status } from '../lib/job_status'
 import { log_warn } from '../lib/log'
+import AskButton from './ask_button.vue'
 import RowMenu from './row_menu.vue'
 import StarButton from './star_button.vue'
+import type { MenuItem } from '../lib/menu'
 import type { JobListing, Waveform } from '../types'
-import type { RowMenuItem } from './row_menu.vue'
 
 
 const props = defineProps<{
@@ -15,19 +18,23 @@ const props = defineProps<{
     when: string
     people: string | null
     snippet: string | null
-    menu_items: RowMenuItem[]
+    menu_items: MenuItem[]
 }>()
 
 const emit = defineEmits<{
     open: []
     favourite: []
+    ask: []
     menu: [id: string]
+    contextmenu: [event: MouseEvent]
+    pointerdown: [event: PointerEvent]
 }>()
 
-const WAVEFORM_BAR_HEIGHT_MIN = 4
-const WAVEFORM_BAR_PITCH = 3
-const WAVEFORM_BAR_WIDTH = 2
+const ART_HUE_COUNT = 4
+const ART_LAYOUT_COUNT = 3
+const WAVEFORM_BARS_SHOWN = 36
 const WAVEFORM_HEIGHT = 100
+const WAVEFORM_LEVEL_MIN = 0.08
 const GLYPH_WIDTH = 100
 const GLYPH_LINE_COUNT = 5
 const GLYPH_LINE_HEIGHT = 8
@@ -38,8 +45,6 @@ const GLYPH_LINE_LAST_FILL_SPAN = 0.4
 const GLYPH_WORD_GAP = 3
 const GLYPH_WORD_WIDTH_MIN = 6
 const GLYPH_WORD_WIDTH_MAX = 22
-const FNV_OFFSET = 2166136261
-const FNV_PRIME = 16777619
 const UINT32_SPAN = 4294967296
 
 interface GlyphWord {
@@ -48,25 +53,23 @@ interface GlyphWord {
     width: number
 }
 
+interface WaveBar {
+    index: number
+    level: number
+}
+
 const { waveform_load } = use_jobs()
 const waveform = ref<Waveform | null>(null)
 const audio_missing = ref(false)
 
-const wave_bars = computed(() =>
-    (waveform.value?.peaks ?? []).map((peak, index) => ({
-        x: index * WAVEFORM_BAR_PITCH,
-        height: Math.max(WAVEFORM_BAR_HEIGHT_MIN, peak * WAVEFORM_HEIGHT),
-    })))
-
-const wave_view_box = computed(() => {
-    const width = Math.max(1, wave_bars.value.length) * WAVEFORM_BAR_PITCH
-
-    return `0 0 ${String(width)} ${String(WAVEFORM_HEIGHT)}`
-})
-
+const art_seed = computed(() => hash_fnv(props.job.id))
+const art_hue = computed(() => art_seed.value % ART_HUE_COUNT)
+const art_layout = computed(() => Math.floor(art_seed.value / ART_HUE_COUNT) % ART_LAYOUT_COUNT)
+const wave_bars = computed(() => wave_bars_build(waveform.value?.peaks ?? []))
 const glyph_words = computed(() => glyph_words_build(hash_fnv(props.job.id)))
 const duration_text = computed(() => job_duration_text(props.job))
 const status = computed(() => job_status(props.job))
+const askable = computed(() => job_askable(props.job))
 
 
 function glyph_words_build(seed: number): GlyphWord[] {
@@ -95,17 +98,6 @@ function glyph_words_build(seed: number): GlyphWord[] {
     return words
 }
 
-function hash_fnv(text: string): number {
-    let hash = FNV_OFFSET
-
-    for (const char of text) {
-        hash ^= char.codePointAt(0) ?? 0
-        hash = Math.imul(hash, FNV_PRIME) >>> 0
-    }
-
-    return hash
-}
-
 function random_from(seed: number): () => number {
     let state = seed === 0 ? 1 : seed
 
@@ -118,6 +110,27 @@ function random_from(seed: number): () => number {
 
         return state / UINT32_SPAN
     }
+}
+
+function wave_bars_build(peaks: readonly number[]): WaveBar[] {
+    assert(peaks.every((peak) => Number.isFinite(peak)))
+
+    const count = Math.min(WAVEFORM_BARS_SHOWN, peaks.length)
+    const stretch = peaks.length / Math.max(1, count)
+    const bars: WaveBar[] = []
+
+    for (let index = 0; index < count; index += 1) {
+        const start = Math.floor(index * stretch)
+        const end = Math.max(start + 1, Math.floor((index + 1) * stretch))
+        const loudest = Math.max(...peaks.slice(start, end))
+        const level = Math.min(1, Math.max(WAVEFORM_LEVEL_MIN, loudest))
+
+        bars.push({ index, level: Number(level.toFixed(3)) })
+    }
+
+    assert(bars.length === count)
+
+    return bars
 }
 
 onMounted(async () => {
@@ -133,11 +146,19 @@ onMounted(async () => {
 <template>
     <article
         class="recording-tile card"
+        :data-hue="art_hue"
+        :data-layout="art_layout"
         tabindex="0"
         @click="emit('open')"
+        @contextmenu="emit('contextmenu', $event)"
         @keydown.enter="emit('open')"
+        @pointerdown="emit('pointerdown', $event)"
     >
         <div class="recording-tile-band">
+            <div class="recording-tile-art" aria-hidden="true">
+                <i />
+                <i />
+            </div>
             <svg
                 v-if="audio_missing"
                 class="recording-tile-wave recording-tile-glyph"
@@ -155,29 +176,22 @@ onMounted(async () => {
                     rx="2"
                 />
             </svg>
-            <svg
-                v-else
-                class="recording-tile-wave"
-                :viewBox="wave_view_box"
-                preserveAspectRatio="none"
-                aria-hidden="true"
-            >
-                <rect
+            <div v-else class="recording-tile-bars" aria-hidden="true">
+                <i
                     v-for="bar in wave_bars"
-                    :key="bar.x"
-                    :x="bar.x"
-                    :y="(WAVEFORM_HEIGHT - bar.height) / 2"
-                    :width="WAVEFORM_BAR_WIDTH"
-                    :height="bar.height"
-                    rx="1"
+                    :key="bar.index"
+                    :style="{ '--level': bar.level }"
                 />
-            </svg>
+            </div>
             <div class="recording-tile-tools" @click.stop @keydown.enter.stop>
-                <StarButton
-                    :favourite="props.job.favourite"
-                    :title="props.title"
-                    @toggle="emit('favourite')"
-                />
+                <span class="recording-tile-tools-start">
+                    <StarButton
+                        :favourite="props.job.favourite"
+                        :title="props.title"
+                        @toggle="emit('favourite')"
+                    />
+                    <AskButton v-if="askable" :title="props.title" @ask="emit('ask')" />
+                </span>
                 <span class="recording-tile-menu">
                     <RowMenu
                         :label="props.title"
@@ -195,7 +209,7 @@ onMounted(async () => {
                 {{ props.snippet ?? props.people ?? 'No participants' }}
             </div>
             <div class="recording-tile-foot meta">
-                <span>{{ props.when }}</span>
+                <span class="recording-tile-when">{{ props.when }}</span>
                 <span class="pill recording-tile-status" :data-state="status.state">
                     {{ status.text }}
                 </span>

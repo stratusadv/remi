@@ -11,6 +11,7 @@ use super::storage::{
 use crate::blocking;
 use crate::contract::RecordID;
 use crate::error::AppResult;
+use crate::search;
 
 #[tauri::command(rename_all = "snake_case")]
 pub(crate) async fn group_remove(id: RecordID) -> AppResult<()> {
@@ -34,10 +35,10 @@ pub(crate) async fn people_list() -> AppResult<Vec<Person>> {
 
 #[tauri::command(rename_all = "snake_case")]
 pub(crate) async fn person_remove(id: RecordID) -> AppResult<()> {
-    blocking::run(move || person_delete(&id)).await
+    blocking::run(move || person_delete(&id)).await.inspect(|()| search::reconcile_spawn())
 }
 
 #[tauri::command(rename_all = "snake_case")]
 pub(crate) async fn person_save(person: Person) -> AppResult<()> {
-    blocking::run(move || person_upsert(&person)).await
+    blocking::run(move || person_upsert(&person)).await.inspect(|()| search::reconcile_spawn())
 }

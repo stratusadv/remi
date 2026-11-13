@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { use_folders } from '../composables/use_folders'
 import { use_jobs } from '../composables/use_jobs'
 import { use_notes_templates } from '../composables/use_notes_templates'
 import { person_label, person_name_full, use_people } from '../composables/use_people'
 import { use_pipeline } from '../composables/use_pipeline'
+import { assert } from '../lib/assert'
+import { error_dialog_show } from '../lib/errors'
+import { folder_compare, folder_key } from '../lib/folders'
 import { ipc } from '../lib/ipc'
+import MonogramTile from './monogram_tile.vue'
 import NoticeBanner from './notice_banner.vue'
 import PeoplePicker from './people_picker.vue'
 import StepBar from './step_bar.vue'
-import type { JobMetaPatch, Person } from '../types'
+import type { FolderName, JobMetaPatch, Person } from '../types'
 
 
 type PickerTarget = 'present' | 'mentioned'
@@ -30,6 +35,7 @@ const {
     view_set,
 } = use_pipeline()
 
+const { folder_create, folders } = use_folders()
 const { refresh: jobs_refresh } = use_jobs()
 const { person_by_id } = use_people()
 const { templates } = use_notes_templates()
@@ -66,8 +72,12 @@ async function autosave_flush(): Promise<void> {
 
         if (job_id_current.value !== job_id || autosave_pending()) return
 
+        const folder_before = folder_key(meta_current.value?.project ?? '')
+
         meta_current.value = updated
         status.value = 'saved'
+
+        if (folder_key(updated.project ?? '') !== folder_before) await jobs_refresh()
     } catch (error) {
         status.value = 'idle'
         error_message.value = String(error)
@@ -106,6 +116,16 @@ const can_continue = computed(
     () => status.value !== 'saving' && template_id_selected.value !== null,
 )
 
+const folder_options = computed<FolderName[]>(() => {
+    const chosen = project_input.value.trim()
+    const key = folder_key(chosen)
+
+    if (key.length === 0) return folders.value
+    if (folders.value.some((folder) => folder_key(folder) === key)) return folders.value
+
+    return [...folders.value, chosen].sort(folder_compare)
+})
+
 onMounted(() => {
     template_id_ensure()
 })
@@ -137,7 +157,7 @@ watch(
         person_ids_current.value = [...meta.person_ids]
         person_ids_mentioned.value = [...meta.person_ids_mentioned]
         attendees_legacy.value = meta.person_ids.length === 0 ? [...meta.attendees] : []
-        project_input.value = meta.project ?? ''
+        project_input.value = folder_canonical(meta.project ?? '')
         tags_current.value = [...meta.tags]
         patch_synced = JSON.stringify(patch_build())
     },
@@ -173,6 +193,27 @@ function autosave_schedule(): void {
 
 function back(): void {
     view_set('transcribe')
+}
+
+function folder_canonical(project: string): string {
+    const key = folder_key(project)
+    const found = folders.value.find((folder) => folder_key(folder) === key)
+
+    assert(found === undefined || key.length > 0)
+
+    return found ?? project.trim()
+}
+
+async function folder_new(): Promise<void> {
+    try {
+        const created = await folder_create()
+
+        if (created === null) return
+
+        project_input.value = created
+    } catch (error) {
+        await error_dialog_show(error)
+    }
 }
 
 async function next(): Promise<void> {
@@ -232,6 +273,38 @@ function person_remove(id: string): void {
                 </div>
 
                 <div class="step-field">
+                    <label class="label" for="details-folder">Folder</label>
+                    <div class="flex items-center gap-2">
+                        <select id="details-folder" v-model="project_input" class="input">
+                            <option value="">No folder</option>
+                            <option v-for="folder in folder_options" :key="folder" :value="folder">
+                                {{ folder }}
+                            </option>
+                        </select>
+                        <button
+                            type="button"
+                            class="btn-default shrink-0 !px-2.5"
+                            aria-label="New folder"
+                            title="New folder"
+                            @click="folder_new"
+                        >
+                            <svg
+                                class="w-4 h-4"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.75"
+                                stroke-linecap="round"
+                                aria-hidden="true"
+                            >
+                                <path d="M12 5.25v13.5" />
+                                <path d="M5.25 12h13.5" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="step-field">
                     <label class="label" for="details-template">Template</label>
                     <select id="details-template" v-model="template_id_selected" class="input">
                         <option :value="null" disabled>Choose a template</option>
@@ -263,6 +336,7 @@ function person_remove(id: string): void {
                         + Add
                     </button>
                     <span v-for="person in people_present" :key="person.id" class="pill tag-chip">
+                        <MonogramTile class="tag-chip-monogram" :text="person_name_full(person)" />
                         {{ person_label(person) }}
                         <button
                             type="button"
@@ -300,6 +374,7 @@ function person_remove(id: string): void {
                         + Add
                     </button>
                     <span v-for="person in people_mentioned" :key="person.id" class="pill tag-chip">
+                        <MonogramTile class="tag-chip-monogram" :text="person_name_full(person)" />
                         {{ person_label(person) }}
                         <button
                             type="button"

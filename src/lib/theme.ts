@@ -4,9 +4,9 @@ import type { PaletteChoice, ThemeChoice } from '../types'
 
 export type ThemeEffective = 'light' | 'dark'
 
-export const PALETTE_DEFAULT: PaletteChoice = 'graphite'
+export const PALETTE_DEFAULT: PaletteChoice = 'cubist'
 const SYSTEM_MEDIA_QUERY = '(prefers-color-scheme: light)'
-export const THEME_STORAGE_KEY = 'scribe.theme'
+export const THEME_STORAGE_KEY = 'remi.theme'
 
 
 export function palette_apply_to_html(palette: PaletteChoice): void {

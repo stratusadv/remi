@@ -19,14 +19,15 @@ use crate::transcription::types::{
     Transcript,
     TranscriptSegment,
 };
-use crate::workspace::{audio_wav_load, samples_to_pcm16};
+use crate::workspace::{PCM16_SAMPLE_BYTES, samples_to_pcm16, wav_reader_open};
 use futures_util::{Stream, StreamExt};
 use reqwest::multipart;
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::num::NonZeroU32;
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
@@ -55,6 +56,7 @@ const PAUSE_FRAMES_MIN: u32 = PAUSE_MS_MIN.div_euclid(SPEECH_FRAME_MS);
 const PAUSE_MS_MIN: u32 = 300;
 const REQUEST_TIMEOUT_SECONDS: u64 = 300;
 const SENTENCE_ENDS: &[char] = &['.', '?', '!'];
+const SCAN_BLOCK_BYTES: u32 = 64 * 1024;
 const SENTENCES_PER_CHUNK_MAX: usize = 512;
 const SILENCE_PEAK_MAX: f32 = 0.002;
 const SPEECH_FLOOR_PERCENT: u8 = 10;
@@ -70,6 +72,7 @@ const _: () = assert!(SPEECH_FLOOR_PERCENT < 100);
 const _: () = assert!(SPEECH_FLOOR_RATIO >= 1.0);
 const _: () = assert!(PAUSE_FRAMES_MIN > 0);
 const _: () = assert!(CHUNK_SECONDS_TARGET >= CHUNK_SECONDS_MIN);
+const _: () = assert!(SCAN_BLOCK_BYTES.is_multiple_of(PCM16_SAMPLE_BYTES));
 
 static HTTP_CLIENT: ClientCell = LazyLock::new(|| client_build(&HTTP_TIMEOUTS));
 
@@ -103,6 +106,7 @@ struct SegmentSpan {
     start_seconds: f64,
 }
 
+#[cfg(test)]
 struct ChunkPayload {
     index: u32,
     bytes: Vec<u8>,
@@ -110,8 +114,28 @@ struct ChunkPayload {
     range_text: String,
 }
 
+struct ChunkPlan {
+    index: u32,
+    name: String,
+    range_text: String,
+    samples: Range<u32>,
+}
+
+#[derive(Clone)]
+struct ChunkSource {
+    path: PathBuf,
+    sample_rate: u32,
+}
+
+#[derive(Clone, Copy)]
+struct SampleExtent {
+    count: u32,
+    rate: u32,
+}
+
 struct SpeechFrames {
     frame_samples: u32,
+    peaks: Vec<f32>,
     sample_count: u32,
     sample_rate: u32,
     voiced: Vec<bool>,
@@ -194,7 +218,7 @@ pub(super) async fn transcribe_audio_file(
     };
 
     tracing::info!(
-        target: "scribe_lib::transcription",
+        target: "remi_lib::transcription",
         "remote transcribe: url={} model={} verbose={} chunk_seconds={:?} hint_chars={}",
         upload.url,
         upload.model,
@@ -337,7 +361,7 @@ impl<'timelines> ChunkCollection<'timelines> {
         self.completion_count += 1;
 
         tracing::info!(
-            target: "scribe_lib::transcription",
+            target: "remi_lib::transcription",
             "chunk completed {}/{} (index={})",
             self.completion_count,
             self.chunk_count,
@@ -395,13 +419,43 @@ impl<'timelines> ChunkCollection<'timelines> {
     }
 }
 
-fn chunk_payloads_build(
-    samples: &[f32],
+fn chunk_payload_build(source: &ChunkSource, samples: &Range<u32>) -> AppResult<Vec<u8>> {
+    assert!(samples.start < samples.end);
+    assert!(source.sample_rate <= SAMPLE_RATE_MAX);
+
+    let chunk_samples = chunk_samples_read(&source.path, samples)?;
+    let bytes = chunk_payload_encode(&chunk_samples, source.sample_rate);
+
+    assert!(bytes.starts_with(b"fLaC"));
+
+    Ok(bytes)
+}
+
+fn chunk_payload_encode(chunk_samples: &[f32], sample_rate: u32) -> Vec<u8> {
+    assert_ne!(chunk_samples.len(), 0);
+    assert!(sample_rate <= SAMPLE_RATE_MAX);
+
+    let chunk_samples_min =
+        usize::try_from(sample_rate.saturating_mul(CHUNK_SECONDS_MIN)).unwrap_or(0);
+
+    if chunk_samples.len() >= chunk_samples_min {
+        return samples_to_flac_bytes(chunk_samples, sample_rate);
+    }
+
+    let mut padded = Vec::with_capacity(chunk_samples_min);
+
+    padded.extend_from_slice(chunk_samples);
+    padded.resize(chunk_samples_min, 0.0);
+
+    samples_to_flac_bytes(&padded, sample_rate)
+}
+
+fn chunk_plans_build(
     speech: &SpeechFrames,
     bounds: &[Range<u32>],
-) -> AppResult<(Vec<ChunkPayload>, Vec<u32>)> {
+) -> AppResult<(Vec<ChunkPlan>, Vec<u32>)> {
     assert!(bounds.len() <= usize_of!(CHUNK_COUNT_MAX));
-    assert_eq!(u32::try_from(samples.len()), Ok(speech.sample_count));
+    assert_eq!(speech.peaks.len(), speech.voiced.len());
 
     let sample_rate = speech.sample_rate;
 
@@ -412,45 +466,34 @@ fn chunk_payloads_build(
         )));
     }
 
-    let chunk_samples_min =
-        usize::try_from(sample_rate.saturating_mul(CHUNK_SECONDS_MIN)).unwrap_or(0);
-
-    let mut chunk_payloads: Vec<ChunkPayload> = Vec::with_capacity(bounds.len());
+    let mut chunk_plans: Vec<ChunkPlan> = Vec::with_capacity(bounds.len());
     let mut chunk_indices_silent: Vec<u32> = Vec::new();
 
     for (chunk_index, bound) in (0_u32..).zip(bounds) {
-        let sample_range = speech.samples_of(bound);
-
-        let chunk_samples = samples
-            .get(range_wide(&sample_range))
+        let frame_peaks = speech
+            .peaks
+            .get(range_wide(bound))
             .ok_or_else(|| AppError::Audio("a part reaches past the end of the audio".into()))?;
 
-        if samples_peak(chunk_samples) < SILENCE_PEAK_MAX {
+        if samples_peak(frame_peaks) < SILENCE_PEAK_MAX {
             chunk_indices_silent.push(chunk_index);
 
             continue;
         }
 
-        let bytes = if chunk_samples.len() < chunk_samples_min {
-            let mut padded = Vec::with_capacity(chunk_samples_min);
+        let samples = speech.samples_of(bound);
 
-            padded.extend_from_slice(chunk_samples);
-            padded.resize(chunk_samples_min, 0.0);
-
-            samples_to_flac_bytes(&padded, sample_rate)
-        } else {
-            samples_to_flac_bytes(chunk_samples, sample_rate)
-        };
-
-        let name = format!("chunk_{chunk_index:04}{FILE_EXTENSION_FLAC}");
-        let range_text = chunk_range_text(&sample_range, sample_rate);
-
-        chunk_payloads.push(ChunkPayload { index: chunk_index, bytes, name, range_text });
+        chunk_plans.push(ChunkPlan {
+            index: chunk_index,
+            name: format!("chunk_{chunk_index:04}{FILE_EXTENSION_FLAC}"),
+            range_text: chunk_range_text(&samples, sample_rate),
+            samples,
+        });
     }
 
-    assert_eq!(chunk_payloads.len() + chunk_indices_silent.len(), bounds.len());
+    assert_eq!(chunk_plans.len() + chunk_indices_silent.len(), bounds.len());
 
-    Ok((chunk_payloads, chunk_indices_silent))
+    Ok((chunk_plans, chunk_indices_silent))
 }
 
 fn chunk_progress_emit(
@@ -560,7 +603,7 @@ fn progress_emit_segment(progress: &TranscribeProgress, text: &str, span: &Segme
 
     if let Err(error) = progress.app.emit(EVENT_TRANSCRIPTION_SEGMENT, chunk) {
         tracing::warn!(
-            target: "scribe_lib::transcription",
+            target: "remi_lib::transcription",
             "emit transcription_segment failed: {}",
             error,
         );
@@ -582,6 +625,83 @@ fn samples_peak(samples: &[f32]) -> f32 {
     assert!(peak >= 0.0);
 
     peak
+}
+
+fn chunk_samples_read(path: &Path, samples: &Range<u32>) -> AppResult<Vec<f32>> {
+    assert!(samples.start <= samples.end);
+
+    let mut reader = wav_reader_open(path)?;
+    let count = samples.end - samples.start;
+
+    pcm16_mono_check(&reader.spec())?;
+
+    if samples.end > reader.len() {
+        return Err(AppError::Audio("a part reaches past the end of the audio".into()));
+    }
+
+    reader.seek(samples.start).map_err(|error| AppError::Audio(format!("wav seek: {error}")))?;
+
+    let mut chunk_samples: Vec<f32> = Vec::with_capacity(usize_of!(count));
+
+    pcm16_blocks_read(&mut reader.into_inner(), count, |values| {
+        chunk_samples.extend(values.map(|value| f32::from(value) / f32::from(i16::MAX)));
+    })?;
+
+    assert_eq!(u32::try_from(chunk_samples.len()), Ok(count));
+
+    Ok(chunk_samples)
+}
+
+fn pcm16_blocks_read<Data, Visit>(
+    data: &mut Data,
+    sample_count: u32,
+    mut visit: Visit,
+) -> AppResult<()>
+where
+    Data: Read,
+    Visit: FnMut(&mut dyn Iterator<Item = i16>),
+{
+    assert!(sample_count <= u32::MAX.div_euclid(PCM16_SAMPLE_BYTES));
+
+    let data_bytes_total = u64::from(sample_count) * u64::from(PCM16_SAMPLE_BYTES);
+    let block_bytes = u64::from(SCAN_BLOCK_BYTES).min(data_bytes_total);
+    let mut block = vec![0_u8; usize_of!(block_bytes)];
+    let mut data_bytes_read: u64 = 0;
+
+    for _block_index in 0..data_bytes_total.div_ceil(u64::from(SCAN_BLOCK_BYTES)) {
+        let wanted = (data_bytes_total - data_bytes_read).min(block_bytes);
+
+        let filled = block
+            .get_mut(..usize_of!(wanted))
+            .ok_or_else(|| AppError::Audio("the read block is smaller than its read".into()))?;
+
+        data.read_exact(filled).map_err(|error| AppError::Audio(format!("wav read: {error}")))?;
+
+        let (pairs, _rest) = filled.as_chunks::<2>();
+
+        visit(&mut pairs.iter().map(|pair| i16::from_le_bytes(*pair)));
+        data_bytes_read += wanted;
+    }
+
+    assert_eq!(data_bytes_read, u64::from(sample_count) * u64::from(PCM16_SAMPLE_BYTES));
+    assert!(data_bytes_read.is_multiple_of(u64::from(PCM16_SAMPLE_BYTES)));
+
+    Ok(())
+}
+
+fn pcm16_mono_check(specification: &hound::WavSpec) -> AppResult<()> {
+    let pcm16 = specification.bits_per_sample == 16
+        && specification.sample_format == hound::SampleFormat::Int;
+
+    if !pcm16 {
+        return Err(AppError::Audio("the prepared audio is not 16-bit PCM".into()));
+    }
+
+    if specification.channels != 1 {
+        return Err(AppError::Audio("the prepared audio is not a single channel".into()));
+    }
+
+    Ok(())
 }
 
 fn samples_to_flac_bytes(samples: &[f32], sample_rate: u32) -> Vec<u8> {
@@ -649,7 +769,21 @@ fn segments_from_text(text: &str, timeline: &ChunkTimeline) -> Vec<TranscriptSeg
     segments
 }
 
+#[cfg(test)]
 fn speech_frames_detect(samples: &[f32], sample_rate: u32) -> SpeechFrames {
+    assert!(sample_rate > 0);
+
+    let frame_length = usize_of!(speech_frame_samples(sample_rate));
+    let peaks: Vec<f32> = samples.chunks(frame_length).map(samples_peak).collect();
+    let extent =
+        SampleExtent { count: u32::try_from(samples.len()).unwrap_or(u32::MAX), rate: sample_rate };
+
+    assert_eq!(peaks.len(), samples.len().div_ceil(frame_length));
+
+    speech_frames_of(peaks, extent)
+}
+
+fn speech_frame_samples(sample_rate: u32) -> u32 {
     assert!(sample_rate > 0);
 
     let frame_samples_wide = (u64::from(sample_rate) * u64::from(SPEECH_FRAME_MS))
@@ -657,19 +791,65 @@ fn speech_frames_detect(samples: &[f32], sample_rate: u32) -> SpeechFrames {
         .max(1);
 
     let frame_samples = u32::try_from(frame_samples_wide).unwrap_or(u32::MAX);
-    let frame_length = usize::try_from(frame_samples).unwrap_or(usize::MAX);
-    let peaks: Vec<f32> = samples.chunks(frame_length).map(samples_peak).collect();
+
+    assert!(frame_samples > 0);
+
+    frame_samples
+}
+
+fn speech_frames_of(peaks: Vec<f32>, extent: SampleExtent) -> SpeechFrames {
+    assert!(extent.rate > 0);
+    assert!(peaks.iter().all(|peak| peak.is_finite()));
+
+    let frame_samples = speech_frame_samples(extent.rate);
     let threshold = speech_threshold(&peaks);
     let voiced: Vec<bool> = peaks.iter().map(|peak| *peak >= threshold).collect();
 
-    assert_eq!(voiced.len(), samples.len().div_ceil(frame_length));
+    assert_eq!(u64::try_from(voiced.len()), Ok(u64::from(extent.count.div_ceil(frame_samples))));
+    assert!(threshold >= SILENCE_PEAK_MAX);
 
     SpeechFrames {
         frame_samples,
-        sample_count: u32::try_from(samples.len()).unwrap_or(u32::MAX),
-        sample_rate,
+        peaks,
+        sample_count: extent.count,
+        sample_rate: extent.rate,
         voiced,
     }
+}
+
+fn speech_frames_scan(path: &Path) -> AppResult<SpeechFrames> {
+    let reader = wav_reader_open(path)?;
+    let sample_rate = reader.spec().sample_rate;
+    let sample_count = reader.len();
+
+    pcm16_mono_check(&reader.spec())?;
+
+    let frame_samples = speech_frame_samples(sample_rate);
+    let frame_count = sample_count.div_ceil(frame_samples);
+    let mut peaks: Vec<f32> = Vec::with_capacity(usize_of!(frame_count));
+    let mut frame_peak: u16 = 0;
+    let mut frame_filled: u32 = 0;
+
+    pcm16_blocks_read(&mut reader.into_inner(), sample_count, |values| {
+        for value in values {
+            frame_peak = frame_peak.max(value.unsigned_abs());
+            frame_filled += 1;
+
+            if frame_filled == frame_samples {
+                peaks.push(f32::from(frame_peak) / f32::from(i16::MAX));
+                frame_peak = 0;
+                frame_filled = 0;
+            }
+        }
+    })?;
+
+    if frame_filled > 0 {
+        peaks.push(f32::from(frame_peak) / f32::from(i16::MAX));
+    }
+
+    assert_eq!(u32::try_from(peaks.len()), Ok(frame_count));
+
+    Ok(speech_frames_of(peaks, SampleExtent { count: sample_count, rate: sample_rate }))
 }
 
 fn speech_threshold(peaks: &[f32]) -> f32 {
@@ -723,11 +903,9 @@ async fn transcribe_chunked(
 ) -> AppResult<Transcript> {
     let chunk_seconds = chunk_limit.get();
     let audio_path_owned = audio_path.to_path_buf();
+    let speech = crate::blocking::run(move || speech_frames_scan(&audio_path_owned)).await?;
 
-    let (samples, sample_rate) =
-        crate::blocking::run(move || audio_wav_load(&audio_path_owned)).await?;
-
-    if samples.is_empty() {
+    if speech.sample_count == 0 {
         return Ok(Transcript { text: String::new(), segments: Vec::new() });
     }
 
@@ -735,18 +913,15 @@ async fn transcribe_chunked(
         if upload.verbose_wanted { chunk_seconds } else { CHUNK_SECONDS_TARGET.min(chunk_seconds) };
 
     let cut = ChunkCut { seconds_max: chunk_seconds, seconds_target };
-    let speech = speech_frames_detect(&samples, sample_rate);
     let chunk_bounds = chunk_bounds_build(&speech, cut)?;
-
-    let (chunk_payloads, chunk_indices_silent) =
-        chunk_payloads_build(&samples, &speech, &chunk_bounds)?;
-
+    let (chunk_plans, chunk_indices_silent) = chunk_plans_build(&speech, &chunk_bounds)?;
     let timelines = chunk_timelines_build(&speech, &chunk_bounds);
+    let source = ChunkSource { path: audio_path.to_path_buf(), sample_rate: speech.sample_rate };
 
     tracing::info!(
-        target: "scribe_lib::transcription",
+        target: "remi_lib::transcription",
         "remote transcribe: {} chunks of at most {}s, {}-way parallel, {} silent chunks skipped",
-        chunk_payloads.len() + chunk_indices_silent.len(),
+        chunk_plans.len() + chunk_indices_silent.len(),
         chunk_seconds,
         CHUNK_CONCURRENCY_MAX,
         chunk_indices_silent.len(),
@@ -755,7 +930,8 @@ async fn transcribe_chunked(
     let cancel_flag = progress.map(TranscribeProgress::cancel_register);
 
     let completed = transcribe_chunked_collect(
-        chunk_payloads,
+        &source,
+        chunk_plans,
         &chunk_indices_silent,
         upload,
         &timelines,
@@ -812,17 +988,18 @@ fn transcribe_chunked_assemble(
 }
 
 async fn transcribe_chunked_collect(
-    chunk_payloads: Vec<ChunkPayload>,
+    source: &ChunkSource,
+    chunk_plans: Vec<ChunkPlan>,
     chunk_indices_silent: &[u32],
     upload: &ChunkUpload<'_>,
     timelines: &[ChunkTimeline],
     progress: Option<&TranscribeProgress>,
     cancel_flag: Option<&AtomicBool>,
 ) -> AppResult<Vec<(u32, APIResponse)>> {
-    let chunk_count = chunk_payloads.len() + chunk_indices_silent.len();
+    let chunk_count = chunk_plans.len() + chunk_indices_silent.len();
     let chunk_count_bounded = u32::try_from(chunk_count).unwrap_or(CHUNK_COUNT_MAX);
     let mut collection = ChunkCollection::new(chunk_count_bounded, chunk_indices_silent, timelines);
-    let mut stream = transcribe_chunked_stream(chunk_payloads, upload);
+    let mut stream = transcribe_chunked_stream(source, chunk_plans, upload);
     let cancel_poll = Duration::from_millis(CANCEL_POLL_INTERVAL_MS);
     let poll_count_max = transcribe_chunked_poll_count_max(u64::from(chunk_count_bounded));
 
@@ -929,14 +1106,25 @@ fn transcribe_chunked_poll_count_max(chunk_count: u64) -> u64 {
 }
 
 fn transcribe_chunked_stream<'request>(
-    chunk_payloads: Vec<ChunkPayload>,
+    source: &'request ChunkSource,
+    chunk_plans: Vec<ChunkPlan>,
     upload: &'request ChunkUpload<'request>,
-) -> impl Stream<Item = (ChunkPayload, AppResult<APIResponse>, u32)> + 'request {
-    assert!(chunk_payloads.len() <= usize_of!(CHUNK_COUNT_MAX));
+) -> impl Stream<Item = (ChunkPlan, AppResult<APIResponse>, u32)> + 'request {
+    assert!(chunk_plans.len() <= usize_of!(CHUNK_COUNT_MAX));
+    assert!(source.sample_rate > 0);
 
-    futures_util::stream::iter(chunk_payloads.into_iter().map(move |chunk| async move {
+    futures_util::stream::iter(chunk_plans.into_iter().map(move |chunk| async move {
         let attempts = AtomicU32::new(0);
-        let result = upload_chunk(upload, &chunk.bytes, &chunk.name, &attempts).await;
+        let source_owned = source.clone();
+        let samples = chunk.samples.clone();
+
+        let payload =
+            crate::blocking::run(move || chunk_payload_build(&source_owned, &samples)).await;
+
+        let result = match payload {
+            Ok(bytes) => upload_chunk(upload, &bytes, &chunk.name, &attempts).await,
+            Err(error) => Err(error),
+        };
 
         (chunk, result, attempts.into_inner())
     }))
@@ -1001,6 +1189,8 @@ fn upload_mime(file_name: &str) -> &'static str {
 mod tests {
     use super::*;
     use crate::transcription::audio::load_for_whisper;
+    use crate::workspace::test_support::root_scoped;
+    use crate::workspace::{audio_wav_save, root};
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
@@ -1034,8 +1224,19 @@ mod tests {
 
         let speech = speech_frames_detect(samples, sample_rate);
         let bounds = chunk_bounds_build(&speech, cut_fixed(chunk_limit.get()))?;
+        let (plans, silent) = chunk_plans_build(&speech, &bounds)?;
 
-        chunk_payloads_build(samples, &speech, &bounds)
+        let payloads = plans
+            .into_iter()
+            .map(|plan| ChunkPayload {
+                index: plan.index,
+                bytes: chunk_payload_encode(&samples[range_wide(&plan.samples)], sample_rate),
+                name: plan.name,
+                range_text: plan.range_text,
+            })
+            .collect();
+
+        Ok((payloads, silent))
     }
 
     fn sample_bounds_build(samples: &[f32], sample_rate: u32, cut: ChunkCut) -> Vec<Range<u32>> {
@@ -1128,16 +1329,25 @@ mod tests {
     }
 
     async fn upload_failure_message(url: &str) -> String {
+        let _root = root_scoped();
         let sample_rate = 16000;
         let samples = vec![0.5_f32; 16_000 * 2];
-        let (payloads, silent) = payloads_build(&samples, sample_rate, seconds_of(2)).unwrap();
+        let path = root().unwrap().join("audio.wav");
+
+        audio_wav_save(&samples, sample_rate, &path).unwrap();
+
+        let speech = speech_frames_scan(&path).unwrap();
+        let bounds = chunk_bounds_build(&speech, cut_fixed(2)).unwrap();
+        let (plans, silent) = chunk_plans_build(&speech, &bounds).unwrap();
         let timelines = timelines_build(&samples, sample_rate, seconds_of(2));
+        let source = ChunkSource { path, sample_rate };
 
         let upload =
             ChunkUpload { url, api_key: "", model: "m", spelling_hint: "", verbose_wanted: false };
 
         let outcome =
-            transcribe_chunked_collect(payloads, &silent, &upload, &timelines, None, None).await;
+            transcribe_chunked_collect(&source, plans, &silent, &upload, &timelines, None, None)
+                .await;
 
         outcome.unwrap_err().to_string()
     }
@@ -1231,7 +1441,7 @@ mod tests {
     }
 
     fn payload_decoded(bytes: &[u8], label: &str) -> Vec<f32> {
-        let file = format!("scribe-chunk-{label}-{}.flac", std::process::id());
+        let file = format!("remi-chunk-{label}-{}.flac", std::process::id());
         let path = std::env::temp_dir().join(file);
 
         std::fs::write(&path, bytes).unwrap();
@@ -1241,6 +1451,55 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
 
         decoded
+    }
+
+    #[test]
+    fn the_streamed_scan_and_each_chunk_read_match_the_audio_held_in_memory() {
+        let _root = root_scoped();
+        let sample_rate = 16000;
+        let path = root().unwrap().join("audio.wav");
+
+        let samples: Vec<f32> = (0_u32..16_000 * 7 + 123)
+            .map(|index| {
+                if index.div_euclid(4000).rem_euclid(3) == 0 {
+                    return 0.0;
+                }
+
+                f32::from(u16::try_from(index.rem_euclid(97)).unwrap()) / 97.0 - 0.5
+            })
+            .collect();
+
+        audio_wav_save(&samples, sample_rate, &path).unwrap();
+
+        let (stored, _rate) = crate::workspace::audio_wav_load(&path).unwrap();
+        let scanned = speech_frames_scan(&path).unwrap();
+        let detected = speech_frames_detect(&stored, sample_rate);
+        let bounds = chunk_bounds_build(&scanned, cut_fixed(2)).unwrap();
+        let (plans, silent) = chunk_plans_build(&scanned, &bounds).unwrap();
+        assert_eq!(scanned.voiced, detected.voiced);
+        assert_eq!(scanned.sample_count, detected.sample_count);
+        assert_eq!(scanned.peaks.len(), detected.peaks.len());
+        assert!(
+            scanned
+                .peaks
+                .iter()
+                .zip(&detected.peaks)
+                .all(|(left, right)| left.to_bits() == right.to_bits())
+        );
+        assert_eq!(plans.len() + silent.len(), bounds.len());
+        assert_ne!(plans.len(), 0);
+
+        for plan in &plans {
+            let read = chunk_samples_read(&path, &plan.samples).unwrap();
+            let held = &stored[range_wide(&plan.samples)];
+
+            assert_eq!(read.len(), held.len());
+            assert!(read.iter().zip(held).all(|(left, right)| left.to_bits() == right.to_bits()));
+        }
+
+        let past_end = 0..u32::try_from(stored.len()).unwrap() + 1;
+
+        assert_ne!(chunk_samples_read(&path, &past_end).unwrap_err().to_string(), "");
     }
 
     #[test]

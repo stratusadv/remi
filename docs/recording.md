@@ -40,6 +40,6 @@ Press *Transcribe* to try again. The parts that came back are not kept, so the u
 
 ## Where Recordings Live
 
-Each recording keeps its transcript, its notes, and a copy of its audio in `~/.local/share/com.stratusadv.scribe` on Linux and `%APPDATA%\com.stratusadv.scribe` on Windows. A microphone capture also stays in `scribe` inside your Music folder, unless you pick another in Settings.
+Each recording keeps its transcript, its notes, and a copy of its audio in `~/.local/share/com.stratusadv.remi` on Linux, `%APPDATA%\com.stratusadv.remi` on Windows, and `~/Library/Application Support/com.stratusadv.remi` on macOS. A microphone capture also stays in `Remi Remembers` inside your Music folder, unless you pick another in Settings.
 
 The *Delete* item on Home removes a recording's folder and cannot be undone. The original file stays where it is.

@@ -23,6 +23,7 @@ export default defineConfig(
             'dist/**',
             'node_modules/**',
             'public/**',
+            'server/**',
             'site/**',
             'src-tauri/**',
         ],

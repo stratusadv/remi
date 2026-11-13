@@ -4,6 +4,7 @@ on:
     push:
         tags:
             - "v[0-9]+.[0-9]+.[0-9]+"
+    workflow_dispatch:
 
 permissions:
     contents: read
@@ -13,7 +14,16 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                os: [ubuntu-26.04, windows-latest]
+                include:
+                    - os: macos-latest
+                      args: --target universal-apple-darwin
+                      targets: aarch64-apple-darwin,x86_64-apple-darwin
+                    - os: ubuntu-26.04
+                      args: ""
+                      targets: ""
+                    - os: windows-latest
+                      args: ""
+                      targets: ""
         runs-on: ${{ matrix.os }}
         permissions:
             contents: write
@@ -23,6 +33,8 @@ jobs:
             - uses: oven-sh/setup-bun@v2
 
             - uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: ${{ matrix.targets }}
 
             - name: Install packages
               if: runner.os == 'Linux'
@@ -44,11 +56,17 @@ jobs:
             - uses: tauri-apps/tauri-action@v1
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  REMI_ACCOUNT_HOST: ${{ vars.REMI_ACCOUNT_HOST }}
+                  REMI_API_HOST: ${{ vars.REMI_API_HOST }}
+                  REMI_API_KEY_NOTES: ${{ secrets.REMI_API_KEY_NOTES }}
+                  REMI_API_KEY_TRANSCRIPTION: ${{ secrets.REMI_API_KEY_TRANSCRIPTION }}
                   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
                   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
               with:
-                  tagName: v__VERSION__
-                  releaseName: v__VERSION__
+                  args: ${{ matrix.args }}
+                  tagName: ${{ github.event_name == 'push' && 'v__VERSION__' || '' }}
+                  releaseName: ${{ github.event_name == 'push' && 'v__VERSION__' || '' }}
+                  uploadWorkflowArtifacts: ${{ github.event_name == 'workflow_dispatch' }}
                   releaseBody: See the assets below to download this version.
                   releaseDraft: false
                   updaterJsonPreferNsis: true

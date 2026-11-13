@@ -6,6 +6,7 @@ import {
     RECORDING_UNTITLED,
     app_open,
     dialog,
+    folder_item,
     nav_to,
     recording_open,
     step_current,
@@ -43,6 +44,31 @@ test('the title autosaves and shows on the home tile', async ({ page }) => {
     await nav_to(page, 'Home')
 
     await expect(tiles(page).locator('.recording-tile-title')).toContainText(['Discovery call'])
+})
+
+test('the folder field files the meeting and can make a new folder', async ({ page }) => {
+    await recording_open(page, RECORDING_UNTITLED)
+
+    const folder = page.getByLabel('Folder', { exact: true })
+
+    await expect(folder).toHaveValue('')
+    await expect(folder.locator('option')).toHaveText(['No folder', 'Remi'])
+
+    await folder.selectOption('Remi')
+
+    await expect(folder_item(page, 'Remi')).toContainText('2')
+
+    const prompt = dialog(page, 'New folder')
+
+    await page.locator('main').getByRole('button', { name: 'New folder' }).click()
+    await expect(prompt.getByRole('textbox', { name: 'Folder name' })).toBeFocused()
+    await page.keyboard.type('Acme Mining')
+    await page.keyboard.press('Enter')
+
+    await expect(folder).toHaveValue('Acme Mining')
+    await expect(folder.locator('option')).toHaveText(['No folder', 'Acme Mining', 'Remi'])
+    await expect(folder_item(page, 'Acme Mining')).toContainText('1')
+    await expect(folder_item(page, 'Remi')).toContainText('1')
 })
 
 test('the existing meeting shows its people, template, and title', async ({ page }) => {

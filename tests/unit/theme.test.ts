@@ -161,6 +161,6 @@ describe('palette_apply_to_html', () => {
 
         palette_apply_to_html(PALETTE_DEFAULT)
 
-        expect(document.documentElement.dataset['palette']).toBe('graphite')
+        expect(document.documentElement.dataset['palette']).toBe('cubist')
     })
 })

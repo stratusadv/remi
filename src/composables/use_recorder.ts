@@ -24,7 +24,7 @@ const FLUSH_INTERVAL_MS = 1000
 const KEY_SAMPLE_RATE = 'sampleRate'
 const MESSAGE_BACKLOG = 'The recording could not be saved as fast as it was captured.'
 const MESSAGE_ENDED_EARLY = 'The recording ended early, and what was captured up to then is saved.'
-const MESSAGE_NOT_ALLOWED = 'scribe was not allowed to use the microphone. Allow it and try again.'
+const MESSAGE_NOT_ALLOWED = 'Remi was not allowed to use the microphone. Allow it and try again.'
 const MESSAGE_NOT_FOUND = 'No microphone was found. Plug one in and try again.'
 const MESSAGE_NOT_READABLE = 'The microphone is in use by another program.'
 const MESSAGE_NOT_RECORDING = 'No recording is in progress.'
@@ -33,17 +33,17 @@ const PCM16_SAMPLE_BYTES = 2
 const PCM16_SAMPLE_MAX = 0x7fff
 const SAMPLE_RATE_PREFERRED = 16000
 const TITLE_ENDED_EARLY = 'Recording ended early'
-const WORKLET_NAME = 'scribe-recorder'
+const WORKLET_NAME = 'remi-recorder'
 
 const WORKLET_SOURCE = `
-class ScribeRecorderProcessor extends AudioWorkletProcessor {
+class RemiRecorderProcessor extends AudioWorkletProcessor {
     process(inputs) {
         const channel = inputs[0] && inputs[0][0]
         if (channel) this.port.postMessage(channel.slice())
         return true
     }
 }
-registerProcessor('${WORKLET_NAME}', ScribeRecorderProcessor)
+registerProcessor('${WORKLET_NAME}', RemiRecorderProcessor)
 `
 
 const recording = ref(false)

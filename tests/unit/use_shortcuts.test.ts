@@ -8,6 +8,7 @@ import type { ComponentOptions, DefineComponent, Ref, VNode } from 'vue'
 import type { VueWrapper } from '@vue/test-utils'
 
 
+const KEY_A = 'a'
 const KEY_S = 's'
 const mounted = new Set<VueWrapper>()
 
@@ -233,5 +234,44 @@ describe('use_shortcuts', () => {
         key_press('s')
 
         expect(handler).toHaveBeenCalledTimes(2)
+    })
+})
+
+describe('select all', () => {
+    it('is held back outside text fields so the page never highlights as a whole', () => {
+        const button = element_attach(document.createElement('button'))
+        const checkbox = element_attach(document.createElement('input'))
+
+        checkbox.type = 'checkbox'
+
+        const on_button = key_press(KEY_A, { [CTRL_KEY]: true }, button)
+        const on_checkbox = key_press(KEY_A, { [META_KEY]: true }, checkbox)
+        const on_window = key_press(KEY_A, { [CTRL_KEY]: true })
+
+        expect(on_button.defaultPrevented).toBe(true)
+        expect(on_checkbox.defaultPrevented).toBe(true)
+        expect(on_window.defaultPrevented).toBe(true)
+    })
+
+    it('still selects the text of inputs, text areas, and editable regions', () => {
+        const editable = element_attach(document.createElement('div'))
+        const input = element_attach(document.createElement('input'))
+        const textarea = element_attach(document.createElement('textarea'))
+
+        editable.contentEditable = 'true'
+
+        const fields = [input, textarea, editable]
+        const events = fields.map((field) => key_press(KEY_A, { [CTRL_KEY]: true }, field))
+
+        expect(events.map((event) => event.defaultPrevented)).toEqual([false, false, false])
+    })
+
+    it('leaves other combinations on the same key alone', () => {
+        const button = element_attach(document.createElement('button'))
+        const shifted = key_press(KEY_A, { [CTRL_KEY]: true, [SHIFT_KEY]: true }, button)
+        const plain = key_press(KEY_A, {}, button)
+
+        expect(shifted.defaultPrevented).toBe(false)
+        expect(plain.defaultPrevented).toBe(false)
     })
 })

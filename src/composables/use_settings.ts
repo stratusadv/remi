@@ -13,6 +13,8 @@ const settings_default = Object.freeze<Settings>({
     notes_thinking: null,
     api_host: null,
     jobs_view: null,
+    embeddings_host: null,
+    embeddings_model: null,
 })
 
 const settings = ref<Settings>({ ...settings_default })

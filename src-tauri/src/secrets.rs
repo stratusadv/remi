@@ -39,7 +39,7 @@ mod dpapi {
 
         if !freed.is_null() {
             tracing::warn!(
-                target: "scribe_lib::secrets",
+                target: "remi_lib::secrets",
                 "the memory {call} returned could not be released",
             );
         }
@@ -182,7 +182,7 @@ pub(crate) fn protected_write(path: &Path, plaintext: &str) -> AppResult<()> {
     #[cfg(not(windows))]
     {
         tracing::warn!(
-            target: "scribe_lib::secrets",
+            target: "remi_lib::secrets",
             "writing secret as plaintext to {} (DPAPI only available on Windows)",
             path.display(),
         );

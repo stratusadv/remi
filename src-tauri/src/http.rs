@@ -61,6 +61,12 @@ pub(crate) fn api_status_code(message: &str) -> Option<u16> {
     Some(code)
 }
 
+pub(crate) fn body_error_message(body: &str) -> Option<String> {
+    let parsed: OpenAIErrorEnvelope = serde_json::from_str(body).ok()?;
+
+    parsed.error.message.filter(|message| !message.trim().is_empty())
+}
+
 pub(crate) fn client_build(timeouts: &ClientTimeouts) -> Result<reqwest::Client, String> {
     assert!(!timeouts.connect.is_zero());
     assert!(!timeouts.request.is_zero());
@@ -81,6 +87,23 @@ pub(crate) fn client_build(timeouts: &ClientTimeouts) -> Result<reqwest::Client,
 
 pub(crate) fn client_get(cell: &'static ClientCell) -> AppResult<&'static reqwest::Client> {
     cell.as_ref().map_err(|message| AppError::Config(message.clone()))
+}
+
+pub(crate) fn crypto_provider_install() {
+    if rustls::crypto::CryptoProvider::get_default().is_some() {
+        return;
+    }
+
+    let installed = rustls::crypto::ring::default_provider().install_default();
+
+    if let Err(existing) = installed {
+        tracing::debug!(
+            target: "remi_lib::http",
+            "a crypto provider was already installed: {existing:?}",
+        );
+    }
+
+    assert!(rustls::crypto::CryptoProvider::get_default().is_some());
 }
 
 pub(crate) async fn response_ensure_ok(
@@ -157,6 +180,7 @@ pub(crate) fn retry_is_transient(error: &AppError) -> bool {
         AppError::Audio(_)
         | AppError::Config(_)
         | AppError::Export(_)
+        | AppError::Index(_)
         | AppError::IO(_)
         | AppError::Serde(_)
         | AppError::Task(_)
@@ -182,7 +206,7 @@ where
         let delay = retry_delay(attempt);
 
         tracing::warn!(
-            target: "scribe_lib::http",
+            target: "remi_lib::http",
             "retry attempt {} after {}ms: {}",
             attempt + 1,
             delay.as_millis(),
@@ -193,6 +217,16 @@ where
     }
 
     attempt_run().await
+}
+
+pub(crate) const fn status_is_transient(code: u16) -> bool {
+    assert!(code < STATUS_CODE_CEILING);
+
+    if code == STATUS_CODE_TOO_MANY_REQUESTS {
+        return true;
+    }
+
+    code >= STATUS_CODE_SERVER_FIRST && code <= STATUS_CODE_LAST
 }
 
 fn body_error_friendly(body: &str) -> Option<String> {
@@ -214,23 +248,6 @@ fn body_error_friendly(body: &str) -> Option<String> {
     Some(message)
 }
 
-fn crypto_provider_install() {
-    if rustls::crypto::CryptoProvider::get_default().is_some() {
-        return;
-    }
-
-    let installed = rustls::crypto::ring::default_provider().install_default();
-
-    if let Err(existing) = installed {
-        tracing::debug!(
-            target: "scribe_lib::http",
-            "a crypto provider was already installed: {existing:?}",
-        );
-    }
-
-    assert!(rustls::crypto::CryptoProvider::get_default().is_some());
-}
-
 fn retry_delay(attempt: u32) -> Duration {
     assert!(attempt + 1 < RETRY_ATTEMPTS_MAX);
 
@@ -239,16 +256,6 @@ fn retry_delay(attempt: u32) -> Duration {
     assert!(delay_ms >= RETRY_BACKOFF_MS_BASE);
 
     Duration::from_millis(delay_ms)
-}
-
-const fn status_is_transient(code: u16) -> bool {
-    assert!(code < STATUS_CODE_CEILING);
-
-    if code == STATUS_CODE_TOO_MANY_REQUESTS {
-        return true;
-    }
-
-    code >= STATUS_CODE_SERVER_FIRST && code <= STATUS_CODE_LAST
 }
 
 #[cfg(test)]

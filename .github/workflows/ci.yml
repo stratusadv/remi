@@ -14,7 +14,7 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                os: [ubuntu-latest, windows-latest]
+                os: [macos-latest, ubuntu-latest, windows-latest]
         runs-on: ${{ matrix.os }}
         defaults:
             run:
@@ -95,3 +95,25 @@ jobs:
 
             - name: Test
               run: bun run test
+
+    server:
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: server
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: astral-sh/setup-uv@v10.3.3
+
+            - name: Start PostgreSQL
+              run: docker compose up --detach --wait
+
+            - name: Lint
+              run: uv run --locked ruff check .
+
+            - name: Typecheck
+              run: uv run --locked ty check
+
+            - name: Test
+              run: uv run --locked pytest -n auto

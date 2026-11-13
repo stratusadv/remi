@@ -2,11 +2,13 @@ use crate::blocking;
 use crate::contract::JobID;
 use crate::convert;
 use crate::error::{AppError, AppResult};
+use crate::state::AppState;
 use crate::workspace;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use tauri::webview::PageLoadEvent;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 const EXPORT_EXTENSION_DOCX: &str = "docx";
 const EXPORT_EXTENSION_MARKDOWN: &str = "md";
@@ -54,13 +56,23 @@ struct PrintPage<'text> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub(crate) async fn notes_export(job_id: JobID, target_path: PathBuf) -> AppResult<String> {
-    blocking::run(move || {
+pub(crate) async fn notes_export(
+    state: State<'_, AppState>,
+    job_id: JobID,
+    target_path: PathBuf,
+) -> AppResult<String> {
+    let written = target_path.clone();
+
+    let exported = blocking::run(move || {
         notes_export_write_blocking(&job_id, &target_path)?;
 
         Ok(target_path.to_string_lossy().into_owned())
     })
-    .await
+    .await?;
+
+    *export_last_lock(&state.export_last)? = Some(written);
+
+    Ok(exported)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -131,6 +143,13 @@ fn html_text_escape(text: &str) -> String {
     assert!(!escaped.contains('>'));
 
     escaped
+}
+
+pub(crate) fn export_last_lock(
+    slot: &Mutex<Option<PathBuf>>,
+) -> AppResult<MutexGuard<'_, Option<PathBuf>>> {
+    slot.lock()
+        .map_err(|_poisoned| AppError::Export("the export state was poisoned by a crash".into()))
 }
 
 fn notes_export_write_blocking(job_id: &str, target_path: &Path) -> AppResult<()> {

@@ -1,6 +1,14 @@
 import { Editor } from '@tiptap/core'
 import { assert } from '../../src/lib/assert'
-import type { Group, JobListing, JobMeta, Person, Transcript } from '../../src/types'
+import type {
+    AskSource,
+    Group,
+    JobListing,
+    JobMeta,
+    JobSearchHit,
+    Person,
+    Transcript,
+} from '../../src/types'
 
 
 export const ADD_EVENT_LISTENER = 'addEventListener'
@@ -9,6 +17,7 @@ export const ATTACH_TO = 'attachTo'
 export const CONTENT_RECT = 'contentRect'
 export const CTRL_KEY = 'ctrlKey'
 export const EMIT_UPDATE = 'emitUpdate'
+export const IS_COMPOSING = 'isComposing'
 export const META_KEY = 'metaKey'
 export const MODEL_VALUE = 'modelValue'
 export const PROPERTIES = 'props'
@@ -20,6 +29,24 @@ export const WRITE_TEXT = 'writeText'
 export interface Deferred<Value> {
     promise: Promise<Value>
     resolve: (value: Value) => void
+}
+
+export function ask_source_build(patch: Partial<AskSource> = {}): AskSource {
+    assert(typeof patch === 'object')
+    assert(patch.marker === undefined || /^M\d+$/.test(patch.marker))
+
+    return {
+        end_seconds: null,
+        heading: 'Decisions',
+        job_id: 'job-1',
+        marker: 'M1',
+        segment_index_first: null,
+        segment_index_last: null,
+        snippet: 'Sam drafts the offline banner copy.',
+        source: 'notes',
+        start_seconds: null,
+        ...patch,
+    }
 }
 
 export function deferred_new<Value>(): Deferred<Value> {
@@ -99,6 +126,21 @@ export function person_build(patch: Partial<Person> = {}): Person {
         name_last: 'Doe',
         role: 'Developer',
         description: '',
+        ...patch,
+    }
+}
+
+export function search_hit_build(patch: Partial<JobSearchHit> = {}): JobSearchHit {
+    assert(typeof patch === 'object')
+    assert(patch.job_id === undefined || patch.job_id.length > 0)
+
+    return {
+        job_id: 'job-1',
+        segment_index_first: null,
+        segment_index_last: null,
+        snippet: 'a snippet',
+        source: 'notes',
+        start_seconds: null,
         ...patch,
     }
 }

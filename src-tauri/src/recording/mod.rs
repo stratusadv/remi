@@ -24,7 +24,7 @@ const RECORDING_FILE_TIME_FORMAT: &str = "%Y-%m-%d %H-%M-%S";
 const RECORDING_SAMPLE_RATE_MAX: u64 = 48000;
 const RECORDING_SAMPLE_RATE_MIN: u64 = 8000;
 const RECORDING_SAMPLES_MAX: u64 = RECORDING_SAMPLE_RATE_MAX * AUDIO_SECONDS_MAX;
-const RECORDINGS_FOLDER: &str = "scribe";
+const RECORDINGS_FOLDER: &str = "Remi Remembers";
 const RECORDINGS_FOLDER_FALLBACK: &str = "recordings";
 
 const _: () = assert!(RECORDING_SAMPLE_RATE_MIN < RECORDING_SAMPLE_RATE_MAX);
@@ -312,7 +312,7 @@ mod tests {
     }
 
     fn path_temporary(name: &str) -> PathBuf {
-        let file_name = format!("scribe-recording-test-{name}-{}.wav", std::process::id());
+        let file_name = format!("remi-recording-test-{name}-{}.wav", std::process::id());
 
         std::env::temp_dir().join(file_name)
     }

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import AppDialogHost from './components/app_dialog_host.vue'
+import AskView from './components/ask_view.vue'
+import CheckoutView from './components/checkout_view.vue'
+import ContextMenu from './components/context_menu.vue'
 import JobsManager from './components/jobs_manager.vue'
 import NoticeBanner from './components/notice_banner.vue'
 import PeopleManager from './components/people_manager.vue'
@@ -12,8 +15,10 @@ import StepNotes from './components/step_notes.vue'
 import StepTranscribe from './components/step_transcribe.vue'
 import TemplatesManager from './components/templates_manager.vue'
 import WelcomeScreen from './components/welcome_screen.vue'
+import { use_account } from './composables/use_account'
 import { use_drag_drop } from './composables/use_drag_drop'
 import { use_endpoints } from './composables/use_endpoints'
+import { use_folders } from './composables/use_folders'
 import { use_jobs } from './composables/use_jobs'
 import { use_network } from './composables/use_network'
 import { use_notes_templates } from './composables/use_notes_templates'
@@ -31,8 +36,16 @@ const { refresh: endpoints_refresh } = use_endpoints()
 const { refresh: templates_refresh } = use_notes_templates()
 const { refresh: people_refresh } = use_people()
 const { refresh: jobs_refresh } = use_jobs()
+const { refresh: folders_refresh } = use_folders()
 const { refresh: settings_refresh } = use_settings()
 const { notes_ready, refresh: service_refresh, transcription_ready } = use_service()
+
+const {
+    account_load,
+    sign_up_needed,
+    status_load: account_status_load,
+} = use_account()
+
 const { online } = use_network()
 const { dragging_over } = use_drag_drop()
 const { phase: update_phase, status_text: update_status_text, update_check_startup } = use_update()
@@ -50,6 +63,8 @@ const update_banner_visible = computed(
 const ready = ref<boolean>(false)
 
 const view_components = {
+    ask: AskView,
+    checkout: CheckoutView,
     jobs: JobsManager,
     transcribe: StepTranscribe,
     import: StepImport,
@@ -66,7 +81,13 @@ const configured = computed(() => transcription_ready.value && notes_ready.value
 
 const welcome = ref(false)
 
-watch(configured, (done) => {
+watch([configured, sign_up_needed], ([done, needed]) => {
+    if (needed) {
+        welcome.value = true
+
+        return
+    }
+
     if (done) welcome.value = false
 })
 
@@ -104,15 +125,19 @@ onMounted(async () => {
         templates_refresh(),
         people_refresh(),
         jobs_refresh(),
+        folders_refresh(),
+        account_status_load(),
         document.fonts.load('1em "Geist"'),
         document.fonts.load('italic 1em "Geist"'),
         document.fonts.load('1em "Geist Mono"'),
     ])
 
-    welcome.value = !configured.value
+    welcome.value = !configured.value || sign_up_needed.value
     ready.value = true
 
     editor_prefetch()
+
+    void account_load()
 
     void update_check_startup()
 })
@@ -157,6 +182,7 @@ onMounted(async () => {
             Drop audio or video files. A single file opens for review, and several files are
             transcribed in a batch.
         </div>
+        <ContextMenu />
         <AppDialogHost />
     </div>
 </template>

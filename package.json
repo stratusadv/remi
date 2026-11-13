@@ -1,5 +1,5 @@
 {
-    "name": "scribe",
+    "name": "remi",
     "private": true,
     "version": "0.1.5",
     "type": "module",
@@ -15,10 +15,9 @@
         "typecheck": "vue-tsc --noEmit"
     },
     "dependencies": {
+        "@stripe/stripe-js": "^10.2.1",
         "@tauri-apps/api": "^2.12.4",
         "@tauri-apps/plugin-dialog": "^2.7.3",
-        "@tauri-apps/plugin-notification": "^2.4.0",
-        "@tauri-apps/plugin-opener": "^2.5.5",
         "@tauri-apps/plugin-updater": "^2.12.0",
         "@tiptap/extension-link": "^3.31.3",
         "@tiptap/extension-placeholder": "^3.31.3",

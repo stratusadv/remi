@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { assert } from '../../src/lib/assert'
-import { THEME_STORAGE_KEY } from '../../src/lib/theme'
+import { PALETTE_DEFAULT, THEME_STORAGE_KEY } from '../../src/lib/theme'
 import { ADD_EVENT_LISTENER } from './fixtures'
 import type { use_settings } from '../../src/composables/use_settings'
 import type { use_theme } from '../../src/composables/use_theme'
@@ -91,9 +91,9 @@ describe('use_theme on load', () => {
         const theme = await theme_import()
 
         expect(theme.theme_effective.value).toBe('light')
-        expect(theme.palette_effective.value).toBe('graphite')
+        expect(theme.palette_effective.value).toBe('cubist')
         expect(document.documentElement.classList.contains('theme-light')).toBe(true)
-        expect(document.documentElement.dataset['palette']).toBe('graphite')
+        expect(document.documentElement.dataset['palette']).toBe('cubist')
         expect(localStorage.getItem(THEME_STORAGE_KEY)).toBeNull()
     })
 
@@ -201,5 +201,19 @@ describe('palette_set', () => {
 
         expect(document.documentElement.dataset['palette']).toBe('nord')
         expect(theme.palette_effective.value).toBe('nord')
+    })
+})
+
+describe('palette_resolve', () => {
+    it('falls back to the default for a saved palette that no longer exists', async () => {
+        match_media_install(media_query_stub(false))
+
+        await theme_import()
+
+        const { palette_resolve } = await import('../../src/composables/use_theme')
+
+        expect(palette_resolve('graphite')).toBe(PALETTE_DEFAULT)
+        expect(palette_resolve(null)).toBe(PALETTE_DEFAULT)
+        expect(palette_resolve('nord')).toBe('nord')
     })
 })

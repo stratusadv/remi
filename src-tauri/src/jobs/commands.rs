@@ -1,6 +1,7 @@
 use crate::blocking;
 use crate::contract::{BarCount, ClipEnd, ClipStart, EngineID, JobID, SearchQuery};
 use crate::error::{AppError, AppResult};
+use crate::search::{self, SearchHit};
 use crate::transcription::audio::{Waveform, waveform_compute};
 use crate::transcription::types::Transcript;
 use crate::workspace::{
@@ -10,7 +11,6 @@ use crate::workspace::{
     JobListing,
     JobMeta,
     JobMetaPatch,
-    JobSearchHit,
     TranscriptSlot,
 };
 
@@ -121,6 +121,6 @@ pub(crate) async fn jobs_list() -> AppResult<Vec<JobListing>> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub(crate) async fn jobs_search(query: SearchQuery) -> AppResult<Vec<JobSearchHit>> {
-    blocking::run(move || workspace::jobs_search_all(&query)).await
+pub(crate) async fn jobs_search(query: SearchQuery) -> AppResult<Vec<SearchHit>> {
+    blocking::run(move || search::hits_find(&query)).await
 }

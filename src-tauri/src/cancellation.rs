@@ -33,20 +33,17 @@ impl CancellationRegistry {
     pub(crate) fn register(&self, stream_id: &str) -> Arc<AtomicBool> {
         assert_ne!(stream_id, "");
 
-        let flag = Arc::new(AtomicBool::new(false));
-
         let Ok(mut guard) = self.flags.lock() else {
-            return flag;
+            return Arc::new(AtomicBool::new(false));
         };
 
-        let previous = guard.insert(stream_id.to_owned(), Arc::clone(&flag));
+        let held = guard.entry(stream_id.to_owned()).or_insert_with(Arc::default);
+        let flag = Arc::clone(held);
         let count = guard.len();
 
         drop(guard);
 
-        if previous.is_some() {
-            tracing::warn!("stream {stream_id} was registered for cancellation twice");
-        }
+        assert!(count >= 1);
 
         if count > usize_of!(STREAM_COUNT_MAX) {
             tracing::warn!("{count} streams are registered for cancellation at once");
@@ -182,16 +179,23 @@ mod tests {
     }
 
     #[test]
-    fn a_stream_registered_twice_is_answered_with_the_newer_flag_rather_than_a_crash() {
+    fn a_live_stream_registered_again_shares_its_flag_so_an_early_cancel_still_lands() {
         let registry = CancellationRegistry::new();
-        let first = registry.register("stream-a");
-        let second = registry.register("stream-a");
+        let early = registry.register("stream-a");
 
         registry.trigger("stream-a");
 
-        assert!(!Arc::ptr_eq(&first, &second));
-        assert!(!is_cancelled(&first));
-        assert!(is_cancelled(&second));
+        let late = registry.register("stream-a");
+
+        assert!(Arc::ptr_eq(&early, &late));
+        assert!(is_cancelled(&late));
+
+        registry.clear("stream-a");
+
+        let fresh = registry.register("stream-a");
+
+        assert!(!Arc::ptr_eq(&late, &fresh));
+        assert!(!is_cancelled(&fresh));
     }
 
     #[test]

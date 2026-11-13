@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { convertFileSrc } from '@tauri-apps/api/core'
+import { use_ask } from '../composables/use_ask'
+import { use_context_menu } from '../composables/use_context_menu'
 import { use_pipeline } from '../composables/use_pipeline'
 import { use_shortcuts } from '../composables/use_shortcuts'
+import { assert } from '../lib/assert'
 import { seconds_to_clock } from '../lib/duration'
 import { error_dialog_show } from '../lib/errors'
 import { ipc } from '../lib/ipc'
 import { log_warn } from '../lib/log'
+import { MENU_ITEM_ASK } from '../lib/menu'
 import type { ComponentPublicInstance } from 'vue'
-import type { Transcript, TranscriptSegment } from '../types'
+import type { MenuItem } from '../lib/menu'
+import type { JobID, SegmentFocus, Transcript, TranscriptSegment } from '../types'
 
 
 interface DisplayRow {
@@ -28,7 +33,13 @@ const ROWS_RENDER_THRESHOLD_PX = 200
 const COPIED_FLASH_MS = 1500
 const HIGHLIGHT_NAME = 'transcript-filter'
 const REGEX_ESCAPE = /[.*+?^${}()|[\]\\]/g
-const { job_id_current, transcript_segments_text_set } = use_pipeline()
+const MENU_ITEM_LINE_COPY: MenuItem = { id: 'line_copy', label: 'Copy line', icon: 'copy' }
+const MENU_ITEM_LINE_EDIT: MenuItem = { id: 'line_edit', label: 'Correct line', icon: 'edit' }
+const MENU_ITEM_PAUSE: MenuItem = { id: 'pause', label: 'Pause', icon: 'pause' }
+const MENU_ITEM_PLAY: MenuItem = { id: 'play', label: 'Play segment', icon: 'play' }
+const { job_id_current, segment_focus, transcript_segments_text_set } = use_pipeline()
+const { meeting_ask } = use_ask()
+const { open: context_menu_open } = use_context_menu()
 
 const filter_text = ref('')
 const index_copied = ref<number | null>(null)
@@ -67,6 +78,10 @@ const timing_present = computed(
     () => props.transcript?.segments.some((segment) => segment.end_seconds > 0) ?? false,
 )
 
+const playback_available = computed(
+    () => (audio_path.value ?? '').length > 0 && timing_present.value,
+)
+
 const rows_filtered = computed<DisplayRow[]>(() => {
     const regex = filter_regex.value
 
@@ -78,6 +93,15 @@ const rows_filtered = computed<DisplayRow[]>(() => {
 const rows_rendered = computed<DisplayRow[]>(
     () => rows_filtered.value.slice(0, rows_render_limit.value),
 )
+
+const focus_current = computed<SegmentFocus | null>(() => {
+    const focus = segment_focus.value
+
+    if (focus === null) return null
+    if (focus.job_id !== job_id_current.value) return null
+
+    return focus
+})
 
 
 watch(rows_filtered, () => {
@@ -92,6 +116,8 @@ watch(rows_rendered, async () => {
 })
 
 watch([rows_rendered, filter_regex, index_editing], highlights_apply, { flush: 'post' })
+
+watch([focus_current, audio_checked], focus_scroll, { flush: 'post' })
 
 async function audio_clip_attach(row: DisplayRow): Promise<HTMLAudioElement | null> {
     const id = job_id_current.value
@@ -159,6 +185,32 @@ function audio_src_release(): void {
     audio_src.value = null
 }
 
+async function focus_scroll(): Promise<void> {
+    const focus = focus_current.value
+    const container = list_ref.value
+
+    if (focus === null) return
+    if (container === null) return
+
+    if (filter_text.value.length > 0) {
+        filter_text.value = ''
+
+        await nextTick()
+    }
+
+    const position = rows.value.findIndex((row) => row.segment_index >= focus.segment_index_first)
+
+    if (position < 0) return
+
+    rows_render_limit.value = Math.max(rows_render_limit.value, position + ROWS_RENDER_STEP)
+
+    await nextTick()
+
+    const row = container.querySelector(`[data-row-index="${String(position)}"]`)
+
+    row?.scrollIntoView({ block: 'center' })
+}
+
 function highlights_apply(): void {
     const registry = highlights_registry()
     const regex = filter_regex.value
@@ -200,6 +252,23 @@ function highlights_registry(): HighlightRegistry | null {
     return css.highlights ?? null
 }
 
+function pane_context_menu(event: MouseEvent): void {
+    assert(event.type === 'contextmenu')
+
+    const job_id = job_id_current.value
+
+    if (job_id === null) return
+
+    context_menu_open(event, [MENU_ITEM_ASK], pane_menu_select.bind(undefined, job_id))
+}
+
+async function pane_menu_select(job_id: JobID, id: string): Promise<void> {
+    assert(job_id.length > 0)
+    assert(id === MENU_ITEM_ASK.id)
+
+    return meeting_ask(job_id)
+}
+
 function playback_clear(): void {
     playback_index.value = null
 }
@@ -222,6 +291,13 @@ function playback_space_toggle(): void {
     }
 
     audio.pause()
+}
+
+function row_context_menu(event: MouseEvent, row: DisplayRow, index: number): void {
+    assert(event.type === 'contextmenu')
+    assert(index >= 0)
+
+    context_menu_open(event, row_menu_items(index), row_menu_select.bind(undefined, row, index))
 }
 
 async function row_copy(row: DisplayRow, index: number): Promise<void> {
@@ -264,9 +340,7 @@ function row_edit_focus(element: Element | ComponentPublicInstance | null): void
     if (element instanceof HTMLTextAreaElement) element.focus()
 }
 
-function row_edit_toggle(row: DisplayRow, index: number, event: Event): void {
-    event.stopPropagation()
-
+function row_edit_toggle(row: DisplayRow, index: number): void {
     if (index_editing.value === index) {
         void row_edit_commit(row, index)
 
@@ -277,7 +351,18 @@ function row_edit_toggle(row: DisplayRow, index: number, event: Event): void {
     text_editing.value = row.text
 }
 
+function row_focused(row: DisplayRow): boolean {
+    const focus = focus_current.value
+
+    if (focus === null) return false
+
+    return row.segment_index >= focus.segment_index_first
+        && row.segment_index <= focus.segment_index_last
+}
+
 function row_highlighted(row: DisplayRow): boolean {
+    if (row_focused(row)) return true
+
     return props.segment_indexes_highlighted?.includes(row.segment_index) ?? false
 }
 
@@ -287,9 +372,40 @@ function row_label(row: DisplayRow): string {
     return `Line ${String(row.segment_index + 1)}`
 }
 
-async function row_play_toggle(row: DisplayRow, index: number, event: Event): Promise<void> {
-    event.stopPropagation()
+function row_menu_items(index: number): MenuItem[] {
+    const items: MenuItem[] = [MENU_ITEM_LINE_COPY]
+    const playing = playback_index.value === index
 
+    if (playback_available.value) items.push(playing ? MENU_ITEM_PAUSE : MENU_ITEM_PLAY)
+
+    items.push(MENU_ITEM_LINE_EDIT)
+
+    if (job_id_current.value !== null) items.push(MENU_ITEM_ASK)
+
+    assert(items.length <= 4)
+
+    return items
+}
+
+async function row_menu_select(row: DisplayRow, index: number, id: string): Promise<void> {
+    assert(index >= 0)
+    assert(id.length > 0)
+
+    const job_id = job_id_current.value
+    const playing = playback_index.value === index
+
+    if (id === MENU_ITEM_ASK.id && job_id !== null) return meeting_ask(job_id)
+    if (id === MENU_ITEM_LINE_COPY.id) return row_copy(row, index)
+    if (id === MENU_ITEM_PAUSE.id && !playing) return
+    if (id === MENU_ITEM_PLAY.id && playing) return
+    if (id === MENU_ITEM_PAUSE.id || id === MENU_ITEM_PLAY.id) return row_play_toggle(row, index)
+
+    assert(id === MENU_ITEM_LINE_EDIT.id, `the transcript has no action for ${id}`)
+
+    row_edit_toggle(row, index)
+}
+
+async function row_play_toggle(row: DisplayRow, index: number): Promise<void> {
     if (playback_index.value === index) {
         audio_pause_if_playing()
         playback_clear()
@@ -348,7 +464,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-    <div class="transcript-pane card">
+    <div class="transcript-pane card" @contextmenu="pane_context_menu">
         <audio
             v-if="audio_src"
             ref="audio_ref"
@@ -387,14 +503,15 @@ onUnmounted(() => {
                 :data-editing="index_editing === index ? 'true' : 'false'"
                 title="Click to copy"
                 @click="row_copy(row, index)"
+                @contextmenu="row_context_menu($event, row, index)"
             >
                 <div class="transcript-pane-actions">
                     <button
-                        v-if="audio_path && timing_present"
+                        v-if="playback_available"
                         type="button"
                         class="transcript-pane-play"
                         :title="playback_index === index ? 'Pause' : 'Play segment'"
-                        @click="row_play_toggle(row, index, $event)"
+                        @click.stop="row_play_toggle(row, index)"
                     >
                         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                             <template v-if="playback_index === index">
@@ -413,7 +530,7 @@ onUnmounted(() => {
                         class="transcript-pane-edit"
                         :title="index_editing === index ? 'Done' : 'Correct this line'"
                         @mousedown.prevent
-                        @click="row_edit_toggle(row, index, $event)"
+                        @click.stop="row_edit_toggle(row, index)"
                     >
                         <svg
                             viewBox="0 0 24 24"

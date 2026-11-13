@@ -26,3 +26,13 @@ The *Regenerate notes* button replaces the whole document, including your edits,
 ## Rewrite Text
 
 Select text and press *AI* on the toolbar, then pick an action or type your own instruction. Select nothing to rewrite the whole document.
+
+## Ask About Past Meetings
+
+1. Open *Ask* in the sidebar.
+2. Type a question, such as `Did Hannah agree to the renewal?`, and press *Enter*.
+3. Press a meeting under the answer to open it.
+
+The app searches the titles, people, notes, and transcripts of your recordings, and the notes service answers from the passages it found alone. A time in the question, such as *Thursday* or *last month*, favours the meetings from then. A follow-up in the same chat can lean on the questions before it, such as `What did she ask for in return?`.
+
+The *Ask about this meeting* item in a meeting's menu and the *Ask about this folder* item in a folder's menu limit the search to that meeting or folder. Each chat is saved under *History* on the Ask page, so you can come back to it later.

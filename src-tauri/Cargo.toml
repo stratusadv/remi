@@ -1,18 +1,18 @@
 [package]
-name = "scribe"
+name = "remi-remembers"
 version = "0.1.5"
 description = "A desktop app that turns a meeting recording into formatted notes"
 authors = ["Brayden Carlson"]
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/stratusadv/scribe"
+repository = "https://github.com/stratusadv/remi"
 readme = "../README.md"
 keywords = ["desktop", "tauri", "transcription"]
 categories = ["multimedia::audio", "text-processing"]
 publish = false
 
 [lib]
-name = "scribe_lib"
+name = "remi_lib"
 crate-type = ["rlib"]
 
 [build-dependencies]
@@ -27,7 +27,8 @@ hound = "3"
 libc = "0.2"
 num-traits = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "stream", "multipart"] }
-rubato = "5"
+rubato = { version = "5", default-features = false }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -35,20 +36,27 @@ sha2 = "0.11"
 symphonia = { version = "0.6", features = ["aac", "isomp4", "mp3", "flac", "wav", "ogg", "vorbis", "pcm", "mkv"] }
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
-tauri-plugin-notification = "2"
-tauri-plugin-opener = "2"
 tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls"] }
 thiserror = "2"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 tracing-appender = "0.2"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "net"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
-webkit2gtk = "2.0"
+webkit2gtk = { version = "2.0", features = ["v2_6"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
 
 [target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security_Cryptography",
