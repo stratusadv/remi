@@ -347,7 +347,7 @@ pub(crate) async fn notes_ask_streaming(
     let question_text = text.clone();
     let excerpts = found.excerpts;
     let built = blocking::run(move || prompt_build(&question_text, &turns, &excerpts, now)).await?;
-    let notice = admitted.as_ref().map(|turn| turn.notice.clone()).unwrap_or_default();
+    let notice = admitted.as_ref().map_or_default(|turn| turn.notice.clone());
 
     let sources = AskSources {
         meetings: built.meetings,

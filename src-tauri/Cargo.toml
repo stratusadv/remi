@@ -1,7 +1,7 @@
 [package]
 name = "remi"
 version = "0.1.5"
-description = "A desktop app that turns a meeting recording into formatted notes"
+description = "A desktop app that transforms meetings into notes"
 authors = ["Brayden Carlson"]
 edition = "2024"
 license = "MIT"

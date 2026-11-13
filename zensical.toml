@@ -1,6 +1,6 @@
 [project]
 site_name = "remi"
-site_description = "A desktop app that turns a meeting recording into formatted notes."
+site_description = "A desktop app that transforms meetings into notes."
 site_url = "https://remirememberthat.com/"
 repo_name = "stratusadv/remi"
 repo_url = "https://github.com/stratusadv/remi"

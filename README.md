@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-    <em>A desktop app that turns a meeting recording into formatted notes.</em>
+    <em>A desktop app that transforms meetings into notes.</em>
 </p>
 
 <p align="center">
