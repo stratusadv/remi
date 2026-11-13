@@ -19,7 +19,7 @@ import type { AskScope, AskScopeChip, FolderName } from '../types'
 
 type ScopeNarrowed = Exclude<AskScope, { kind: 'all' }>
 
-const HINT_PAGE = 'Ask about your past meetings. Remi searches your titles, people, notes, and '
+const HINT_PAGE = 'Ask about your past meetings. remi searches your titles, people, notes, and '
     + 'transcripts, then answers with the moments it used.'
 
 const PINNED_SLACK_PX = 48

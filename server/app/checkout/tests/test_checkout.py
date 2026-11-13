@@ -63,7 +63,7 @@ def test_checkout_charges_the_configured_price_of_the_pack_chosen(
 
         price = {
             'currency': PRICE_CURRENCY,
-            'product_data': {'name': f'Remi Remembers: {hours} hours of transcription'},
+            'product_data': {'name': f'remi: {hours} hours of transcription'},
             'unit_amount': price_cents,
         }
 
@@ -138,7 +138,7 @@ def test_checkout_client_refuses_a_session_that_is_not_one_payment_for_one_accou
 
     refusals = (
         (subscription, 'one-time payment'),
-        (hosted, 'paid inside Remi'),
+        (hosted, 'paid inside remi'),
         (unclaimed, 'names the account'),
         (unreturnable, 'absolute return_url'),
         (relative, 'absolute return_url'),

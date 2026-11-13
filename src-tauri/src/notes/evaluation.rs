@@ -1,12 +1,21 @@
 use super::ask::{PROMPT_ASK_SYSTEM, REASONING_EFFORT_ASK, excerpts_find, prompt_build};
-use super::remote::{ChatPrompts, ReplySchema, chat_completion, chat_completion_structured};
+use super::remote::{
+    ChatPrompts,
+    ReplySchema,
+    build_request_counted,
+    chat_completion,
+    chat_completion_structured,
+    stream_event_tokens,
+};
 use crate::endpoints::types::{APIEndpoint, APIEndpointPurpose};
+use crate::http::{ClientTimeouts, client_build};
 use crate::search::Scope;
 use crate::search::evaluation::{
     CASE_BOUNDARY,
     CASES,
     CASES_MEANING,
     QUESTIONS_UNANSWERABLE,
+    corpus_save,
     corpus_save_large,
     local,
 };
@@ -16,13 +25,22 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
+use std::time::Duration;
 use tokio::runtime::Runtime;
 
 const GRADE_SCHEMA_NAME: &str = "answer_grade";
 const GRADE_TOKENS_MAX: u32 = 400;
 const NOW: &str = "2026-11-11 15:00";
 const REFERENCE_NONE: &str = "NONE";
+const SSE_DATA_PREFIX: &str = "data:";
+const SSE_DONE: &str = "[DONE]";
 const THINKING_OFF: &str = "off";
+
+const TOKENS_TIMEOUTS: ClientTimeouts = ClientTimeouts {
+    connect: Duration::from_secs(15),
+    read: Some(Duration::from_secs(120)),
+    request: Duration::from_mins(15),
+};
 
 const PROMPT_GRADE_SYSTEM: &str = concat!(
     "You grade an answer to a question about a user's meetings against a reference answer. ",
@@ -58,6 +76,13 @@ struct Grade {
     reason: String,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Counted {
+    answer: Option<u32>,
+    chars: u32,
+    parse: u32,
+}
+
 #[derive(Debug)]
 struct Outcome {
     answer: String,
@@ -65,9 +90,36 @@ struct Outcome {
     markers: BTreeMap<String, String>,
 }
 
+async fn answer_tokens_streamed(endpoint: &APIEndpoint, prompts: &ChatPrompts<'_>) -> Option<u32> {
+    let (url, body, api_key) = build_request_counted(endpoint, prompts);
+    let client = client_build(&TOKENS_TIMEOUTS).unwrap();
+    let mut request = client.post(&url).json(&body);
+
+    if !api_key.is_empty() {
+        request = request.bearer_auth(api_key);
+    }
+
+    let response = request.send().await.unwrap().error_for_status().unwrap();
+    let events = response.text().await.unwrap();
+
+    assert!(events.contains(SSE_DATA_PREFIX), "the answer streamed no events");
+
+    let tokens = events
+        .lines()
+        .filter_map(|line| line.strip_prefix(SSE_DATA_PREFIX).map(str::trim))
+        .filter(|payload| !payload.is_empty() && *payload != SSE_DONE)
+        .filter_map(|payload| serde_json::from_str::<Value>(payload).ok())
+        .filter_map(|event| stream_event_tokens(&event))
+        .next_back();
+
+    assert!(tokens.is_none_or(|count| count > 0));
+
+    tokens
+}
+
 async fn answer_of(endpoint: &APIEndpoint, question: &str, now: DateTime<Local>) -> Outcome {
-    let excerpts = excerpts_find(endpoint, question, &[], Scope::All, now).await.unwrap();
-    let built = prompt_build(question, &[], &excerpts, now).unwrap();
+    let found = excerpts_find(endpoint, question, &[], Scope::All, now).await.unwrap();
+    let built = prompt_build(question, &[], &found.excerpts, now).unwrap();
     let prompts = ChatPrompts { system: PROMPT_ASK_SYSTEM, user: &built.user };
     let answer = chat_completion(endpoint, &prompts).await.unwrap();
 
@@ -123,7 +175,7 @@ async fn grade_of(endpoint: &APIEndpoint, user: &str) -> Grade {
         tokens_max: GRADE_TOKENS_MAX,
     };
 
-    let text = chat_completion_structured(endpoint, &prompts, &reply).await.unwrap();
+    let text = chat_completion_structured(endpoint, &prompts, &reply).await.unwrap().text;
     let json = text.get(text.find('{').unwrap()..=text.rfind('}').unwrap()).unwrap();
 
     assert!(json.starts_with('{'));
@@ -178,6 +230,43 @@ fn question_run(runtime: &Runtime, endpoint: &APIEndpoint, asked: Asked<'_>) -> 
     let grade = runtime.block_on(grade_of(endpoint, &grade_prompt(asked, &outcome.answer)));
 
     (outcome, grade)
+}
+
+async fn tokens_counted(endpoint: &APIEndpoint, question: &str, now: DateTime<Local>) -> Counted {
+    let found = excerpts_find(endpoint, question, &[], Scope::All, now).await.unwrap();
+    let built = prompt_build(question, &[], &found.excerpts, now).unwrap();
+    let prompts = ChatPrompts { system: PROMPT_ASK_SYSTEM, user: &built.user };
+    let answer = answer_tokens_streamed(endpoint, &prompts).await;
+    let chars = u32::try_from(PROMPT_ASK_SYSTEM.len() + built.user.len()).unwrap();
+
+    assert!(chars > 0);
+    assert!(built.sources.len() <= found.excerpts.len());
+
+    Counted { answer, chars, parse: found.tokens }
+}
+
+fn tokens_summary(label: &str, counted: &[Counted]) {
+    let mut totals: Vec<u32> =
+        counted.iter().map(|count| count.parse + count.answer.unwrap_or(0)).collect();
+
+    totals.sort_unstable();
+
+    let count = totals.len();
+
+    assert!(count > 0);
+    assert_eq!(count, counted.len());
+
+    let chars: u64 = counted.iter().map(|entry| u64::from(entry.chars)).sum();
+    let tokens: u64 = totals.iter().copied().map(u64::from).sum();
+    let missing = counted.iter().filter(|entry| entry.answer.is_none()).count();
+
+    println!(
+        "TOKENS {label}: {count} questions, median {}, p90 {}, max {}, {tokens} tokens over \
+         {chars} prompt characters, {missing} answers without usage",
+        totals[count.div_euclid(2)],
+        totals[(count * 9).div_euclid(10)],
+        totals[count - 1],
+    );
 }
 
 #[test]
@@ -244,4 +333,42 @@ fn manual_answers_are_right_cite_their_meeting_and_refuse_what_was_never_said() 
     println!("MANUAL {passed} of {} passed every check", CASES.len() + CASES_MEANING.len() + 1);
 
     assert!(misses.is_empty(), "{misses:#?}");
+}
+
+#[test]
+#[ignore = "manual: counts tokens per question with REMI_MANUAL_NOTES_HOST, _MODEL, and _KEY"]
+fn manual_tokens_per_question_on_a_small_and_a_large_library() {
+    let endpoint = endpoint_manual();
+    let runtime = Runtime::new().unwrap();
+
+    let questions: Vec<&str> = CASES
+        .iter()
+        .chain(&CASES_MEANING)
+        .map(|case| case.question)
+        .chain(QUESTIONS_UNANSWERABLE)
+        .collect();
+
+    for large in [false, true] {
+        let _root = root_scoped();
+        let ids = if large { corpus_save_large() } else { corpus_save() };
+        let label = if large { "large library" } else { "small library" };
+        let mut counted: Vec<Counted> = Vec::with_capacity(questions.len());
+
+        assert!(!ids.is_empty());
+
+        for question in &questions {
+            let count = runtime.block_on(tokens_counted(&endpoint, question, local(NOW)));
+
+            println!(
+                "TOKENS {label} parse {} answer {:?} chars {} {question:?}",
+                count.parse, count.answer, count.chars,
+            );
+
+            counted.push(count);
+        }
+
+        tokens_summary(label, &counted);
+
+        assert!(counted.iter().all(|count| count.answer.is_some()), "a stream carried no usage");
+    }
 }

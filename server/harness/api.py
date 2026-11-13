@@ -12,8 +12,11 @@ ACCOUNT_CHECKOUT_FINISH_PATH = '/api/v1/account/checkout/finish/'
 ACCOUNT_CHECKOUT_PATH = '/api/v1/account/checkout/'
 ACCOUNT_PATH = '/api/v1/account/'
 ACCOUNT_PROMO_PATH = '/api/v1/account/promo/'
+ACCOUNT_QUESTION_FINISH_PATH = '/api/v1/account/question/finish/'
+ACCOUNT_QUESTION_PATH = '/api/v1/account/question/'
 BEACON_CONTENT_TYPE = 'application/x-www-form-urlencoded;charset=UTF-8'
 FUNNEL_DOWNLOAD_PATH = '/api/v1/funnel/download/'
+FUNNEL_EMAIL_PATH = '/api/v1/funnel/email/'
 FUNNEL_VISIT_PATH = '/api/v1/funnel/visit/'
 STATUS_CREATED = 201
 STATUS_OK = 200

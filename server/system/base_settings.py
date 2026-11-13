@@ -8,6 +8,7 @@ from system.environment import (
     EnvironmentVariable,
     environment_currency,
     environment_flag,
+    environment_integer,
     environment_list,
     environment_offers,
     environment_publishable_key,
@@ -19,14 +20,19 @@ ALLOWED_HOSTS = environment_list(EnvironmentVariable.DJANGO_ALLOWED_HOSTS)
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEBUG = environment_flag(EnvironmentVariable.DJANGO_DEBUG)
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+DEFAULT_FROM_EMAIL = 'remi <noreply@remirememberthat.com>'
 DJANGO_SITE_DOMAIN = environment_text(EnvironmentVariable.DJANGO_SITE_DOMAIN) or 'localhost:8000'
-DJANGO_SITE_NAME = 'Remi Remembers'
+DJANGO_SITE_NAME = 'remi'
 DJANGO_SPIRE_REMOTE_API_KEY = environment_text(EnvironmentVariable.DJANGO_SPIRE_REMOTE_API_KEY)
 DJANGO_SPIRE_REMOTE_API_URL = environment_text(EnvironmentVariable.DJANGO_SPIRE_REMOTE_API_URL)
+EMAIL_BACKEND = 'app.core.mail.SendgridTimeoutBackend'
 LANGUAGE_CODE = 'en-us'
 ROOT_URLCONF = 'system.urls'
 SECRET_KEY = environment_text(EnvironmentVariable.DJANGO_SECRET_KEY) or 'MUST_BE_SET_IN_PRODUCTION'
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SENDGRID_API_KEY = environment_text(EnvironmentVariable.SENDGRID_API_KEY)
+SENDGRID_SANDBOX_MODE_IN_DEBUG = False
+SENDGRID_TRACK_CLICKS_PLAIN = False
 SITE_ID = 1
 STATIC_ROOT = BASE_DIR / 'static'
 STATIC_URL = 'static/'
@@ -37,6 +43,13 @@ TIME_ZONE = 'America/Edmonton'
 USE_I18N = False
 USE_TZ = True
 
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'OPTIONS': {'MAX_ENTRIES': 10_000},
+    },
+}
+
 DATABASE_OPTIONS = {
     'keepalives': 1,
     'keepalives_count': 3,
@@ -44,9 +57,51 @@ DATABASE_OPTIONS = {
     'keepalives_interval': 10,
 }
 
+REMI_ASK_BURST_COUNT = environment_integer(
+    EnvironmentVariable.REMI_ASK_BURST_COUNT,
+    default=20,
+    maximum=10_000,
+    minimum=1,
+)
+
+REMI_ASK_BURST_SECONDS = environment_integer(
+    EnvironmentVariable.REMI_ASK_BURST_SECONDS,
+    default=600,
+    maximum=86_400,
+    minimum=1,
+)
+
+REMI_ASK_PACE_SECONDS = environment_integer(
+    EnvironmentVariable.REMI_ASK_PACE_SECONDS,
+    default=300,
+    maximum=86_400,
+    minimum=1,
+)
+
+REMI_ASK_TOKENS_ESTIMATE = environment_integer(
+    EnvironmentVariable.REMI_ASK_TOKENS_ESTIMATE,
+    default=20_000,
+    maximum=1_000_000,
+    minimum=1,
+)
+
+REMI_ASK_TOKENS_SOFT_CAP = environment_integer(
+    EnvironmentVariable.REMI_ASK_TOKENS_SOFT_CAP,
+    default=4_000_000,
+    maximum=1_000_000_000,
+    minimum=1,
+)
+
+REMI_ASK_WINDOW_DAYS = environment_integer(
+    EnvironmentVariable.REMI_ASK_WINDOW_DAYS,
+    default=30,
+    maximum=365,
+    minimum=1,
+)
+
 REMI_OFFERS = environment_offers(
     EnvironmentVariable.REMI_OFFERS,
-    default='10:300,50:1000,200:3000',
+    default='10:1000,50:5000,200:20000',
 )
 
 REMI_PRICE_CURRENCY = environment_currency(
@@ -70,12 +125,15 @@ INSTALLED_APPS = [
     'django_spire.metric.domain',
     'app.account.apps.AccountConfig',
     'app.account.ledger.apps.AccountLedgerConfig',
+    'app.account.question.apps.AccountQuestionConfig',
     'app.checkout.apps.CheckoutConfig',
+    'app.funnel.apps.FunnelConfig',
     'app.promo_code.apps.PromoCodeConfig',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'app.funnel.middleware.FunnelCorsMiddleware',
     'django.middleware.csp.ContentSecurityPolicyMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',

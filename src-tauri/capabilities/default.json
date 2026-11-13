@@ -1,7 +1,7 @@
 {
     "$schema": "../gen/schemas/desktop-schema.json",
     "identifier": "default",
-    "description": "default permissions for the Remi Remembers app",
+    "description": "default permissions for the remi app",
     "windows": [
         "main"
     ],

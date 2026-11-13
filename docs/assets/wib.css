@@ -142,6 +142,10 @@ body {
     font-size: 1.0625rem;
 }
 
+.painting .jump {
+    display: none;
+}
+
 .sheet {
     --accent: var(--rose-deep);
     display: grid;
@@ -159,7 +163,6 @@ body {
     outline-color: var(--cyan-ink);
 }
 
-.sheet .notice :focus-visible,
 .sheet .panel :focus-visible {
     outline-color: var(--cyan-bright);
 }
@@ -217,6 +220,7 @@ body {
 
 #code {
     padding: 12px 16px;
+    white-space: nowrap;
     background: linear-gradient(104deg, var(--saffron) 0 58%, var(--saffron-deep) 58%);
     color: var(--ink);
     font-size: 1.5rem;
@@ -225,10 +229,69 @@ body {
     box-shadow: 0 0 0 2px var(--paper-ink);
 }
 
-.sheet .notice {
-    background: var(--night);
-    color: var(--text);
-    box-shadow: 10px 10px 0 var(--saffron);
+.ticket-stacked {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.ticket-stacked .ticket-stub {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: start;
+    gap: 14px;
+    border-top: 2px dashed var(--paper-ink);
+    border-left: 0;
+}
+
+.ticket-stacked .stub-label {
+    flex-basis: 100%;
+}
+
+.ticket-form .ticket-stub {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: stretch;
+}
+
+.ticket-form #mailto {
+    justify-self: start;
+}
+
+.email {
+    display: grid;
+    gap: 10px;
+}
+
+.email-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.email input {
+    flex: 1 1 14em;
+    min-width: 0;
+    height: 40px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 0;
+    background: #fffdf8;
+    color: var(--paper-ink);
+    font: 400 16px/1 var(--sans);
+    box-shadow: inset 0 0 0 2px var(--paper-ink);
+    color-scheme: light;
+}
+
+.email .button:disabled {
+    cursor: progress;
+    opacity: 0.6;
+}
+
+.email-status {
+    min-height: 1.5em;
+    margin: 0;
+    color: var(--paper-soft);
+    font-size: 0.875rem;
 }
 
 .route ol {
@@ -344,6 +407,11 @@ body {
 
     .masthead {
         margin-bottom: 20px;
+    }
+
+    .painting .jump {
+        display: inline-flex;
+        align-self: start;
     }
 
     .painting h1 {

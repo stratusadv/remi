@@ -186,6 +186,7 @@ export interface Settings {
 export interface SearchStatus {
     error: string | null
     model: string | null
+    model_default: string
     passages: number
     passages_embedded: number
 }
@@ -278,6 +279,7 @@ export interface AskSource {
 
 export interface AskSources {
     meetings: JobMeta[]
+    notice: string
     sources: AskSource[]
     stream_id: StreamID
 }
@@ -285,6 +287,11 @@ export interface AskSources {
 export interface AskTurn {
     answer: string
     question: string
+}
+
+export interface AskWait {
+    notice: string
+    stream_id: StreamID
 }
 
 export interface ChatExchange {

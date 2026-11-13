@@ -125,7 +125,7 @@ METRIC_GROUPS = (METRIC_GROUP_FUNNEL, METRIC_GROUP_SALES, METRIC_GROUP_USAGE)
 
 METRIC_DOMAIN = Metric.Domain(
     key=METRIC_DOMAIN_KEY,
-    name='Remi Remembers',
+    name='remi',
     statistic_groups=METRIC_GROUPS,
     sub_domain_name='Campaign',
     subdomains=METRIC_SUBDOMAINS,

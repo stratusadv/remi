@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { use_jobs } from '../composables/use_jobs'
 import { assert } from '../lib/assert'
 import { hash_fnv } from '../lib/hash'
-import { job_askable, job_duration_text, job_status } from '../lib/job_status'
+import { job_askable, job_duration_text } from '../lib/job_status'
 import { log_warn } from '../lib/log'
 import AskButton from './ask_button.vue'
 import RowMenu from './row_menu.vue'
@@ -68,7 +68,6 @@ const art_layout = computed(() => Math.floor(art_seed.value / ART_HUE_COUNT) % A
 const wave_bars = computed(() => wave_bars_build(waveform.value?.peaks ?? []))
 const glyph_words = computed(() => glyph_words_build(hash_fnv(props.job.id)))
 const duration_text = computed(() => job_duration_text(props.job))
-const status = computed(() => job_status(props.job))
 const askable = computed(() => job_askable(props.job))
 
 
@@ -210,9 +209,6 @@ onMounted(async () => {
             </div>
             <div class="recording-tile-foot meta">
                 <span class="recording-tile-when">{{ props.when }}</span>
-                <span class="pill recording-tile-status" :data-state="status.state">
-                    {{ status.text }}
-                </span>
             </div>
         </div>
     </article>

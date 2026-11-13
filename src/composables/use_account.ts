@@ -34,7 +34,7 @@ interface OfferPair {
 
 const CENTS_PER_UNIT = 100
 const LOCALE_PRICES = 'en-CA'
-const MESSAGE_SIGNED_OUT = 'This copy of Remi is not signed in to an account.'
+const MESSAGE_SIGNED_OUT = 'This copy of remi is not signed in to an account.'
 const OFFERS_MAX = 4
 const PERCENT = 100
 const PUBLISHABLE_KEY_PATTERN = /^pk_(?:live|test)_[A-Za-z0-9]{1,250}$/

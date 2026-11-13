@@ -2,7 +2,7 @@
 
 ## Overview
 
-A first launch opens a welcome screen that creates your Remi account. The account holds a balance of transcription hours, and each recording you transcribe draws on it.
+A first launch opens a welcome screen that creates your remi account. The account holds a balance of transcription hours, and each recording you transcribe draws on it.
 
 ## Create Your Account
 
@@ -20,7 +20,7 @@ The balance shows in the sidebar. A transcription takes the length of its record
 
 The hours land in your balance once the payment goes through. A purchase is a one-time payment, so nothing renews.
 
-The *Promo code* box on the *Account* tab redeems a code later. Each code works once per email address.
+The *Promo code* box on the *Account* tab redeems a code later. Each code works once per email address, and an email address gets one offer from each event, whichever of the event's codes it uses.
 
 ## Sign In On Another Computer
 
@@ -32,7 +32,7 @@ The code opens your account, so keep it private, like a password.
 
 ## Use Your Company's Keys
 
-A copy of Remi built without keys asks for an API address and two keys instead, one for transcription and one for notes. Your company gives you all three.
+A copy of remi built without keys asks for an API address and two keys instead, one for transcription and one for notes. Your company gives you all three.
 
 1. Enter the *API address*, such as `https://api.example.com`.
 2. Paste the *Transcription key* and the *Notes key*.

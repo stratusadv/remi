@@ -83,15 +83,21 @@ const rendered = computed<RenderedBlock[]>(() => {
 })
 
 const status = computed<string | null>(() => {
-    const { answer, meetings, sources, state } = props.exchange
+    const { answer, meetings, notice, sources, state } = props.exchange
 
-    if (state === 'searching') return 'Searching your meetings'
+    if (state === 'searching') return notice.length > 0 ? notice : 'Searching your meetings'
     if (state !== 'answering') return null
     if (answer.length > 0) return null
 
     const passages = count_label(sources.length, 'passage')
 
     return `Reading ${passages} from ${count_label(meetings.length, 'meeting')}`
+})
+
+const notice_shown = computed<boolean>(() => {
+    const { notice, state } = props.exchange
+
+    return notice.length > 0 && (state === 'answering' || state === 'done')
 })
 
 const problem = computed<string | null>(() => {
@@ -318,6 +324,8 @@ async function source_open(entry: SourceCited): Promise<void> {
             </div>
 
             <p v-if="exchange.state === 'stopped'" class="ask-stopped">Stopped</p>
+
+            <p v-if="notice_shown" class="ask-notice" role="note">{{ exchange.notice }}</p>
 
             <details v-if="!live && cited.length > 0" class="ask-sources">
                 <summary class="ask-sources-toggle">
@@ -628,7 +636,8 @@ async function source_open(entry: SourceCited): Promise<void> {
     user-select: text;
 }
 
-.ask-stopped {
+.ask-stopped,
+.ask-notice {
     margin: 0;
     color: var(--color-content-meta);
     font-size: 0.8125rem;

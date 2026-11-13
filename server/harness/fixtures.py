@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from typing_extensions import TYPE_CHECKING
+from urllib.request import OpenerDirector
 
 from django.core.cache import cache
 
@@ -10,12 +11,14 @@ from django_spire.metric import metric as spire_metric
 
 from app.checkout import client as checkout_client
 from harness.metric import MetricExecutorFake
+from harness.sendgrid import SENDGRID_API_KEY, SendgridFake
 from harness.stripe import (
     STRIPE_PUBLISHABLE_KEY,
     STRIPE_SECRET_KEY,
     STRIPE_WEBHOOK_SECRET,
     StripeFake,
 )
+from system import base_settings
 
 if TYPE_CHECKING:
     from pytest_django.fixtures import Settings
@@ -45,6 +48,18 @@ def metric_dispatched(
     monkeypatch.setattr(spire_metric, '_record_executor', executor)
 
     return executor
+
+
+@pytest.fixture
+def sendgrid_fake(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> SendgridFake:
+    fake = SendgridFake()
+
+    settings.EMAIL_BACKEND = base_settings.EMAIL_BACKEND
+    settings.SENDGRID_API_KEY = SENDGRID_API_KEY
+
+    monkeypatch.setattr(OpenerDirector, 'open', fake.open)
+
+    return fake
 
 
 @pytest.fixture

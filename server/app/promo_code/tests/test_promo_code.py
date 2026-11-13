@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import threading
 
 import pytest
@@ -16,18 +17,204 @@ from app.account.models import Account
 from app.account.tests.factories import create_test_account
 from app.core.exceptions import PromoInvalidError
 from app.funnel.choices import CampaignChoices
+from app.promo_code.constants import PROMO_CODE_ISSUE_ATTEMPTS_MAX
 from app.promo_code.models import PromoCode
+from app.promo_code.services import processor_service
 from app.promo_code.tests.factories import create_test_promo_code
 from harness.api import ACCOUNT_PATH, ACCOUNT_PROMO_PATH, account_create, account_get, api_post
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from django.test import Client
 
 
 pytestmark = pytest.mark.django_db
+CODE_GROUP = '[23456789ABCDEFGHJKMNPQRSTVWXYZ]{4}'
+CODE_PATTERN = re.compile(f'WIB-{CODE_GROUP}-{CODE_GROUP}')
+ISSUE_SAMPLES = 120
 LOCK_HOLD_SECONDS = 1.0
 PROMO_CHANGELIST = 'admin:promo_code_promocode_changelist'
 THREAD_WAIT_SECONDS = 10.0
+
+
+def _code_texts(*texts: str) -> Callable[[str], str]:
+    queued = list(texts)
+
+    def code_issue_text(campaign: str) -> str:
+        _ = campaign
+
+        return queued.pop(0)
+
+    return code_issue_text
+
+
+def _wib_shared(hours: int = 50) -> PromoCode:
+    return create_test_promo_code(campaign=CampaignChoices.WIB, code='WIB2026', hours=hours)
+
+
+def test_issued_codes_carry_the_campaign_an_unambiguous_body_and_the_shared_terms() -> None:
+    shared = _wib_shared(hours=40)
+
+    issued = [
+        shared.services.processor.issue(f'person{index}@example.com')
+        for index in range(ISSUE_SAMPLES)
+    ]
+
+    codes = {promo.code for promo in issued}
+
+    assert len(codes) == ISSUE_SAMPLES
+    assert all(CODE_PATTERN.fullmatch(code) for code in codes)
+    assert {promo.campaign for promo in issued} == {CampaignChoices.WIB}
+    assert {promo.hours for promo in issued} == {40}
+    assert {promo.redemptions_max for promo in issued} == {1}
+    assert PromoCode.objects.issued().count() == ISSUE_SAMPLES
+    assert list(PromoCode.objects.shared()) == [shared]
+
+
+def test_an_address_keeps_one_code_in_any_case_and_only_a_shared_code_issues() -> None:
+    shared = _wib_shared()
+    first = shared.services.processor.issue('Avery@Example.com')
+    again = shared.services.processor.issue('avery@example.com')
+
+    assert again.pk == first.pk
+    assert PromoCode.objects.issued().count() == 1
+
+    with pytest.raises(ValueError, match='only a shared promo code issues'):
+        first.services.processor.issue('morgan@example.com')
+
+    with pytest.raises(ValueError, match='email must be 1 to 254 characters'):
+        shared.services.processor.issue('')
+
+
+def test_an_issued_code_that_collides_is_drawn_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    shared = _wib_shared()
+    taken = shared.services.processor.issue('morgan@example.com')
+    code_issue_text = _code_texts(taken.code.lower(), 'WIB-2345-6789')
+
+    monkeypatch.setattr(processor_service, '_code_issue_text', code_issue_text)
+
+    issued = shared.services.processor.issue('avery@example.com')
+
+    assert issued.code == 'WIB-2345-6789'
+    assert issued.email == 'avery@example.com'
+    assert PromoCode.objects.issued().count() == 2
+
+
+def test_an_issue_that_never_finds_a_free_code_gives_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    shared = _wib_shared()
+    taken = shared.services.processor.issue('morgan@example.com')
+    codes_taken = [taken.code] * PROMO_CODE_ISSUE_ATTEMPTS_MAX
+    code_issue_text = _code_texts(*codes_taken)
+
+    monkeypatch.setattr(processor_service, '_code_issue_text', code_issue_text)
+
+    with pytest.raises(RuntimeError, match='no personal wib code was free in 8 tries'):
+        shared.services.processor.issue('avery@example.com')
+
+    assert PromoCode.objects.issued().count() == 1
+
+
+def test_an_issue_racing_another_for_the_same_address_returns_the_winner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = _wib_shared()
+    code_original = processor_service._code_issue_text
+
+    def code_issue_text_raced(campaign: str) -> str:
+        monkeypatch.setattr(processor_service, '_code_issue_text', code_original)
+
+        winner = PromoCode(
+            campaign=CampaignChoices.WIB,
+            code='WIB-WWWW-2222',
+            email='AVERY@example.com',
+            hours=50,
+            redemptions_max=1,
+        )
+
+        winner.services.save_model_obj()
+
+        return code_original(campaign)
+
+    monkeypatch.setattr(processor_service, '_code_issue_text', code_issue_text_raced)
+
+    issued = shared.services.processor.issue('avery@example.com')
+
+    assert issued.code == 'WIB-WWWW-2222'
+    assert PromoCode.objects.issued().count() == 1
+
+
+def test_a_campaign_offer_is_redeemed_once_per_email_and_general_codes_stack(
+    client: Client,
+) -> None:
+    shared = _wib_shared()
+    personal = shared.services.processor.issue('avery@example.com')
+    create_test_promo_code(code='FRIEND', hours=3)
+    create_test_promo_code(code='PODCAST', hours=4)
+
+    token = account_create(client, promo_code='WIB2026')
+    body_personal = {'code': personal.code}
+    body_other = {'email': 'AVERY@example.com', 'name': 'Avery', 'promo_code': personal.code}
+    stacked = api_post(client, ACCOUNT_PROMO_PATH, body=body_personal, token=token)
+    other_account = api_post(client, ACCOUNT_PATH, body=body_other)
+
+    assert stacked.status_code == 400
+    assert other_account.status_code == 400
+    assert other_account.json()['error']['message'] == stacked.json()['error']['message']
+    assert stacked.json()['error']['message'] == (
+        'This email address already redeemed the Women in Business offer.'
+    )
+
+    body_friend = {'code': 'FRIEND'}
+    body_podcast = {'code': 'PODCAST'}
+    friend = api_post(client, ACCOUNT_PROMO_PATH, body=body_friend, token=token)
+    podcast = api_post(client, ACCOUNT_PROMO_PATH, body=body_podcast, token=token)
+
+    assert friend.status_code == 200
+    assert podcast.status_code == 200
+    assert account_get(client, token)['balance_seconds'] == (50 + 3 + 4) * SECONDS_PER_HOUR
+
+
+def test_only_a_personal_code_records_a_download_and_keeps_the_first() -> None:
+    shared = _wib_shared()
+    personal = shared.services.processor.issue('avery@example.com')
+
+    personal.services.processor.download_record()
+
+    stamped = PromoCode.objects.get(pk=personal.pk).downloaded_datetime
+
+    personal.services.processor.download_record()
+
+    assert stamped is not None
+    assert PromoCode.objects.get(pk=personal.pk).downloaded_datetime == stamped
+
+    with pytest.raises(ValueError, match='only a personal promo code records its download'):
+        shared.services.processor.download_record()
+
+
+def test_promo_code_admin_follow_up_lists_codes_emailed_but_never_used(
+    admin_client: Client,
+) -> None:
+    shared = _wib_shared()
+    waiting = shared.services.processor.issue('waiting@example.com')
+    downloaded = shared.services.processor.issue('downloaded@example.com')
+    redeemed = shared.services.processor.issue('redeemed@example.com')
+
+    downloaded.services.processor.download_record()
+    redeemed.services.processor.download_record()
+    account_create(admin_client, email='redeemed@example.com', promo_code=redeemed.code)
+
+    url = reverse(PROMO_CHANGELIST)
+    query_emailed = {'follow_up': 'emailed'}
+    query_downloaded = {'follow_up': 'downloaded'}
+    emailed = admin_client.get(url, query_emailed)
+    stuck = admin_client.get(url, query_downloaded)
+    everything = admin_client.get(url)
+
+    assert [promo.code for promo in emailed.context['cl'].queryset] == [waiting.code]
+    assert [promo.code for promo in stuck.context['cl'].queryset] == [downloaded.code]
+    assert everything.context['cl'].queryset.count() == 4
+    assert b'waiting@example.com' in everything.content
 
 
 def test_promo_code_admin_creates_edits_and_toggles_a_code(admin_client: Client) -> None:

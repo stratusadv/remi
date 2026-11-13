@@ -471,7 +471,7 @@ describe('checkout_preload when Stripe refuses a form', () => {
 })
 
 describe('stripe_appearance', () => {
-    it('follows the light or dark theme Remi is showing', () => {
+    it('follows the light or dark theme remi is showing', () => {
         document.documentElement.classList.add('theme-light')
 
         expect(stripe_appearance().theme).toBe('stripe')
@@ -481,7 +481,7 @@ describe('stripe_appearance', () => {
         expect(stripe_appearance().theme).toBe('night')
     })
 
-    it('takes its colors and sizes from the theme tokens and keeps the Remi font first', () => {
+    it('takes its colors and sizes from the theme tokens and keeps the remi font first', () => {
         const appearance = stripe_appearance()
 
         expect(appearance.variables).toMatchObject({

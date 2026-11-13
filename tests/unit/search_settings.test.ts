@@ -13,6 +13,7 @@ vi.mock('../../src/lib/ipc')
 
 const API_HOST = 'https://api.example.test'
 const MODEL = 'qwen3-embedding:0.6b'
+const MODEL_DEFAULT = 'stratus.embed'
 const POLL_MS = 1500
 const SELECTOR_HOST = 'input[type="url"]'
 const SELECTOR_MODEL = 'input[type="text"]'
@@ -53,7 +54,14 @@ async function mount_settings(model: string | null): Promise<VueWrapper> {
 function status_build(patch: Partial<SearchStatus>): SearchStatus {
     assert(typeof patch === 'object')
 
-    const built = { error: null, model: MODEL, passages: 40, passages_embedded: 40, ...patch }
+    const built = {
+        error: null,
+        model: MODEL,
+        model_default: MODEL_DEFAULT,
+        passages: 40,
+        passages_embedded: 40,
+        ...patch,
+    }
 
     assert(built.passages_embedded <= built.passages)
 
@@ -94,12 +102,28 @@ describe('SearchSettings status', () => {
         expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     })
 
+    it('shows the default model and follows its progress when none is chosen', async () => {
+        const preparing = status_build({ model: MODEL_DEFAULT, passages_embedded: 12 })
+
+        vi.mocked(ipc.search_status).mockResolvedValue(preparing)
+
+        const wrapper = await mount_settings(null)
+
+        expect(wrapper.get<HTMLInputElement>(SELECTOR_MODEL).element.value).toBe(MODEL_DEFAULT)
+        expect(wrapper.text()).toContain('Ask can search 12 of 40 passages by meaning.')
+
+        vi.advanceTimersByTime(POLL_MS)
+        await flushPromises()
+
+        expect(ipc.search_status).toHaveBeenCalledTimes(2)
+    })
+
     it('stays quiet and skips polling while the search model is off', async () => {
         const off = status_build({ model: null, passages_embedded: 0 })
 
         vi.mocked(ipc.search_status).mockResolvedValue(off)
 
-        const wrapper = await mount_settings(null)
+        const wrapper = await mount_settings('')
 
         expect(wrapper.get(SELECTOR_MODEL).attributes('placeholder')).toBe('Off')
         expect(wrapper.get(SELECTOR_HOST).attributes('placeholder')).toBe(API_HOST)
@@ -131,10 +155,12 @@ describe('SearchSettings status', () => {
 })
 
 describe('SearchSettings fields', () => {
-    it('saves a trimmed model and address and clears the model back to off', async () => {
-        vi.mocked(ipc.search_status).mockResolvedValue(status_build({ model: null }))
+    it('saves a model and address, turns off when cleared, and restores the default', async () => {
+        const off = status_build({ model: null, passages_embedded: 0 })
 
-        const wrapper = await mount_settings(null)
+        vi.mocked(ipc.search_status).mockResolvedValue(off)
+
+        const wrapper = await mount_settings('')
         const model = wrapper.get<HTMLInputElement>(SELECTOR_MODEL)
 
         await model.setValue(`  ${MODEL}  `)
@@ -160,8 +186,14 @@ describe('SearchSettings fields', () => {
         await model.trigger('blur')
         await flushPromises()
 
+        expect(settings_state.settings.value.embeddings_model).toBe('')
+
+        await model.setValue(MODEL_DEFAULT)
+        await model.trigger('blur')
+        await flushPromises()
+
         expect(settings_state.settings.value.embeddings_model).toBeNull()
-        expect(ipc.settings_update).toHaveBeenCalledTimes(3)
+        expect(ipc.settings_update).toHaveBeenCalledTimes(4)
     })
 
     it('leaves the settings alone when a field is left unchanged', async () => {
@@ -176,6 +208,19 @@ describe('SearchSettings fields', () => {
 
         expect(ipc.settings_update).not.toHaveBeenCalled()
         expect(model.element.value).toBe(MODEL)
+    })
+
+    it('leaves the default alone when its field is left unchanged', async () => {
+        vi.mocked(ipc.search_status).mockResolvedValue(status_build({ model: MODEL_DEFAULT }))
+
+        const wrapper = await mount_settings(null)
+        const model = wrapper.get<HTMLInputElement>(SELECTOR_MODEL)
+
+        await model.trigger('blur')
+        await flushPromises()
+
+        expect(ipc.settings_update).not.toHaveBeenCalled()
+        expect(model.element.value).toBe(MODEL_DEFAULT)
     })
 })
 

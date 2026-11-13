@@ -13,6 +13,11 @@ class UnavailableError(BillingError):
     status = 503
 
 
+class AskInactiveError(RefusalError):
+    code = 'ask_inactive'
+    status = 403
+
+
 class BalanceInsufficientError(RefusalError):
     code = 'balance_insufficient'
     status = 402
@@ -28,9 +33,19 @@ class PromoInvalidError(RefusalError):
     status = 400
 
 
+class QuestionUnknownError(RefusalError):
+    code = 'question_unknown'
+    status = 404
+
+
 class RequestInvalidError(RefusalError):
     code = 'request_invalid'
     status = 400
+
+
+class EmailUnavailableError(UnavailableError):
+    code = 'email_unavailable'
+    status = 503
 
 
 class PaymentsUnavailableError(UnavailableError):

@@ -77,7 +77,7 @@ afterEach(() => {
 })
 
 describe('RecordingTile', () => {
-    it('shows the title, date, people and status', async () => {
+    it('shows the title, date and people, and no status pill', async () => {
         const job = job_listing_build({ has_transcript: true })
         const wrapper = mount_tile(job, 'Jane Doe, John Doe')
 
@@ -85,9 +85,9 @@ describe('RecordingTile', () => {
 
         expect(wrapper.get('.recording-tile-title').text()).toBe('Weekly sync')
         expect(wrapper.get('.recording-tile-people').text()).toBe('Jane Doe, John Doe')
-        expect(wrapper.get('.recording-tile-foot span').text()).toBe('Today, 9:00 AM')
-        expect(wrapper.get('.recording-tile-status').text()).toBe('Transcribed')
-        expect(wrapper.get('.recording-tile-status').attributes('data-state')).toBe('transcript')
+        expect(wrapper.get('.recording-tile-foot').text()).toBe('Today, 9:00 AM')
+        expect(wrapper.find('.recording-tile-status').exists()).toBe(false)
+        expect(wrapper.find('.pill').exists()).toBe(false)
     })
 
     it('prefers the search snippet over the people text', async () => {

@@ -24,7 +24,10 @@ vi.mock('@tauri-apps/api/event')
 const CHAT_SAVED = '1b4e28ba-2fa1-41d2-883f-0016d3cca427'
 const EVENT_CHUNK = 'notes_generate_chunk'
 const EVENT_SOURCES = 'notes_ask_sources'
+const EVENT_WAIT = 'notes_ask_wait'
 const EXCHANGES_MAX = 30
+const NOTICE_HALF = 'You have used half of this month\'s full-speed questions. About 40 are left.'
+const NOTICE_WAIT = 'You have asked 20 questions in the last 10 minutes, so remi is pacing them.'
 const SCOPE_ALL = Object.freeze<AskScope>({ kind: 'all' })
 const SCOPE_PROJECT = Object.freeze<AskScope>({ kind: 'project', project: 'remi' })
 
@@ -106,6 +109,7 @@ function exchange_build(patch: Partial<Exchange>): Exchange {
         scope: SCOPE_ALL,
         answer: 'Sam drafts it [M1].',
         meetings: [],
+        notice: '',
         sources: [],
         state: 'done',
         error: null,
@@ -121,6 +125,7 @@ function sources_send(stream_id: StreamID): void {
     event_send(EVENT_SOURCES, {
         stream_id,
         meetings: [job_meta_build()],
+        notice: '',
         sources: [ask_source_build()],
     })
 }
@@ -170,7 +175,52 @@ describe('ask', () => {
         expect(streamed[0]?.sources).toHaveLength(1)
         expect(ask_state.exchanges.value[0]?.state).toBe('done')
         expect(ask_state.busy.value).toBe(false)
-        expect(unlisten).toHaveBeenCalledTimes(2)
+        expect(unlisten).toHaveBeenCalledTimes(vi.mocked(listen).mock.calls.length)
+    })
+})
+
+describe('ask notices', () => {
+    it('shows the wait for a turn, then the notice the turn came with', async () => {
+        const seen: string[] = []
+
+        vi.mocked(ipc.notes_ask_streaming).mockImplementation(async (stream_id) => {
+            event_send(EVENT_WAIT, { notice: NOTICE_WAIT, stream_id: 'another-stream' })
+            seen.push(ask_state.exchanges.value[0]?.notice ?? 'missing')
+            event_send(EVENT_WAIT, { notice: NOTICE_WAIT, stream_id })
+            seen.push(ask_state.exchanges.value[0]?.notice ?? 'missing')
+
+            event_send(EVENT_SOURCES, {
+                stream_id,
+                meetings: [job_meta_build()],
+                notice: NOTICE_HALF,
+                sources: [ask_source_build()],
+            })
+
+            seen.push(ask_state.exchanges.value[0]?.notice ?? 'missing')
+
+            return Promise.resolve('Sam drafts it [M1].')
+        })
+
+        await ask_state.ask('Who drafts the banner?', SCOPE_ALL)
+
+        expect(seen).toEqual(['', NOTICE_WAIT, NOTICE_HALF])
+        expect(ask_state.exchanges.value[0]?.state).toBe('done')
+        expect(ask_state.exchanges.value[0]?.notice).toBe(NOTICE_HALF)
+        expect(vi.mocked(listen).mock.calls.map((entry) => entry[0])).toContain(EVENT_WAIT)
+    })
+
+    it('starts a retried question without the notice of the last attempt', async () => {
+        vi.mocked(ipc.notes_ask_streaming).mockRejectedValue(new Error('api error: busy'))
+
+        ask_state.exchanges.value = [exchange_build({ notice: NOTICE_HALF, state: 'failed' })]
+
+        const retrying = ask_state.retry()
+
+        expect(ask_state.exchanges.value[0]?.notice).toBe('')
+
+        await retrying
+
+        expect(ask_state.exchanges.value[0]?.state).toBe('failed')
     })
 })
 

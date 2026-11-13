@@ -120,7 +120,14 @@ const ASK_ANSWER_SAMPLE = 'The team agreed to ship the transcription retry work 
 const ASK_BANNER_WORD = 'banner'
 const ASK_MESSAGE_CANCELLED = 'api error: Cancelled'
 const ASK_MESSAGE_NOTHING = 'There are no notes or transcripts to search here yet.'
+
+const ASK_NOTICE_PACED = 'You have asked a lot this month, so remi answers one question every '
+    + '5 minutes.'
+
+const ASK_NOTICE_WAIT = `${ASK_NOTICE_PACED} This answer starts in under a minute.`
+const ASK_SCENARIO_PACED = 'paced'
 const ASK_SEARCH_DELAY_MS = 240
+const ASK_WAIT_DELAY_MS = 600
 const ASK_SNIPPET_CHARS_MAX = 200
 const ASK_SOURCES_MAX = 6
 const ASK_SUMMARY_WORD = 'summar'
@@ -138,11 +145,13 @@ const DURATION_SECONDS_SAMPLE = 144
 const ENDPOINT_ID_NOTES = 'builtin-notes'
 const ENDPOINT_ID_TRANSCRIPTION = 'builtin-transcription'
 const EVENT_ASK_SOURCES = 'notes_ask_sources'
+const EVENT_ASK_WAIT = 'notes_ask_wait'
 const JOB_ID_SAMPLE = '86dfb1d3b0140ecf2fd59075421f1cb5'
 const JOB_ID_SAMPLE_SECOND = '47ead100cc5cd956aa10b3c4d5e6f708'
 const KEY_LENGTH_MAX = 64
-const RECORDING_PATH_SAMPLE = 'C:\\Users\\mock\\Music\\Remi Remembers\\Recording mock.wav'
-const RECORDINGS_DIRECTORY_SAMPLE = 'C:\\Users\\mock\\Music\\Remi Remembers'
+const RECORDING_PATH_SAMPLE = 'C:\\Users\\mock\\Music\\remi\\Recording mock.wav'
+const RECORDINGS_DIRECTORY_SAMPLE = 'C:\\Users\\mock\\Music\\remi'
+const SEARCH_MODEL_DEFAULT = 'stratus.embed'
 const SECONDS_PER_HOUR = 3600
 const SECONDS_PER_LINE = 18
 const SECONDS_PER_MINUTE = 60
@@ -200,7 +209,7 @@ const REPLIES_FIXED: ReadonlyMap<string, unknown> = new Map<string, unknown>([
         },
     ],
     ['plugin:app|identifier', 'com.stratusadv.remi'],
-    ['plugin:app|name', 'Remi Remembers'],
+    ['plugin:app|name', 'remi'],
     ['plugin:app|tauri_version', '2.11.0'],
     ['plugin:app|version', '0.1.0-browser-mock'],
     ['plugin:dialog|save', '/home/you/Documents/notes.docx'],
@@ -692,7 +701,10 @@ function ask_snippet(text: string): string {
     return `${plain.slice(0, ASK_SNIPPET_CHARS_MAX).trimEnd()}…`
 }
 
-function ask_sources_build(question: string, scope: AskScope): Omit<AskSources, 'stream_id'> {
+function ask_sources_build(
+    question: string,
+    scope: AskScope,
+): Omit<AskSources, 'notice' | 'stream_id'> {
     assert(question.trim().length > 0)
     assert(scope.kind !== 'project' || scope.project.trim().length > 0)
 
@@ -732,16 +744,28 @@ async function ask_stream(call: CommandCall): Promise<string> {
     const question = text_field(call, 'question')
     const history = turns_field(call)
     const found = ask_sources_build(ask_question_standalone(question, history), scope_field(call))
+    const paced = new URLSearchParams(window.location.search).get('ask') === ASK_SCENARIO_PACED
+    const notice = paced ? ASK_NOTICE_PACED : ''
+    const turn = paced ? ask_turn_wait(stream_id) : Promise.resolve()
 
-    return sleep(ASK_SEARCH_DELAY_MS).then(async () => {
+    return turn.then(async () => sleep(ASK_SEARCH_DELAY_MS)).then(async () => {
         if (store.streams_cancelled.delete(stream_id)) throw new Error(ASK_MESSAGE_CANCELLED)
 
-        event_emit(EVENT_ASK_SOURCES, { stream_id, ...found })
+        event_emit(EVENT_ASK_SOURCES, { stream_id, notice, ...found })
 
         if (found.sources.length === 0) return ASK_MESSAGE_NOTHING
 
         return stream_text_emit(stream_id, ask_answer(question, history, found.sources))
     })
+}
+
+async function ask_turn_wait(stream_id: string): Promise<void> {
+    assert(stream_id.length > 0)
+    assert(ASK_NOTICE_WAIT.startsWith(ASK_NOTICE_PACED))
+
+    event_emit(EVENT_ASK_WAIT, { notice: ASK_NOTICE_WAIT, stream_id })
+
+    return sleep(ASK_WAIT_DELAY_MS)
 }
 
 function ask_transcript_sources(job: JobMeta, words: string[]): AskSourceDraft[] {
@@ -1578,14 +1602,30 @@ function record_upsert<Item extends Identified>(items: Item[], item: Item): null
     return null
 }
 
+function search_model_of(saved: string | null): string | null {
+    assert(saved === null || saved.trim() === saved)
+    assert(SEARCH_MODEL_DEFAULT.length > 0)
+
+    if (saved === null) return SEARCH_MODEL_DEFAULT
+    if (saved === '') return null
+
+    return saved
+}
+
 function search_status(): SearchStatus {
-    const model = store.settings.embeddings_model
+    const model = search_model_of(store.settings.embeddings_model)
     const passages = store.transcripts.size
 
-    assert(model === null || model.trim() === model)
+    assert(model === null || model.length > 0)
     assert(passages >= 0)
 
-    return { error: null, model, passages, passages_embedded: model === null ? 0 : passages }
+    return {
+        error: null,
+        model,
+        model_default: SEARCH_MODEL_DEFAULT,
+        passages,
+        passages_embedded: model === null ? 0 : passages,
+    }
 }
 
 function service_api_key_set(call: CommandCall): null {

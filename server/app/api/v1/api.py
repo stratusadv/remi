@@ -29,7 +29,7 @@ api_v1 = NinjaAPI(
         AnonRateThrottle(THROTTLE_RATE_ANONYMOUS),
         AuthRateThrottle(THROTTLE_RATE_AUTHENTICATED),
     ],
-    title='Remi Remembers API',
+    title='remi API',
     urls_namespace='api_v1',
     version='1.0.0',
 )

@@ -13,7 +13,7 @@ import { assert } from '../lib/assert'
 import { seconds_to_clock_hours } from '../lib/duration'
 import { error_dialog_show } from '../lib/errors'
 import { ipc } from '../lib/ipc'
-import { job_askable, job_duration_text, job_status, job_title } from '../lib/job_status'
+import { job_askable, job_duration_text, job_title } from '../lib/job_status'
 import { MENU_ITEM_ASK, MENU_ITEM_DELETE, MENU_ITEM_MOVE, MENU_ITEM_RENAME } from '../lib/menu'
 import AskButton from './ask_button.vue'
 import FolderMoveDialog from './folder_move_dialog.vue'
@@ -27,7 +27,7 @@ import type { MenuItem } from '../lib/menu'
 import type { JobListing, JobMeta, JobSearchHit, JobsViewChoice } from '../types'
 
 
-type SortKey = 'date' | 'duration' | 'people' | 'status' | 'title'
+type SortKey = 'date' | 'duration' | 'people' | 'title'
 
 interface SortColumn {
     key: SortKey
@@ -37,7 +37,7 @@ interface SortColumn {
 
 const DURATION_TEXT_NONE = '-:--'
 
-const MESSAGE_DELETE = 'The transcript, the notes, and the copy of the audio kept by Remi are '
+const MESSAGE_DELETE = 'The transcript, the notes, and the copy of the audio kept by remi are '
     + 'removed. Any original file, including a microphone recording, stays where it is. '
     + 'This cannot be undone.'
 
@@ -53,10 +53,9 @@ const SORT_COLUMNS: SortColumn[] = [
     { key: 'people', label: 'Participants', descending_first: false },
     { key: 'date', label: 'Date', descending_first: true },
     { key: 'duration', label: 'Duration', descending_first: true },
-    { key: 'status', label: 'Status', descending_first: false },
 ]
 
-const { meeting_ask } = use_ask()
+const { folder_ask, meeting_ask } = use_ask()
 const { open: context_menu_open } = use_context_menu()
 const { confirm: dialog_confirm } = use_dialog()
 const { drag_press } = use_job_drag()
@@ -433,7 +432,6 @@ function sort_value_of(job: JobListing, key: SortKey): number | string {
         case 'date': return job.created_at_unix
         case 'duration': return job.duration_seconds ?? -1
         case 'people': return (people_text_for(job) ?? '').toLowerCase()
-        case 'status': return job_status(job).text
         case 'title': return job_title(job).toLowerCase()
     }
 }
@@ -482,6 +480,14 @@ function sort_value_of(job: JobListing, key: SortKey): number | string {
                     @click="job_start_new"
                 >
                     New recording
+                </button>
+                <button
+                    v-else-if="jobs_shown.some(job_askable)"
+                    type="button"
+                    class="btn-primary"
+                    @click="folder_ask(folder_current)"
+                >
+                    Ask about this folder
                 </button>
                 <div class="view-switch" role="group" aria-label="Layout">
                     <button
@@ -611,14 +617,6 @@ function sort_value_of(job: JobListing, key: SortKey): number | string {
                         </td>
                         <td class="recording-table-muted recording-table-nowrap">
                             {{ job_duration_text(job) ?? DURATION_TEXT_NONE }}
-                        </td>
-                        <td class="recording-table-nowrap">
-                            <span
-                                class="pill recording-tile-status"
-                                :data-state="job_status(job).state"
-                            >
-                                {{ job_status(job).text }}
-                            </span>
                         </td>
                         <td @click.stop @keydown.enter.stop>
                             <div class="recording-table-actions">

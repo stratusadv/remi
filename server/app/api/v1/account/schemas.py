@@ -126,3 +126,19 @@ class CheckoutSchema(Schema):
 
 class CheckoutStartSchema(RequestBodySchema):
     hours: int
+
+
+class QuestionFinishedSchema(Schema):
+    question_id: int
+    tokens: int
+
+
+class QuestionFinishSchema(RequestBodySchema):
+    question_id: int
+    tokens: int
+
+
+class QuestionStartedSchema(Schema):
+    notice: str
+    question_id: int | None
+    wait_seconds: int

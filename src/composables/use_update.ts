@@ -45,10 +45,10 @@ const status_text = computed(() => {
     switch (phase.value) {
         case 'idle': return ''
         case 'checking': return 'Checking for updates…'
-        case 'none': return 'Remi is up to date.'
-        case 'available': return `Remi ${update_version.value ?? ''} is ready to install.`
+        case 'none': return 'remi is up to date.'
+        case 'available': return `remi ${update_version.value ?? ''} is ready to install.`
         case 'downloading': return status_text_downloading()
-        case 'installing': return 'Installing the update. Remi will restart in a moment.'
+        case 'installing': return 'Installing the update. remi will restart in a moment.'
         case 'error': return error_message.value ?? 'The update check failed.'
     }
 })
@@ -212,7 +212,7 @@ async function update_install(): Promise<void> {
 
     if (tasks_running.value.length > 0) {
         return dialog_message(
-            'Remi is still working on a recording. Wait for it to finish, then install '
+            'remi is still working on a recording. Wait for it to finish, then install '
             + 'the update from Settings.',
             { title: 'Update waiting', kind: 'info' },
         )
@@ -237,7 +237,7 @@ async function update_install_failed(error: unknown): Promise<void> {
 
     phase_set('error')
 
-    const failure = 'The update could not be installed. Remi keeps working as '
+    const failure = 'The update could not be installed. remi keeps working as '
         + `it is; try again later from Settings. (${error_text_extract(error)})`
 
     error_message.value = failure
@@ -256,8 +256,8 @@ async function update_prompt(): Promise<void> {
     assert(update_pending.value !== null)
 
     const answer = dialog_confirm(
-        `A new version of Remi (${update_version.value}) is ready. Installing takes `
-        + 'about a minute and Remi will restart. Install it now?',
+        `A new version of remi (${update_version.value}) is ready. Installing takes `
+        + 'about a minute and remi will restart. Install it now?',
         {
             title: 'Update available',
             kind: 'info',

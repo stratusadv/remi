@@ -15,6 +15,9 @@ from app.api.v1.account.schemas import (
     CheckoutFinishSchema,
     CheckoutSchema,
     CheckoutStartSchema,
+    QuestionFinishedSchema,
+    QuestionFinishSchema,
+    QuestionStartedSchema,
 )
 
 
@@ -96,3 +99,32 @@ def account_promo(request: AccountRequest, payload: AccountPromoSchema) -> Accou
         raise TypeError(message)
 
     return request.auth.services.processor.promo_redeem(payload.code)
+
+
+@router.post('/question/', response=QuestionStartedSchema)
+def account_question_start(request: AccountRequest) -> dict[str, object]:
+    if request.auth.pk is None:
+        message = f'the authenticated account must be saved: {request.auth!r}'
+        raise ValueError(message)
+
+    question, pace = request.auth.services.processor.question_start()
+    question_id = None if question is None else question.pk
+
+    return {'notice': pace.notice, 'question_id': question_id, 'wait_seconds': pace.wait_seconds}
+
+
+@router.post('/question/finish/', response=QuestionFinishedSchema)
+def account_question_finish(
+    request: AccountRequest,
+    payload: QuestionFinishSchema,
+) -> dict[str, object]:
+    if not isinstance(payload, QuestionFinishSchema):
+        message = f'payload must be a QuestionFinishSchema: {type(payload).__name__}'
+        raise TypeError(message)
+
+    question = request.auth.services.processor.question_finish(
+        question_id=payload.question_id,
+        tokens=payload.tokens,
+    )
+
+    return {'question_id': question.pk, 'tokens': question.tokens}

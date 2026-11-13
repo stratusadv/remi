@@ -20,7 +20,7 @@ use tauri_plugin_notification::NotificationExt as _;
 pub(crate) const COMMAND_PREFIX: &str = "desktop_";
 const NOTIFICATION_CHARS_MAX: u32 = 1024;
 #[cfg(target_os = "linux")]
-const NOTIFICATION_APPLICATION_FALLBACK: &str = "remi-remembers";
+const NOTIFICATION_APPLICATION_FALLBACK: &str = "remi";
 #[cfg(target_os = "linux")]
 const NOTIFICATION_CALL_TIMEOUT_MS: i32 = 5000;
 #[cfg(target_os = "linux")]
@@ -202,10 +202,10 @@ mod tests {
     #[test]
     fn a_notification_carries_the_freedesktop_notify_arguments_in_order() {
         let notice = Notice { body: "Weekly sync", title: "Transcribed" };
-        let parameters = notification_parameters("remi-remembers", notice);
+        let parameters = notification_parameters("remi", notice);
 
         assert_eq!(parameters.type_().as_str(), "(susssasa{sv}i)");
-        assert_eq!(parameters.child_value(0).str(), Some("remi-remembers"));
+        assert_eq!(parameters.child_value(0).str(), Some("remi"));
         assert_eq!(parameters.child_value(1).get::<u32>(), Some(0));
         assert_eq!(parameters.child_value(3).str(), Some("Transcribed"));
         assert_eq!(parameters.child_value(4).str(), Some("Weekly sync"));

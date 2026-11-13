@@ -114,7 +114,7 @@ async function transcribe_picked(page: Page): Promise<void> {
 test('a copy with no account signs up and is credited its promo code', async ({ page }) => {
     await billing_open(page, BILLING_SIGNED_OUT)
 
-    await expect(page.getByRole('heading', { name: 'Welcome to Remi' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Welcome to remi' })).toBeVisible()
     await expect(page.locator('aside')).toHaveCount(0)
 
     await page.getByLabel('Name', { exact: true }).fill('Avery Quinn')
@@ -123,7 +123,7 @@ test('a copy with no account signs up and is credited its promo code', async ({ 
     await page.getByRole('button', { name: 'Get started' }).click()
 
     await expect(sidebar_balance(page)).toHaveText('250 hours left')
-    await expect(page.getByRole('heading', { name: 'Welcome to Remi' })).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Welcome to remi' })).toHaveCount(0)
 })
 
 test('a sign-in code from another computer signs the copy in', async ({ page }) => {

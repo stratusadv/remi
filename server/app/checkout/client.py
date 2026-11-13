@@ -56,7 +56,7 @@ def checkout_session_create(parameters: SessionCreateParams) -> stripe.checkout.
         raise ValueError(message)
 
     if parameters.get('ui_mode') != CHECKOUT_UI_MODE:
-        message = f'a checkout session is paid inside Remi: {parameters.get("ui_mode")!r}'
+        message = f'a checkout session is paid inside remi: {parameters.get("ui_mode")!r}'
         raise ValueError(message)
 
     account_id = parameters.get('client_reference_id', '')

@@ -24,6 +24,7 @@ function exchange_build(patch: Partial<Exchange>): Exchange {
         scope: { kind: 'all' },
         answer: 'Sam drafts it.',
         meetings: [],
+        notice: '',
         sources: [],
         state: 'done',
         error: null,
@@ -109,5 +110,55 @@ describe('AskExchange menu', () => {
         await context_menu.choose('retry')
 
         expect(wrapper.emitted('retry')).toHaveLength(1)
+    })
+})
+
+describe('AskExchange notice', () => {
+    const notice_wait = 'You have asked a lot this month, so remi answers one question every 5 '
+        + 'minutes. This answer starts in about 4 minutes.'
+
+    const notice_slow = 'You have asked a lot this month, so remi answers one question every 5 '
+        + 'minutes.'
+
+    it('shows the wait for a turn as the status while the question waits', () => {
+        const patch_waiting: Partial<Exchange> = {
+            answer: '',
+            notice: notice_wait,
+            state: 'searching',
+        }
+
+        const waiting = mount_exchange(patch_waiting, true)
+        const searching = mount_exchange({ answer: '', state: 'searching' }, true)
+
+        expect(waiting.get('.ask-status').text()).toBe(notice_wait)
+        expect(waiting.find('.ask-notice').exists()).toBe(false)
+        expect(searching.get('.ask-status').text()).toBe('Searching your meetings')
+    })
+
+    it('shows the turn notice under an answer and nothing when the turn had none', () => {
+        const noted = mount_exchange({ notice: notice_slow, state: 'done' }, true)
+        const answering = mount_exchange({ notice: notice_slow, state: 'answering' }, true)
+        const plain = mount_exchange({ state: 'done' }, true)
+
+        expect(noted.get('.ask-notice').text()).toBe(notice_slow)
+        expect(answering.get('.ask-notice').text()).toBe(notice_slow)
+        expect(plain.find('.ask-notice').exists()).toBe(false)
+    })
+
+    it('shows the refusal and no notice when a question fails', () => {
+        const patch_failed: Partial<Exchange> = {
+            answer: '',
+            error: 'api error: Ask answers questions for 30 days after each recording remi '
+                + 'processes. Process a recording to keep asking.',
+            notice: notice_slow,
+            state: 'failed',
+        }
+
+        const failed = mount_exchange(patch_failed, true)
+
+        const problem = failed.get('.ask-problem p').text()
+
+        expect(problem).toContain('Process a recording to keep asking.')
+        expect(failed.find('.ask-notice').exists()).toBe(false)
     })
 })

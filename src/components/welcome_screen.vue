@@ -180,7 +180,7 @@ async function submit_step(): Promise<void> {
                 <RemiMark class="welcome-mark" />
                 <p class="eyebrow welcome-eyebrow">Private meeting notes</p>
                 <h1 class="welcome-title">
-                    Welcome to <span class="welcome-brand">Remi</span>
+                    Welcome to <span class="welcome-brand">remi</span>
                 </h1>
                 <p v-if="step === 'keys'" class="welcome-text">
                     Please enter the {{ keys_shown.length > 1 ? 'API keys' : 'API key' }} for this

@@ -1,5 +1,5 @@
 [package]
-name = "remi-remembers"
+name = "remi"
 version = "0.1.5"
 description = "A desktop app that turns a meeting recording into formatted notes"
 authors = ["Brayden Carlson"]

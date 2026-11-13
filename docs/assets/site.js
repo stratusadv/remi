@@ -21,23 +21,23 @@ const font_faces = Object.freeze([
 ]);
 
 const agent = navigator.userAgent;
+const code_pattern = /^[A-Za-z0-9-]{1,64}$/;
 const mac_touch = /Macintosh/.test(agent) && navigator.maxTouchPoints > 1;
 const mobile = mac_touch || /Android|iPhone|iPad|iPod/.test(agent);
 const megabyte_bytes = 1048576;
 const youtube_id_pattern = /^[\w-]{11}$/;
 
+code_show();
 copy_wire();
 notice_show();
 page_reveal();
 video_embed();
 
-fetch('https://api.github.com/repos/stratusadv/remi/releases/latest')
-    .then((response) => response.ok ? response.json() : Promise.reject(response.status))
-    .then(release_render)
-    .catch((error) => {
-        console.warn('the release list could not be loaded', error);
-        document.getElementById('fallback').hidden = false;
-    });
+if (document.getElementById('others') !== null) {
+    release_load().then(
+        (shown) => assert(typeof shown === 'boolean', 'the release list settles as shown or not'),
+    );
+}
 
 function assert(condition, message) {
     console.assert(typeof condition === 'boolean', 'assert expects a boolean condition');
@@ -46,6 +46,21 @@ function assert(condition, message) {
     if (condition) return;
 
     throw new Error(message);
+}
+
+function code_show() {
+    const code = document.getElementById('code');
+
+    if (code === null) return;
+
+    const given = (new URLSearchParams(location.search).get('code') ?? '').trim();
+
+    if (!code_pattern.test(given)) return;
+
+    code.textContent = given.toUpperCase();
+
+    assert(code.textContent.length === given.length, 'the code keeps its length when shown');
+    assert(code_pattern.test(code.textContent), 'the shown code is still a code');
 }
 
 function copy_wire() {
@@ -145,6 +160,24 @@ function platform_detect() {
     return null;
 }
 
+function release_load() {
+    const fallback = document.getElementById('fallback');
+
+    assert(fallback !== null, 'a page with an installer list has a fallback line');
+    assert(fallback.hidden, 'the fallback line starts hidden');
+
+    return fetch('https://api.github.com/repos/stratusadv/remi/releases/latest')
+        .then((response) => response.ok ? response.json() : Promise.reject(response.status))
+        .then(release_render)
+        .then(() => true)
+        .catch((error) => {
+            console.warn('the release list could not be loaded', error);
+            fallback.hidden = false;
+
+            return false;
+        });
+}
+
 function release_point(platform, asset) {
     assert(Object.hasOwn(button_names, platform.key), `${platform.key} has no button name`);
     assert(typeof asset.browser_download_url === 'string', 'the release asset has no address');
@@ -215,7 +248,7 @@ function video_embed() {
     assert(youtube_id_pattern.test(id), `${id} is not an eleven character YouTube video id`);
 
     player.src = `https://www.youtube-nocookie.com/embed/${id}`;
-    player.title = 'Remi Remembers pitch video';
+    player.title = 'remi pitch video';
     player.loading = 'lazy';
     player.allow = 'autoplay; encrypted-media; picture-in-picture; web-share';
     player.allowFullscreen = true;

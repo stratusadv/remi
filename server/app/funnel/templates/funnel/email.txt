@@ -1,0 +1,15 @@
+{% autoescape off %}Put down the pen. Lead the meeting.
+
+{% if code %}Your remi code for the {{ eyebrow }}:
+
+    {{ code }}
+
+It covers {{ hours }} hour{{ hours|pluralize }} of free meeting notes. Enter it in the promo code field when remi first opens.
+
+{% endif %}To get started, open this link on your computer:
+{{ download_url }}
+
+The remi app runs on Windows, macOS, and Linux.
+
+remi is made by Stratus Advanced Technologies: https://stratusadv.com
+This email was sent because this address was entered on the remi website.{% endautoescape %}

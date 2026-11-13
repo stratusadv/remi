@@ -1,6 +1,6 @@
 {
     "$schema": "https://schema.tauri.app/config/2",
-    "productName": "Remi Remembers",
+    "productName": "remi",
     "version": "0.1.5",
     "identifier": "com.stratusadv.remi",
     "build": {
@@ -12,7 +12,7 @@
     "app": {
         "windows": [
             {
-                "title": "Remi Remembers",
+                "title": "remi",
                 "width": 1280,
                 "height": 800,
                 "minWidth": 720,
@@ -52,12 +52,24 @@
         "linux": {
             "appimage": {
                 "bundleMediaFramework": true
+            },
+            "deb": {
+                "conflicts": ["scribe"],
+                "replaces": ["scribe"]
+            },
+            "rpm": {
+                "obsoletes": ["scribe"]
             }
         },
         "macOS": {
             "entitlements": "./Entitlements.plist",
             "minimumSystemVersion": "14.0",
             "signingIdentity": "-"
+        },
+        "windows": {
+            "nsis": {
+                "installerHooks": "./windows-installer-hooks.nsh"
+            }
         }
     },
     "plugins": {

@@ -76,21 +76,21 @@ const API_KEY_FIELDS: APIKeyField[] = [
     {
         purpose: 'transcription',
         label: 'Transcription key',
-        hint: 'This key lets Remi turn your recordings into text. Keep it private, like a '
+        hint: 'This key lets remi turn your recordings into text. Keep it private, like a '
             + 'password.',
     },
     {
         purpose: 'notes',
         label: 'Notes key',
-        hint: 'This key lets Remi write notes from a transcript. Keep it private, like a '
+        hint: 'This key lets remi write notes from a transcript. Keep it private, like a '
             + 'password.',
     },
 ]
 
-const HINT_API_HOST = 'This is the web address of the API that Remi sends recordings and '
+const HINT_API_HOST = 'This is the web address of the API that remi sends recordings and '
     + 'transcripts to. Your company gives you this.'
 
-const HINT_PAGE = 'This page covers how Remi looks, where it saves recordings, and your API '
+const HINT_PAGE = 'This page covers how remi looks, where it saves recordings, and your API '
     + 'keys.'
 
 const HINT_PROMO = 'A promo code adds free transcription hours to your account. Each code works '
@@ -318,7 +318,7 @@ function api_key_source(purpose: APIEndpointPurpose): string {
     const status = service_status.value[purpose]
 
     if (status.user) return 'Your own key is in use.'
-    if (status.builtin) return 'The key built into Remi is in use.'
+    if (status.builtin) return 'The key built into remi is in use.'
 
     return 'No key is set.'
 }
@@ -455,7 +455,7 @@ async function update_action(): Promise<void> {
             class="mb-6"
             @dismiss="host_banner_dismissed = true"
         >
-            An API address is required before Remi can transcribe or write notes.
+            An API address is required before remi can transcribe or write notes.
             <template #actions>
                 <button v-if="tab_current !== 'ai'" class="btn-primary" @click="tab_current = 'ai'">
                     Go to AI
@@ -567,7 +567,7 @@ async function update_action(): Promise<void> {
                     <div class="about-brand">
                         <RemiMark class="about-mark" />
                         <div class="min-w-0">
-                            <p class="meta">Remi Remembers {{ app_version ?? '' }}</p>
+                            <p class="meta">remi {{ app_version ?? '' }}</p>
                             <p v-if="update_status_text" class="meta">{{ update_status_text }}</p>
                             <StratusCredit class="meta" />
                         </div>

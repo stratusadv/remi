@@ -12,6 +12,7 @@ import type {
     AskSource,
     AskSources,
     AskTurn,
+    AskWait,
     ChatChunk,
     ChatExchange,
     ChatExchangeState,
@@ -35,6 +36,7 @@ export interface Exchange {
     scope: AskScope
     answer: string
     meetings: JobMeta[]
+    notice: string
     sources: AskSource[]
     state: ExchangeState
     error: string | null
@@ -43,6 +45,7 @@ export interface Exchange {
 
 const CHAT_ID_PATTERN = /^[0-9a-f-]{36}$/
 const EVENT_ASK_SOURCES = 'notes_ask_sources'
+const EVENT_ASK_WAIT = 'notes_ask_wait'
 const EVENT_NOTES_CHUNK = 'notes_generate_chunk'
 const EXCHANGES_MAX = 30
 const HISTORY_TURNS_MAX = 4
@@ -234,9 +237,17 @@ async function exchange_run(exchange: Exchange): Promise<void> {
 
     const history = history_before(id)
     const take = sources_take.bind(undefined, id, stream_id)
+    const wait = wait_take.bind(undefined, id, stream_id)
 
-    return listen<AskSources>(EVENT_ASK_SOURCES, take)
-        .then(async (unlisten) => exchange_answer(exchange, endpoint_id, history).finally(unlisten))
+    const listening = [
+        listen<AskSources>(EVENT_ASK_SOURCES, take),
+        listen<AskWait>(EVENT_ASK_WAIT, wait),
+    ]
+
+    return Promise.all(listening)
+        .then(async (unlistens) => exchange_answer(exchange, endpoint_id, history).finally(() => {
+            for (const unlisten of unlistens) unlisten()
+        }))
         .then((answer) => {
             exchange_update(id, stream_id, () => ({ answer, state: 'done' }))
         })
@@ -257,6 +268,7 @@ function exchange_start(question: string, asked_in: AskScope): Exchange {
         scope: asked_in,
         answer: '',
         meetings: [],
+        notice: '',
         sources: [],
         state: 'searching',
         error: null,
@@ -281,7 +293,7 @@ function exchange_shown(meetings: readonly JobMeta[], stored: ChatExchange): Exc
 
     assert(cited.length <= stored.sources.length)
 
-    return { ...stored, meetings: cited, stream_id: crypto.randomUUID() }
+    return { ...stored, meetings: cited, notice: '', stream_id: crypto.randomUUID() }
 }
 
 function exchange_stored(exchange: Exchange): ChatExchange {
@@ -370,6 +382,7 @@ async function retry(): Promise<void> {
         ...last,
         answer: '',
         meetings: [],
+        notice: '',
         sources: [],
         state: 'searching',
         error: null,
@@ -398,9 +411,9 @@ function sources_take(id: ExchangeID, stream_id: StreamID, event: Event<AskSourc
 
     if (event.payload.stream_id !== stream_id) return
 
-    const { meetings, sources } = event.payload
+    const { meetings, notice, sources } = event.payload
 
-    exchange_update(id, stream_id, () => ({ meetings, sources, state: 'answering' }))
+    exchange_update(id, stream_id, () => ({ meetings, notice, sources, state: 'answering' }))
 }
 
 async function stop(): Promise<void> {
@@ -414,6 +427,17 @@ async function stop(): Promise<void> {
     assert(!busy.value)
 
     return stream_cancel(live.stream_id).then(async () => chat_persist(chat))
+}
+
+function wait_take(id: ExchangeID, stream_id: StreamID, event: Event<AskWait>): void {
+    assert(id.length > 0)
+    assert(event.payload.notice.length > 0)
+
+    if (event.payload.stream_id !== stream_id) return
+
+    const { notice } = event.payload
+
+    exchange_update(id, stream_id, () => ({ notice }))
 }
 
 async function stream_cancel(stream_id: StreamID): Promise<void> {

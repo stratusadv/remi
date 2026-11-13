@@ -18,11 +18,13 @@ from app.funnel.choices import CampaignChoices
 
 if TYPE_CHECKING:
     from app.account.ledger.querysets import AccountLedgerEntryQuerySet
+    from app.account.question.querysets import AccountQuestionQuerySet
 
 
 class Account(HistoryModelMixin):
     if TYPE_CHECKING:
         ledger_entries: AccountLedgerEntryQuerySet
+        questions: AccountQuestionQuerySet
 
     campaign = models.CharField(
         max_length=16,

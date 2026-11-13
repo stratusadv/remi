@@ -8,6 +8,7 @@ from system.environment import (
     EnvironmentVariable,
     environment_currency,
     environment_flag,
+    environment_integer,
     environment_list,
     environment_offers,
     environment_publishable_key,
@@ -67,6 +68,49 @@ def test_flag_reads_zero_one_or_unset_and_refuses_anything_else(
 
         with pytest.raises(ImproperlyConfigured, match='must be 0 or 1'):
             environment_flag(variable)
+
+
+def test_integer_reads_a_whole_number_within_its_bounds_and_refuses_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    variable = EnvironmentVariable.REMI_ASK_PACE_SECONDS
+
+    monkeypatch.delenv(variable.name, raising=False)
+
+    unset = environment_integer(variable, default=300, maximum=86_400, minimum=1)
+
+    monkeypatch.setenv(variable.name, ' 120 ')
+
+    listed = environment_integer(variable, default=300, maximum=86_400, minimum=1)
+
+    monkeypatch.setenv(variable.name, '86400')
+
+    highest = environment_integer(variable, default=300, maximum=86_400, minimum=1)
+
+    assert unset == 300
+    assert listed == 120
+    assert highest == 86_400
+
+    cases = [
+        ('5m', 'must be a whole number'),
+        ('-1', 'must be a whole number'),
+        ('1.5', 'must be a whole number'),
+        ('1_000', 'must be a whole number'),
+        ('1' * 16, 'must be a whole number'),
+        ('0', 'outside 1 to 86400'),
+        ('86401', 'outside 1 to 86400'),
+    ]
+
+    for value, phrase in cases:
+        monkeypatch.setenv(variable.name, value)
+
+        with pytest.raises(ImproperlyConfigured, match=phrase):
+            environment_integer(variable, default=300, maximum=86_400, minimum=1)
+
+    monkeypatch.delenv(variable.name)
+
+    with pytest.raises(ImproperlyConfigured, match='has a default of 0, outside 1 to 10'):
+        environment_integer(variable, default=0, maximum=10, minimum=1)
 
 
 def test_list_splits_on_commas_and_drops_blank_items(monkeypatch: pytest.MonkeyPatch) -> None:

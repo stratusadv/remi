@@ -19,6 +19,7 @@ const API_KEY_CHARS_MAX: u32 = 1024;
 pub(crate) const ENDPOINT_ID_NOTES: &str = "builtin-notes";
 pub(crate) const ENDPOINT_ID_TRANSCRIPTION: &str = "builtin-transcription";
 const KEYS_FILE: &str = "endpoint_keys.bin";
+pub(crate) const MODEL_EMBEDDINGS: &str = "stratus.embed";
 pub(crate) const MODEL_NOTES: &str = "stratus.thinking";
 pub(crate) const MODEL_TRANSCRIPTION: &str = "stratus.listen";
 const TRANSCRIBE_CHUNK_SECONDS: u32 = 120;
@@ -73,13 +74,25 @@ pub(crate) fn api_key_set(purpose: APIEndpointPurpose, api_key: &str) -> AppResu
     keys_save(&keys)
 }
 
-pub(crate) fn embeddings_target_load() -> AppResult<Option<EmbeddingsTarget>> {
-    let settings = settings_load()?;
-    let model = settings.embeddings_model.as_deref().map_or_default(str::trim);
+pub(crate) fn embeddings_model_resolve(settings: &Settings) -> Option<String> {
+    let model = settings.embeddings_model.as_deref().map_or(MODEL_EMBEDDINGS, str::trim);
 
     if model.is_empty() {
-        return Ok(None);
+        return None;
     }
+
+    assert!(!model.starts_with(char::is_whitespace));
+    assert!(settings.embeddings_model.is_some() || model == MODEL_EMBEDDINGS);
+
+    Some(model.to_owned())
+}
+
+pub(crate) fn embeddings_target_load() -> AppResult<Option<EmbeddingsTarget>> {
+    let settings = settings_load()?;
+
+    let Some(model) = embeddings_model_resolve(&settings) else {
+        return Ok(None);
+    };
 
     let host_shared = host_resolve(&settings);
     let host_own = settings.embeddings_host.as_deref().map_or_default(str::trim);
@@ -99,7 +112,7 @@ pub(crate) fn embeddings_target_load() -> AppResult<Option<EmbeddingsTarget>> {
         assert_eq!(host, host_shared);
     }
 
-    Ok(Some(EmbeddingsTarget { api_key, host, model: model.to_owned() }))
+    Ok(Some(EmbeddingsTarget { api_key, host, model }))
 }
 
 pub(crate) fn endpoint_load(id: &str) -> AppResult<APIEndpoint> {
@@ -665,8 +678,26 @@ mod tests {
     }
 
     #[test]
-    fn the_search_model_is_off_until_named_and_shares_the_notes_key_only_with_the_api_host() {
+    fn the_search_model_defaults_until_emptied_and_shares_the_notes_key_only_with_the_api_host() {
         let _root = root_scoped();
+
+        let unset = Settings {
+            api_host: Some("https://api.example.test".to_owned()),
+            ..Settings::initial()
+        };
+
+        settings_save(&unset).unwrap();
+        api_key_set(APIEndpointPurpose::Notes, "notes-key").unwrap();
+
+        let target_default = embeddings_target_load().unwrap().unwrap();
+
+        assert_eq!(target_default.model, MODEL_EMBEDDINGS);
+        assert_eq!(target_default.host, "https://api.example.test");
+        assert_eq!(target_default.api_key, "notes-key");
+
+        let emptied = Settings { embeddings_model: Some("   ".to_owned()), ..unset };
+
+        settings_save(&emptied).unwrap();
 
         assert!(embeddings_target_load().unwrap().is_none());
 

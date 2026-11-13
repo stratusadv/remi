@@ -4,7 +4,7 @@ from django.http import HttpRequest, HttpResponse
 from django.views.decorators.http import require_http_methods
 
 
-RETURN_MESSAGE = 'Payment received. Close this window and open Remi again to see your hours.'
+RETURN_MESSAGE = 'Payment received. Close this window and open remi again to see your hours.'
 
 
 @require_http_methods(['GET'])

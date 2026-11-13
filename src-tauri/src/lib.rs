@@ -480,7 +480,10 @@ fn data_folder_move_log(outcome: &DataFolderMove) {
         }
         DataFolderMove::LegacyAbsent => {}
         DataFolderMove::Moved => {
-            tracing::info!(target: "remi_lib", "moved {APP_DATA_FOLDER_LEGACY} to {APP_DATA_FOLDER}");
+            tracing::info!(
+                target: "remi_lib",
+                "moved {APP_DATA_FOLDER_LEGACY} to {APP_DATA_FOLDER}",
+            );
         }
     }
 }
@@ -861,14 +864,14 @@ mod tests {
         fs::write(current.join("settings.json"), "current").unwrap();
 
         let outcome = data_folder_move(&data_directory);
-        let legacy_settings = fs::read_to_string(legacy.join("settings.json")).unwrap();
-        let current_settings = fs::read_to_string(current.join("settings.json")).unwrap();
+        let settings_legacy = fs::read_to_string(legacy.join("settings.json")).unwrap();
+        let settings_current = fs::read_to_string(current.join("settings.json")).unwrap();
 
         fs::remove_dir_all(&data_directory).unwrap();
 
         assert!(matches!(outcome, DataFolderMove::CurrentPresent));
-        assert_eq!(legacy_settings, "legacy");
-        assert_eq!(current_settings, "current");
+        assert_eq!(settings_legacy, "legacy");
+        assert_eq!(settings_current, "current");
     }
 
     #[test]
@@ -877,19 +880,19 @@ mod tests {
         let current = data_directory.join(APP_DATA_FOLDER);
 
         let empty = data_folder_move(&data_directory);
-        let current_created = current.exists();
+        let created_current = current.exists();
 
         fs::create_dir_all(&current).unwrap();
 
-        let current_only = data_folder_move(&data_directory);
-        let current_kept = current.is_dir();
+        let only_current = data_folder_move(&data_directory);
+        let kept_current = current.is_dir();
 
         fs::remove_dir_all(&data_directory).unwrap();
 
         assert!(matches!(empty, DataFolderMove::LegacyAbsent));
-        assert!(!current_created);
-        assert!(matches!(current_only, DataFolderMove::LegacyAbsent));
-        assert!(current_kept);
+        assert!(!created_current);
+        assert!(matches!(only_current, DataFolderMove::LegacyAbsent));
+        assert!(kept_current);
     }
 
     #[cfg(unix)]
@@ -905,15 +908,15 @@ mod tests {
         fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o555)).unwrap();
 
         let outcome = data_folder_move(&data_directory);
-        let legacy_settings = fs::read_to_string(legacy.join("settings.json")).unwrap();
-        let current_created = data_directory.join(APP_DATA_FOLDER).exists();
+        let settings_legacy = fs::read_to_string(legacy.join("settings.json")).unwrap();
+        let created_current = data_directory.join(APP_DATA_FOLDER).exists();
 
         fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o755)).unwrap();
         fs::remove_dir_all(&data_directory).unwrap();
 
         assert!(matches!(outcome, DataFolderMove::Failed(_)));
-        assert_eq!(legacy_settings, "legacy");
-        assert!(!current_created);
+        assert_eq!(settings_legacy, "legacy");
+        assert!(!created_current);
     }
 
     #[test]

@@ -36,3 +36,5 @@ Select text and press *AI* on the toolbar, then pick an action or type your own 
 The app searches the titles, people, notes, and transcripts of your recordings, and the notes service answers from the passages it found alone. A time in the question, such as *Thursday* or *last month*, favours the meetings from then. A follow-up in the same chat can lean on the questions before it, such as `What did she ask for in return?`.
 
 The *Ask about this meeting* item in a meeting's menu and the *Ask about this folder* item in a folder's menu limit the search to that meeting or folder. Each chat is saved under *History* on the Ask page, so you can come back to it later.
+
+With remi's own notes service, Ask answers questions for 30 days after each recording remi transcribes. A burst of questions, or a very busy month, makes remi space questions a few minutes apart: the page says how long the wait is and answers once the turn comes. A note under an answer says when half of the month's full-speed questions are used.

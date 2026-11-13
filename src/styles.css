@@ -1879,27 +1879,15 @@
         @apply flex items-center justify-between gap-2;
         padding-top: 0.625rem;
     }
-    .recording-tile-when,
+    .recording-tile-when {
+        @apply truncate min-w-0;
+        font-size: 0.75rem;
+        font-variant-numeric: tabular-nums;
+    }
     .recording-table-muted.recording-table-nowrap {
         font-family: var(--font-mono);
         font-size: 0.75rem;
         font-variant-numeric: tabular-nums;
-    }
-    .recording-tile-status {
-        @apply gap-1.5 shrink-0;
-    }
-    .recording-tile-status::before {
-        content: "";
-        width: 0.4375rem;
-        height: 0.4375rem;
-        border-radius: 999px;
-        background-color: var(--color-content-subtle);
-    }
-    .recording-tile-status[data-state="notes"]::before {
-        background-color: var(--color-online);
-    }
-    .recording-tile-status[data-state="transcript"]::before {
-        background-color: var(--color-warning-content);
     }
 
     .file-picker {

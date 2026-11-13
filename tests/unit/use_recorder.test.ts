@@ -23,7 +23,7 @@ const KEY_GET_USER_MEDIA = 'getUserMedia'
 const KEY_MEDIA_DEVICES = 'mediaDevices'
 const KEY_SAMPLE_RATE = 'sampleRate'
 const MESSAGE_FINISH_FAILED = 'audio error: recording finalize: no space left on device'
-const PATH_SAVED = '/home/you/Music/Remi Remembers/Recording 2026-11-06 09-30-00.wav'
+const PATH_SAVED = '/home/you/Music/remi/Recording 2026-11-06 09-30-00.wav'
 const SAMPLE_RATE = 16000
 const SAMPLES_DELIVERED = 1600
 

@@ -79,7 +79,7 @@ icon:
 [linux]
 install:
     bun run tauri build --bundles deb --no-sign
-    sudo apt install "./src-tauri/target/release/bundle/deb/Remi Remembers_$(bun -p "require('./src-tauri/tauri.conf.json').version")_amd64.deb"
+    sudo apt install "./src-tauri/target/release/bundle/deb/remi_$(bun -p "require('./src-tauri/tauri.conf.json').version")_amd64.deb"
 
 [doc('Lint the tree with tigerstyle-lsp, the backend with Clippy, and the frontend with ESLint, and check the backend format')]
 lint:
@@ -144,3 +144,8 @@ test:
 [doc('Run the end-to-end tests in Chromium against the mock backend')]
 test-e2e:
     bun run test:e2e
+
+[doc('Count the tokens each Ask question uses against the live notes service named in .env')]
+[unix]
+tokens-live:
+    REMI_MANUAL_NOTES_HOST="$REMI_API_HOST" REMI_MANUAL_NOTES_KEY="$REMI_API_KEY_NOTES" REMI_MANUAL_NOTES_MODEL="${REMI_MANUAL_NOTES_MODEL:-stratus.thinking}" cargo test --manifest-path {{ manifest }} --lib notes::evaluation::manual_tokens -- --ignored --nocapture

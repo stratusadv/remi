@@ -48,7 +48,7 @@ class AccountCheckoutService(BaseDjangoModelService['Account']):
 
         price_cents = settings.REMI_OFFERS[hours]
         account_id = str(self.obj.pk)
-        product_name = f'Remi Remembers: {hours} hours of transcription'
+        product_name = f'remi: {hours} hours of transcription'
         product = SessionCreateParamsLineItemPriceDataProductData(name=product_name)
 
         price = SessionCreateParamsLineItemPriceData(

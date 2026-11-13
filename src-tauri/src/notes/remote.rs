@@ -67,6 +67,12 @@ struct ChatMessage<'prompt> {
 }
 
 #[derive(Debug)]
+pub(super) struct Completion {
+    pub(super) text: String,
+    pub(super) tokens: Option<u32>,
+}
+
+#[derive(Debug)]
 pub(super) struct ChatPrompts<'prompt> {
     pub(super) system: &'prompt str,
     pub(super) user: &'prompt str,
@@ -77,6 +83,8 @@ pub(super) struct ChatRequest<'prompt> {
     model: &'prompt str,
     messages: [ChatMessage<'prompt>; 2],
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -118,6 +126,13 @@ struct ReplyChoice {
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
     choices: Vec<ReplyChoice>,
+    #[serde(default)]
+    usage: Option<ReplyUsage>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+struct ReplyUsage {
+    total_tokens: u64,
 }
 
 #[derive(Debug)]
@@ -140,10 +155,27 @@ pub(super) enum ReplyShape {
     Whole,
 }
 
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+struct StreamOptions {
+    include_usage: bool,
+}
+
 struct StreamState {
     accumulated: String,
     byte_buffer: Vec<u8>,
     reasoning_bytes: u64,
+    tokens: Option<u32>,
+}
+
+impl ReplyUsage {
+    fn tokens(self) -> u32 {
+        let tokens = u32::try_from(self.total_tokens).unwrap_or(u32::MAX);
+
+        assert!(u64::from(tokens) <= self.total_tokens);
+        assert!(tokens > 0 || self.total_tokens == 0);
+
+        tokens
+    }
 }
 
 pub(super) async fn chat_completion(
@@ -151,15 +183,16 @@ pub(super) async fn chat_completion(
     prompts: &ChatPrompts<'_>,
 ) -> AppResult<String> {
     let (url, body, api_key) = build_request(endpoint, prompts, ReplyShape::Whole);
+    let completion = chat_completion_send(&ChatSend { api_key, body, url }).await?;
 
-    chat_completion_send(&ChatSend { api_key, body, url }).await
+    Ok(completion.text)
 }
 
 pub(super) async fn chat_completion_structured(
     endpoint: &APIEndpoint,
     prompts: &ChatPrompts<'_>,
     reply: &ReplySchema<'_>,
-) -> AppResult<String> {
+) -> AppResult<Completion> {
     let (url, body, api_key) = build_request_structured(endpoint, prompts, reply);
 
     chat_completion_send(&ChatSend { api_key, body, url }).await
@@ -172,33 +205,22 @@ pub(super) async fn chat_completion_streaming(
     prompts: &ChatPrompts<'_>,
 ) -> AppResult<String> {
     let (url, body, api_key) = build_request(endpoint, prompts, ReplyShape::Streamed);
-    let client = client_get(&HTTP_CLIENT)?;
+    let outgoing = ChatSend { api_key, body, url };
+    let completion = chat_completion_stream_send(app, stream_id, &outgoing).await?;
 
-    let response = retry_run(|| async {
-        let mut request = client.post(&url);
+    Ok(completion.text)
+}
 
-        if !api_key.is_empty() {
-            request = request.bearer_auth(api_key);
-        }
+pub(super) async fn chat_completion_streaming_counted(
+    app: AppHandle,
+    stream_id: StreamID,
+    endpoint: &APIEndpoint,
+    prompts: &ChatPrompts<'_>,
+) -> AppResult<Completion> {
+    let (url, body, api_key) = build_request_counted(endpoint, prompts);
+    let outgoing = ChatSend { api_key, body, url };
 
-        let sent = request.json(&body).send().await?;
-
-        response_ensure_ok(sent, LABEL_CHAT).await
-    })
-    .await?;
-
-    let state = app.state::<AppState>();
-    let cancellation = &state.cancellation;
-    let cancel_flag = cancellation.register(&stream_id);
-    let read = chat_completion_stream_read(&app, &stream_id, &cancel_flag, response).await;
-
-    chat_completion_stream_end(&app, cancellation, stream_id.into_string());
-
-    let accumulated = read?.trim().to_owned();
-
-    assert!(accumulated.len() <= usize_of!(NOTES_BYTES_MAX));
-
-    Ok(accumulated)
+    chat_completion_stream_send(app, stream_id, &outgoing).await
 }
 
 pub(super) async fn models_list(endpoint: &APIEndpoint) -> AppResult<Vec<String>> {
@@ -249,6 +271,7 @@ pub(super) fn build_request<'prompt>(
             ChatMessage { role: "user", content: prompts.user },
         ],
         stream: shape == ReplyShape::Streamed,
+        stream_options: None,
         temperature: endpoint.temperature,
         max_tokens: endpoint.output_tokens_max,
         reasoning_effort: endpoint.reasoning_effort.as_deref(),
@@ -261,7 +284,7 @@ pub(super) fn build_request<'prompt>(
     (url, body, endpoint.api_key_resolved())
 }
 
-async fn chat_completion_send(outgoing: &ChatSend<'_>) -> AppResult<String> {
+async fn chat_completion_send(outgoing: &ChatSend<'_>) -> AppResult<Completion> {
     let client = client_get(&HTTP_CLIENT)?;
 
     let parsed: ChatResponse = retry_run(|| async {
@@ -278,14 +301,67 @@ async fn chat_completion_send(outgoing: &ChatSend<'_>) -> AppResult<String> {
     })
     .await?;
 
-    parsed
+    let tokens = parsed.usage.map(ReplyUsage::tokens);
+
+    let text = parsed
         .choices
         .into_iter()
         .next()
         .and_then(|choice| choice.message)
         .and_then(|message| message.content)
         .map(|content| content.trim().to_owned())
-        .ok_or_else(|| AppError::Service("no content in chat response".into()))
+        .ok_or_else(|| AppError::Service("no content in chat response".into()))?;
+
+    Ok(Completion { text, tokens })
+}
+
+async fn chat_completion_stream_send(
+    app: AppHandle,
+    stream_id: StreamID,
+    outgoing: &ChatSend<'_>,
+) -> AppResult<Completion> {
+    let client = client_get(&HTTP_CLIENT)?;
+
+    let response = retry_run(|| async {
+        let mut request = client.post(&outgoing.url);
+
+        if !outgoing.api_key.is_empty() {
+            request = request.bearer_auth(outgoing.api_key);
+        }
+
+        let sent = request.json(&outgoing.body).send().await?;
+
+        response_ensure_ok(sent, LABEL_CHAT).await
+    })
+    .await?;
+
+    let state = app.state::<AppState>();
+    let cancellation = &state.cancellation;
+    let cancel_flag = cancellation.register(&stream_id);
+    let read = chat_completion_stream_read(&app, &stream_id, &cancel_flag, response).await;
+
+    chat_completion_stream_end(&app, cancellation, stream_id.into_string());
+
+    let streamed = read?;
+    let text = streamed.text.trim().to_owned();
+
+    assert!(text.len() <= usize_of!(NOTES_BYTES_MAX));
+
+    Ok(Completion { text, tokens: streamed.tokens })
+}
+
+pub(super) fn build_request_counted<'prompt>(
+    endpoint: &'prompt APIEndpoint,
+    prompts: &ChatPrompts<'prompt>,
+) -> (String, ChatRequest<'prompt>, &'prompt str) {
+    let (url, mut body, api_key) = build_request(endpoint, prompts, ReplyShape::Streamed);
+
+    body.stream_options = Some(StreamOptions { include_usage: true });
+
+    assert!(body.stream);
+    assert!(body.response_format.is_none());
+
+    (url, body, api_key)
 }
 
 fn build_request_structured<'prompt>(
@@ -395,6 +471,10 @@ fn chat_completion_stream_event_apply(
             ChatChunk { stream_id: stream_id.to_owned(), text: text.to_owned(), done: false },
         );
     }
+
+    if let Some(tokens) = stream_event_tokens(&parsed) {
+        state.tokens = Some(tokens);
+    }
 }
 
 fn chat_completion_stream_limits(state: &StreamState) -> AppResult<()> {
@@ -427,11 +507,15 @@ async fn chat_completion_stream_read(
     stream_id: &str,
     cancel_flag: &AtomicBool,
     response: reqwest::Response,
-) -> AppResult<String> {
+) -> AppResult<Completion> {
     let mut stream = response.bytes_stream();
 
-    let mut state =
-        StreamState { accumulated: String::new(), byte_buffer: Vec::new(), reasoning_bytes: 0 };
+    let mut state = StreamState {
+        accumulated: String::new(),
+        byte_buffer: Vec::new(),
+        reasoning_bytes: 0,
+        tokens: None,
+    };
 
     for _chunk_index in 0..STREAM_CHUNK_COUNT_MAX {
         let Some(chunk) = stream.next().await else {
@@ -442,7 +526,7 @@ async fn chat_completion_stream_read(
                 state.reasoning_bytes,
             );
 
-            return Ok(state.accumulated);
+            return Ok(Completion { text: state.accumulated, tokens: state.tokens });
         };
 
         if is_cancelled(cancel_flag) {
@@ -495,6 +579,12 @@ fn sse_event_end(buffer: &[u8]) -> Option<(u32, u32)> {
         .min_by_key(|(position, _)| *position)
 }
 
+pub(super) fn stream_event_tokens(parsed: &Value) -> Option<u32> {
+    let usage = ReplyUsage::deserialize(parsed.get("usage")?).ok()?;
+
+    Some(usage.tokens())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,6 +605,7 @@ mod tests {
             accumulated: accumulated.to_owned(),
             byte_buffer: byte_buffer.to_vec(),
             reasoning_bytes,
+            tokens: None,
         }
     }
 
@@ -634,6 +725,53 @@ mod tests {
         assert!(message_first(blank).and_then(|message| message.content).is_none());
         assert!(message_first(bare).is_none());
         assert_ne!(serde_json::from_str::<ChatResponse>("{}").unwrap_err().to_string(), "");
+    }
+
+    #[test]
+    fn a_whole_reply_reads_its_token_count_only_when_the_service_reports_one() {
+        let raw = concat!(
+            r#"{"choices":[{"message":{"content":"hi"}}],"#,
+            r#""usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12}}"#,
+        );
+
+        let counted: ChatResponse = serde_json::from_str(raw).unwrap();
+        let bare: ChatResponse = serde_json::from_str(r#"{"choices":[]}"#).unwrap();
+
+        assert_eq!(counted.usage.map(ReplyUsage::tokens), Some(12));
+        assert!(bare.usage.is_none());
+        assert_eq!(ReplyUsage { total_tokens: u64::MAX }.tokens(), u32::MAX);
+        assert_eq!(ReplyUsage { total_tokens: u64::from(u32::MAX) }.tokens(), u32::MAX);
+        assert_eq!(ReplyUsage { total_tokens: 0 }.tokens(), 0);
+    }
+
+    #[test]
+    fn a_stream_event_reports_tokens_only_when_it_carries_a_usage_total() {
+        let usage_only =
+            serde_json::json!({ "choices": [], "usage": { "total_tokens": 4321_u64 } });
+        let content = serde_json::json!({ "choices": [{ "delta": { "content": "hi" } }] });
+        let partial = serde_json::json!({ "usage": { "prompt_tokens": 7_u64 } });
+        let absent = serde_json::json!({ "usage": null });
+
+        assert_eq!(stream_event_tokens(&usage_only), Some(4321));
+        assert_eq!(stream_event_tokens(&content), None);
+        assert_eq!(stream_event_tokens(&partial), None);
+        assert_eq!(stream_event_tokens(&absent), None);
+    }
+
+    #[test]
+    fn a_counted_stream_asks_for_usage_and_a_plain_stream_leaves_it_out() {
+        let endpoint = endpoint_with("https://api.example.test", Some("low"));
+        let (url_counted, counted, _) = build_request_counted(&endpoint, &PROMPTS);
+        let (url_plain, plain, _) = build_request(&endpoint, &PROMPTS, ReplyShape::Streamed);
+        let counted_value = serde_json::to_value(&counted).unwrap();
+        let plain_value = serde_json::to_value(&plain).unwrap();
+
+        assert_eq!(url_counted, url_plain);
+        assert_eq!(counted_value["stream"], true);
+        assert_eq!(counted_value["stream_options"]["include_usage"], true);
+        assert!(plain_value.get("stream_options").is_none());
+        assert_eq!(counted_value["messages"], plain_value["messages"]);
+        assert_eq!(counted_value["reasoning_effort"], "low");
     }
 
     #[test]

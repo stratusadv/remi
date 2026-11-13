@@ -59,6 +59,25 @@ def test_beacons_from_one_address_count_past_the_sign_up_rate_up_to_their_own(
     assert rate_beacon > rate_anonymous
 
 
+def test_beacons_leave_the_sign_up_allowance_of_their_address_untouched(
+    client: Client,
+) -> None:
+    rate_anonymous = int(THROTTLE_RATE_ANONYMOUS.split('/')[0])
+    fields = {'campaign': 'wib', 'source': 'qr'}
+    body = urlencode(fields)
+    body_account = {'email': 'avery@example.com', 'name': 'Avery', 'promo_code': ''}
+
+    for index in range(rate_anonymous):
+        response = client.post(FUNNEL_VISIT_PATH, data=body, content_type=BEACON_CONTENT_TYPE)
+
+        assert response.status_code == 204, index
+
+    signed_up = api_post(client, ACCOUNT_PATH, body=body_account)
+
+    assert signed_up.status_code == 201
+    assert Account.objects.count() == 1
+
+
 def test_api_publishes_no_schema_or_documentation(client: Client) -> None:
     for path in ('/api/v1/docs', '/api/v1/openapi.json'):
         assert client.get(path).status_code == 404, path

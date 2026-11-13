@@ -514,7 +514,7 @@ function test_pay(card: TestCard): void {
                         <rect x="5" y="11" width="14" height="9" rx="2" />
                         <path d="M8 11V8a4 4 0 0 1 8 0v3" />
                     </svg>
-                    One-time payments through Stripe. Card details never reach Remi.
+                    One-time payments through Stripe. Card details never reach remi.
                 </p>
             </template>
         </div>
@@ -631,7 +631,7 @@ function test_pay(card: TestCard): void {
                                 <rect x="5" y="11" width="14" height="9" rx="2" />
                                 <path d="M8 11V8a4 4 0 0 1 8 0v3" />
                             </svg>
-                            Payments are processed by Stripe. Card details never reach Remi.
+                            Payments are processed by Stripe. Card details never reach remi.
                         </p>
                         <button
                             type="button"

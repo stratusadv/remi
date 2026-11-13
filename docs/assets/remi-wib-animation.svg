@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" class="wib" viewBox="0 0 1200 560" role="img" aria-labelledby="wib-title wib-desc">
-    <title id="wib-title">Remi Remembers</title>
-    <desc id="wib-desc">In a meeting, a woman is stuck writing the minutes while her colleagues talk over her, and her own idea fades. She turns her notepad into Remi, which takes the notes for everyone, and she leads the discussion. Later she speaks from a conference stage to a cheering audience.</desc>
+    <title id="wib-title">remi</title>
+    <desc id="wib-desc">In a meeting, a woman is stuck writing the minutes while her colleagues talk over her, and her own idea fades. She turns her notepad into remi, which takes the notes for everyone, and she leads the discussion. Later she speaks from a conference stage to a cheering audience.</desc>
     <style>
         .wib {
             --loop: 22s;
@@ -7801,7 +7801,7 @@
                             <polygon points="-46,-56 0,-58 2,56 -42,58" fill="#ffffff" fill-opacity="0.05"/>
                             <polyline points="-46,-56 46,-60 50,54 -42,58 -46,-56" fill="none" stroke="#00a2d2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.7"/>
                             <g transform="rotate(-2.5 2 -1) translate(-39.2 -50.5) scale(0.95)">
-                                <path d="M14.05 73.69L17.02 61.76L77.67 61.76L74.70 73.69ZM14.05 93.57L17.02 81.64L53.81 81.64L50.84 93.57Z" fill="#f0a020" stroke="#f0a020" stroke-width="1.1" stroke-linejoin="round"/>
+                                <path d="M14.05 73.69L17.02 61.76L77.67 61.76L74.70 73.69ZM14.05 93.57L17.02 81.64L53.81 81.64L50.84 93.57Z" fill="#e0457b" stroke="#e0457b" stroke-width="1.1" stroke-linejoin="round"/>
                                 <path class="mark-bar-0" d="M14.03 20.59L25.15 20.59L20.19 40.47L9.07 40.47Z" fill="url(#wib-mark-bars)" stroke="url(#wib-mark-bars)" stroke-width="1.1" stroke-linejoin="round"/>
                                 <path class="mark-bar-1" d="M33.41 10.65L44.53 10.65L34.61 50.41L23.49 50.41Z" fill="url(#wib-mark-bars)" stroke="url(#wib-mark-bars)" stroke-width="1.1" stroke-linejoin="round"/>
                                 <path class="mark-bar-2" d="M48.82 16.61L59.94 16.61L53.00 44.44L41.88 44.44Z" fill="url(#wib-mark-bars)" stroke="url(#wib-mark-bars)" stroke-width="1.1" stroke-linejoin="round"/>

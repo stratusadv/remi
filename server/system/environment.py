@@ -7,6 +7,7 @@ from django.core.exceptions import ImproperlyConfigured
 
 
 CURRENCY_PATTERN = re.compile(r'[a-z]{3}')
+INTEGER_PATTERN = re.compile(r'[0-9]{1,15}')
 OFFER_HOURS_MAX = 10_000
 OFFER_HOURS_MIN = 1
 OFFER_PATTERN = re.compile(r'([0-9]{1,6}):([0-9]{1,6})')
@@ -28,8 +29,15 @@ class EnvironmentVariable(Enum):
     DJANGO_SITE_DOMAIN = auto()
     DJANGO_SPIRE_REMOTE_API_KEY = auto()
     DJANGO_SPIRE_REMOTE_API_URL = auto()
+    REMI_ASK_BURST_COUNT = auto()
+    REMI_ASK_BURST_SECONDS = auto()
+    REMI_ASK_PACE_SECONDS = auto()
+    REMI_ASK_TOKENS_ESTIMATE = auto()
+    REMI_ASK_TOKENS_SOFT_CAP = auto()
+    REMI_ASK_WINDOW_DAYS = auto()
     REMI_OFFERS = auto()
     REMI_PRICE_CURRENCY = auto()
+    SENDGRID_API_KEY = auto()
     STRIPE_PUBLISHABLE_KEY = auto()
     STRIPE_SECRET_KEY = auto()
     STRIPE_WEBHOOK_SECRET = auto()
@@ -90,6 +98,35 @@ def environment_flag(variable: EnvironmentVariable) -> bool:
         raise ImproperlyConfigured(message)
 
     return value == '1'
+
+
+def environment_integer(
+    variable: EnvironmentVariable,
+    *,
+    default: int,
+    maximum: int,
+    minimum: int,
+) -> int:
+    if not minimum <= default <= maximum:
+        message = f'{variable.name} has a default of {default}, outside {minimum} to {maximum}'
+        raise ImproperlyConfigured(message)
+
+    text = environment_text(variable)
+
+    if text == '':
+        return default
+
+    if INTEGER_PATTERN.fullmatch(text) is None:
+        message = f'{variable.name} must be a whole number, not {text!r}'
+        raise ImproperlyConfigured(message)
+
+    value = int(text)
+
+    if not minimum <= value <= maximum:
+        message = f'{variable.name} is {value}, outside {minimum} to {maximum}'
+        raise ImproperlyConfigured(message)
+
+    return value
 
 
 def environment_list(variable: EnvironmentVariable) -> list[str]:

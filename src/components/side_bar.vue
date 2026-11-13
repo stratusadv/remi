@@ -153,7 +153,7 @@ async function nav_menu_select(id: string): Promise<void> {
                 v-if="!collapsed"
                 class="sidebar-brand"
                 title="Reset and go to recordings"
-                aria-label="Remi"
+                aria-label="remi"
                 @click="brand_click"
             >
                 <RemiMark class="sidebar-brand-lockup" lockup small />

@@ -13,7 +13,6 @@ import {
     nav_to,
     recording_open,
     step_current,
-    tiles,
     transcript_rows,
 } from './helpers'
 import type { Locator, Page } from '@playwright/test'
@@ -93,10 +92,9 @@ test('Generate notes streams and lands in the editor', async ({ page }) => {
     await expect(page.getByRole('button', { name: 'Regenerate notes' })).toBeVisible()
 
     await nav_to(page, 'Home')
+    await recording_open(page, RECORDING_UNTITLED)
 
-    const tile = tiles(page).filter({ [HAS_TEXT]: RECORDING_UNTITLED })
-
-    await expect(tile.locator('.recording-tile-status')).toHaveText('Notes ready')
+    await expect(step_current(page)).toHaveText('Notes')
 })
 
 test('Regenerate asks before overwriting', async ({ page }) => {

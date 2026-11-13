@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from django.db import models
 from django.db.models import Q
-from django.db.models.functions import Upper
+from django.db.models.functions import Lower, Upper
 
 from django_spire.history.mixins import HistoryModelMixin
 
+from app.account.constants import ACCOUNT_EMAIL_LENGTH_MAX
 from app.core.querysets import manager_for
 from app.funnel.choices import CampaignChoices
 from app.promo_code import querysets
@@ -21,6 +22,15 @@ class PromoCode(HistoryModelMixin):
     )
 
     code = models.CharField(max_length=PROMO_CODE_LENGTH_MAX)
+    downloaded_datetime = models.DateTimeField(blank=True, editable=False, null=True)
+
+    email = models.EmailField(
+        blank=True,
+        default='',
+        editable=False,
+        max_length=ACCOUNT_EMAIL_LENGTH_MAX,
+    )
+
     hours = models.PositiveIntegerField()
     redemptions_max = models.PositiveIntegerField()
 
@@ -37,6 +47,12 @@ class PromoCode(HistoryModelMixin):
             models.CheckConstraint(
                 condition=Q(hours__gt=0),
                 name='promo_code_hours_positive',
+            ),
+            models.UniqueConstraint(
+                'campaign',
+                Lower('email'),
+                condition=~Q(email=''),
+                name='promo_code_campaign_email_unique',
             ),
             models.UniqueConstraint(
                 Upper('code'),

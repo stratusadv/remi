@@ -1,8 +1,8 @@
-# Remi Remembers
+# remi
 
 ## Overview
 
-Remi Remembers is a desktop app that turns a recording of a meeting into a formatted document, on Windows, macOS, and Linux. It transcribes the recording, then writes notes from a template you pick.
+remi is a desktop app that turns a recording of a meeting into a formatted document, on Windows, macOS, and Linux. It transcribes the recording, then writes notes from a template you pick.
 
 | Page | Description |
 |------|-------------|

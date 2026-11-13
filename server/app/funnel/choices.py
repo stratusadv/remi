@@ -13,5 +13,6 @@ class FunnelPlatformChoices(TextChoices):
 
 
 class FunnelSourceChoices(TextChoices):
+    EMAIL = 'email', 'Email'
     LINK = 'link', 'Link'
     QR_CODE = 'qr', 'QR code'

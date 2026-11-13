@@ -6,6 +6,7 @@ from django.contrib import admin, messages
 
 from app.account.ledger.models import AccountLedgerEntry
 from app.promo_code.models import PromoCode
+from app.promo_code.querysets import PromoCodeQuerySet
 
 if TYPE_CHECKING:
     from django.db.models import QuerySet
@@ -14,22 +15,65 @@ if TYPE_CHECKING:
 
 
 PROMO_CODE_ACTION_COUNT_MAX = 100
+PROMO_CODE_FOLLOW_UP_DOWNLOADED = 'downloaded'
+PROMO_CODE_FOLLOW_UP_EMAILED = 'emailed'
+
+
+class PromoCodeFollowUpFilter(admin.SimpleListFilter):
+    parameter_name = 'follow_up'
+    title = 'follow-up'
+
+    def lookups(
+        self,
+        request: HttpRequest,
+        model_admin: admin.ModelAdmin,
+    ) -> list[tuple[str, str]]:
+        _ = request
+        _ = model_admin
+
+        return [
+            (PROMO_CODE_FOLLOW_UP_EMAILED, 'Emailed, never downloaded'),
+            (PROMO_CODE_FOLLOW_UP_DOWNLOADED, 'Downloaded, never redeemed'),
+        ]
+
+    def queryset(
+        self,
+        request: HttpRequest,
+        queryset: QuerySet[PromoCode],
+    ) -> QuerySet[PromoCode]:
+        _ = request
+
+        if not isinstance(queryset, PromoCodeQuerySet):
+            message = f'the promo code list must be a PromoCodeQuerySet: {type(queryset).__name__}'
+            raise TypeError(message)
+
+        waiting = queryset.issued().unredeemed()
+
+        if self.value() == PROMO_CODE_FOLLOW_UP_EMAILED:
+            return waiting.undownloaded()
+
+        if self.value() == PROMO_CODE_FOLLOW_UP_DOWNLOADED:
+            return waiting.downloaded()
+
+        return queryset
 
 
 @admin.register(PromoCode)
 class PromoCodeAdmin(admin.ModelAdmin):
     actions = ['promo_activate', 'promo_deactivate']
     fields = ['code', 'campaign', 'hours', 'redemptions_max']
-    list_filter = ['campaign', 'is_active']
+    list_filter = ['campaign', 'is_active', PromoCodeFollowUpFilter]
     ordering = ['code']
-    search_fields = ['code']
+    search_fields = ['code', 'email']
 
     list_display = [
         'code',
         'campaign',
+        'email',
         'hours',
         'redemptions',
         'redemptions_max',
+        'downloaded_datetime',
         'is_active',
         'created_datetime',
     ]

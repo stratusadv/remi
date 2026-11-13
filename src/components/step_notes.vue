@@ -549,7 +549,7 @@ use_shortcuts({
             v-if="!notes_ready && !ready_banner_dismissed"
             @dismiss="ready_banner_dismissed = true"
         >
-            Remi needs the API address and keys set up before it can write notes.
+            remi needs the API address and keys set up before it can write notes.
             <template #actions>
                 <button class="btn-primary" @click="view_set('settings')">Open settings</button>
             </template>

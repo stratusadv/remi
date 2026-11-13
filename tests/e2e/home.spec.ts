@@ -15,7 +15,7 @@ import {
 import type { Locator, Page } from '@playwright/test'
 
 
-const COLUMNS = Object.freeze(['Title', 'Participants', 'Date', 'Duration', 'Status'])
+const COLUMNS = Object.freeze(['Title', 'Participants', 'Date', 'Duration'])
 
 
 function column_header(page: Page, label: string): Locator {
@@ -79,7 +79,8 @@ test('the list columns are unsorted by default', async ({ page }) => {
         await expect(column_header(page, label)).toHaveAttribute('aria-sort', 'none')
     }))
 
-    await expect(page.locator('.recording-table-sort-mark')).toHaveText(['', '', '', '', ''])
+    await expect(page.locator('.recording-table-sort-mark')).toHaveText(['', '', '', ''])
+    await expect(column_header(page, 'Status')).toHaveCount(0)
 })
 
 test('Title sorts ascending first and flips on a second click', async ({ page }) => {
@@ -148,22 +149,6 @@ test('Duration sorts descending first and ties fall back to newest', async ({ pa
 
     await expect(header).toHaveAttribute('aria-sort', 'ascending')
     await expect(row_titles(page)).toHaveText([RECORDING_TITLED, RECORDING_UNTITLED])
-})
-
-test('Status sorts ascending first and flips on a second click', async ({ page }) => {
-    await list_view_open(page)
-
-    const header = column_header(page, 'Status')
-
-    await header.getByRole('button').click()
-
-    await expect(header).toHaveAttribute('aria-sort', 'ascending')
-    await expect(row_titles(page)).toHaveText([RECORDING_TITLED, RECORDING_UNTITLED])
-
-    await header.getByRole('button').click()
-
-    await expect(header).toHaveAttribute('aria-sort', 'descending')
-    await expect(row_titles(page)).toHaveText([RECORDING_UNTITLED, RECORDING_TITLED])
 })
 
 test('sorting a new column resets the direction of the old one', async ({ page }) => {
@@ -374,15 +359,41 @@ test('a recording opens from the list view too', async ({ page }) => {
     await expect(step_current(page)).toHaveText('Notes')
 })
 
-test('the tiles show duration and status', async ({ page }) => {
+test('the tiles show duration and people and no status pill', async ({ page }) => {
     const titled = tiles(page).filter({ [HAS_TEXT]: RECORDING_TITLED })
     const untitled = tiles(page).filter({ [HAS_TEXT]: RECORDING_UNTITLED })
 
-    await expect(titled.locator('.recording-tile-status')).toHaveText('Notes ready')
     await expect(titled.locator('.recording-tile-duration')).toHaveText('2:24')
     await expect(titled.locator('.recording-tile-people')).toHaveText('Jane Doe, John Doe')
-    await expect(untitled.locator('.recording-tile-status')).toHaveText('Transcribed')
     await expect(untitled.locator('.recording-tile-people')).toHaveText('No participants')
+    await expect(page.locator('.recording-tile-status')).toHaveCount(0)
+})
+
+test.describe('on the narrowest tiles', () => {
+    test.use({ locale: 'en-CA', viewport: { width: 1400, height: 900 } })
+
+    test('a tile keeps its date on one line inside the card', async ({ page }) => {
+        const expected = { lines: 1, inside: true }
+        const feet = page.locator('.recording-tile-foot')
+
+        await expect(feet).toHaveCount(2)
+
+        const rows = await feet.evaluateAll((elements) => elements.map((foot) => {
+            const date = foot.querySelector('.recording-tile-when')
+
+            if (date === null) return null
+
+            const range = document.createRange()
+
+            range.selectNodeContents(date)
+
+            const inside = date.getBoundingClientRect().right <= foot.getBoundingClientRect().right
+
+            return { lines: range.getClientRects().length, inside }
+        }))
+
+        expect(rows).toEqual([expected, expected])
+    })
 })
 
 test('the speech bubble on a card asks about that meeting', async ({ page }) => {

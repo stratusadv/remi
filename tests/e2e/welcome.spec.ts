@@ -11,7 +11,7 @@ const TITLE_FIRST_RUN = 'a first run opens on the welcome screen and lands in th
 test(TITLE_FIRST_RUN, async ({ page }) => {
     await page.goto('/?first-run')
 
-    const welcome = page.getByRole('heading', { name: 'Welcome to Remi' })
+    const welcome = page.getByRole('heading', { name: 'Welcome to remi' })
     const proceed = page.getByRole('button', { name: 'Continue' })
 
     await expect(welcome).toBeVisible()
@@ -50,5 +50,5 @@ test('a configured app never shows the welcome screen', async ({ page }) => {
 
     await expect(page.locator('.app-shell[data-ready="true"]')).toBeVisible()
     await expect(page.locator('aside')).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Welcome to Remi' })).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Welcome to remi' })).toHaveCount(0)
 })

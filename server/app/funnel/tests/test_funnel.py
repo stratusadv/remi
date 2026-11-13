@@ -32,6 +32,7 @@ from app.funnel.metric import (
     metric_record,
     metric_revenue,
 )
+from app.promo_code.models import PromoCode
 from app.promo_code.tests.factories import create_test_promo_code
 from harness.api import (
     ACCOUNT_CHECKOUT_PATH,
@@ -105,10 +106,12 @@ def test_beacons_refuse_an_undeclared_campaign_source_or_platform(
     with django_capture_on_commit_callbacks(execute=True):
         beacons = [
             (FUNNEL_VISIT_PATH, {'campaign': 'spring', 'source': 'qr'}),
-            (FUNNEL_VISIT_PATH, {'campaign': 'wib', 'source': 'email'}),
+            (FUNNEL_VISIT_PATH, {'campaign': 'wib', 'source': 'sms'}),
             (FUNNEL_VISIT_PATH, {'campaign': 'wib'}),
             (FUNNEL_DOWNLOAD_PATH, {'campaign': 'wib', 'platform': 'solaris'}),
             (FUNNEL_DOWNLOAD_PATH, {'platform': 'linux'}),
+            (FUNNEL_DOWNLOAD_PATH, {'campaign': 'wib', 'code': 'two words', 'platform': 'linux'}),
+            (FUNNEL_DOWNLOAD_PATH, {'campaign': 'wib', 'code': 'W' * 65, 'platform': 'linux'}),
         ]
 
         for path, fields in beacons:
@@ -245,7 +248,7 @@ def test_funnel_records_refuse_an_undeclared_campaign_platform_or_source(
         funnel_visit_record(campaign='spring', source='qr')
 
     with pytest.raises(ValueError, match='source must be one of'):
-        funnel_visit_record(campaign='wib', source='email')
+        funnel_visit_record(campaign='wib', source='sms')
 
     assert metric_dispatched.dispatched == []
 
@@ -567,7 +570,7 @@ def test_visit_beacon_counts_a_scan_only_for_a_qr_code(
     django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
 ) -> None:
     with django_capture_on_commit_callbacks(execute=True):
-        for source in ('link', 'qr'):
+        for source in ('link', 'qr', 'email'):
             fields = {'campaign': 'wib', 'source': source}
 
             assert _beacon_send(client, FUNNEL_VISIT_PATH, fields).status_code == 204
@@ -576,4 +579,32 @@ def test_visit_beacon_counts_a_scan_only_for_a_qr_code(
         MetricDispatch('link', 'remi--funnel--visits', 'remi--wib', VALUE_ONE),
         MetricDispatch('qr', 'remi--funnel--visits', 'remi--wib', VALUE_ONE),
         MetricDispatch('qr', 'remi--funnel--scans', 'remi--wib', VALUE_ONE),
+        MetricDispatch('email', 'remi--funnel--visits', 'remi--wib', VALUE_ONE),
     ]
+
+
+def test_download_beacon_with_a_personal_code_stamps_its_first_download_only(
+    client: Client,
+    metric_dispatched: MetricExecutorFake,
+    django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
+) -> None:
+    shared = create_test_promo_code(campaign=CampaignChoices.WIB, code='WIB2026', hours=50)
+    personal = shared.services.processor.issue('avery@example.com')
+
+    with django_capture_on_commit_callbacks(execute=True):
+        fields = {'campaign': 'wib', 'code': f' {personal.code.lower()} ', 'platform': 'macos'}
+        fields_shared = {'campaign': 'wib', 'code': 'WIB2026', 'platform': 'windows'}
+        fields_unknown = {'campaign': 'wib', 'code': 'WIB-2222-2222', 'platform': 'linux'}
+        first = _beacon_send(client, FUNNEL_DOWNLOAD_PATH, fields)
+        stamped = PromoCode.objects.get(pk=personal.pk).downloaded_datetime
+        again = _beacon_send(client, FUNNEL_DOWNLOAD_PATH, fields)
+        unknown = _beacon_send(client, FUNNEL_DOWNLOAD_PATH, fields_unknown)
+        common = _beacon_send(client, FUNNEL_DOWNLOAD_PATH, fields_shared)
+
+    answers = [first, again, unknown, common]
+
+    assert [answer.status_code for answer in answers] == [204, 204, 204, 204]
+    assert stamped is not None
+    assert PromoCode.objects.get(pk=personal.pk).downloaded_datetime == stamped
+    assert PromoCode.objects.get(pk=shared.pk).downloaded_datetime is None
+    assert metric_dispatched.statistic_keys() == ['remi--funnel--downloads'] * 4

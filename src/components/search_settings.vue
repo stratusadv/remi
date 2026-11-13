@@ -27,6 +27,11 @@ const status = ref<SearchStatus | null>(null)
 let status_loading = false
 let status_timer: ReturnType<typeof setInterval> | null = null
 const host_placeholder = computed(() => props.api_host === '' ? 'https://' : props.api_host)
+const model_placeholder = computed(() => status.value === null ? '' : 'Off')
+
+const model_shown = computed(
+    () => settings.value.embeddings_model ?? status.value?.model_default ?? '',
+)
 
 const status_line = computed<string | null>(() => {
     const current = status.value
@@ -59,8 +64,8 @@ watch(() => settings.value.embeddings_host, (saved) => {
     host_input.value = saved ?? ''
 }, { immediate: true })
 
-watch(() => settings.value.embeddings_model, (saved) => {
-    model_input.value = saved ?? ''
+watch(model_shown, (shown) => {
+    model_input.value = shown
 }, { immediate: true })
 
 onMounted(() => {
@@ -89,13 +94,13 @@ function input_leave(event: KeyboardEvent): void {
 
 async function model_save(): Promise<void> {
     const model = model_input.value.trim()
-    const saved = settings.value.embeddings_model ?? ''
+    const model_default = status.value?.model_default ?? null
 
     model_input.value = model
 
-    if (model === saved) return
+    if (model === model_shown.value) return
 
-    await update({ embeddings_model: model === '' ? null : model })
+    await update({ embeddings_model: model === model_default ? null : model })
     await status_refresh()
 }
 
@@ -127,7 +132,7 @@ function status_stop(): void {
 }
 
 function status_tick(): void {
-    if (settings.value.embeddings_model === null) return
+    if (settings.value.embeddings_model === '') return
 
     void status_refresh()
 }
@@ -156,7 +161,7 @@ async function vectors_refresh(): Promise<void> {
             v-model="model_input"
             type="text"
             class="input"
-            placeholder="Off"
+            :placeholder="model_placeholder"
             autocomplete="off"
             spellcheck="false"
             @blur="model_save"

@@ -19,6 +19,10 @@ const ANSWER_SUMMARY_FIRST = 'The last meeting covered three things:'
 const ANSWER_SUMMARY_LAST = 'Everyone checks the rollout numbers again at the next sync'
 const CLIPBOARD_COPIED = `${ANSWER} [1].\n\nSources:\n[1] ${RECORDING_TITLED}, `
 const HISTORY_EMPTY = 'Each chat is saved here as you ask'
+
+const NOTICE_PACED = 'You have asked a lot this month, so remi answers one question every '
+    + '5 minutes.'
+
 const QUESTION = 'What did we agree to ship?'
 const QUESTION_BANNER = 'Who is drafting the banner copy?'
 const QUESTION_FOLLOW_UP = 'When is it due?'
@@ -31,6 +35,7 @@ const TITLE_HISTORY_DELETE = 'deleting the open chat from History asks first and
 const TITLE_JUMP = 'scrolling up offers a jump back to the latest answer'
 const TITLE_MOMENT = 'a transcript citation opens the transcript at the moment it cites'
 const TITLE_NEW_CHAT = 'New chat clears the conversation and returns to the suggestions'
+const TITLE_PACED = 'a paced question shows its wait, then answers with the pace noted under it'
 const TITLE_SCOPE = 'asking about a folder scopes the chat to it until the chip is cleared'
 const TITLE_STOP = 'Stop keeps what arrived and Ask again answers the question in full'
 const TITLE_SUGGESTION = 'a suggestion asks at once and Enter asks the next question in the thread'
@@ -234,6 +239,22 @@ test(TITLE_NEW_CHAT, async ({ page }) => {
     await expect(main.getByRole('button', { name: SUGGESTION_SUMMARY })).toBeEnabled()
     await expect(main.getByRole('button', { name: 'New chat' })).toHaveCount(0)
     await expect(question_box(page)).toBeFocused()
+})
+
+test(TITLE_PACED, async ({ page }) => {
+    await page.goto('/?ask=paced')
+    await expect(page.locator('.app-shell[data-ready="true"]')).toBeVisible()
+    await nav_to(page, 'Ask')
+    await question_send(page, QUESTION)
+
+    const exchange = exchanges(page).first()
+    const waiting = `${NOTICE_PACED} This answer starts in under a minute.`
+
+    await expect(exchange.locator('.ask-status')).toHaveText(waiting)
+    await settled(exchange)
+    await expect(exchange.locator('.ask-answer')).toContainText(ANSWER)
+    await expect(exchange.locator('.ask-notice')).toHaveText(NOTICE_PACED)
+    await expect(exchange.locator('.ask-status')).toHaveCount(0)
 })
 
 test(TITLE_SCOPE, async ({ page }) => {

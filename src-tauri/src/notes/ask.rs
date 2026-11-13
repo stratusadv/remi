@@ -1,10 +1,13 @@
 use super::remote::{
     ChatPrompts,
+    Completion,
     ReplySchema,
     chat_completion_streaming,
+    chat_completion_streaming_counted,
     chat_completion_structured,
     models_list,
 };
+use crate::account::{self, QuestionAccount, QuestionFinish, QuestionStarted};
 use crate::blocking;
 use crate::cancellation::is_cancelled;
 use crate::contract::{EndpointID, Instruction, StreamID};
@@ -30,10 +33,13 @@ const CITATION_GROUPS_MAX: u32 = 512;
 const CITATION_MARKERS_MAX: u32 = 8;
 const DATE_FORMAT: &str = "%A %-d %B %Y, %H:%M";
 const EVENT_ASK_SOURCES: &str = "notes_ask_sources";
+const EVENT_ASK_WAIT: &str = "notes_ask_wait";
 const HISTORY_ANSWER_CHARS_MAX: u32 = 2000;
 const HISTORY_TURNS_MAX: u32 = 4;
 const MESSAGE_CANCELLED: &str = "Cancelled";
 const MESSAGE_NOTHING_INDEXED: &str = "There are no notes or transcripts to search here yet.";
+const MESSAGE_TURN_MISSED: &str =
+    "remi could not get a turn for this question. Ask again in a few minutes.";
 const NAMES_KNOWN_MAX: u32 = 200;
 const NAMES_PARSED_MAX: u32 = 8;
 const PARSE_QUERIES_MAX: u32 = 3;
@@ -41,6 +47,9 @@ const PARSE_SCHEMA_NAME: &str = "meeting_search";
 const PARSE_TIMEOUT_SECONDS: u64 = 8;
 const PARSE_TOKENS_MAX: u32 = 600;
 pub(super) const QUESTION_CHARS_MAX: u32 = 1000;
+const QUESTION_WAIT_SECONDS_MAX: u32 = 3600;
+const QUESTION_WAIT_TICK: Duration = Duration::from_secs(1);
+const QUESTION_WAITS_MAX: u32 = 4;
 pub(super) const REASONING_EFFORT_ASK: &str = "low";
 const SNIPPET_CHARS_MAX: u32 = 200;
 const TITLE_UNTITLED: &str = "Untitled recording";
@@ -126,6 +135,7 @@ pub(crate) struct AskSource {
 #[derive(Debug, Clone, Serialize)]
 struct AskSources {
     meetings: Vec<JobMeta>,
+    notice: String,
     sources: Vec<AskSource>,
     stream_id: String,
 }
@@ -136,10 +146,23 @@ pub(crate) struct AskTurn {
     question: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct AskWait {
+    notice: String,
+    stream_id: String,
+}
+
+#[derive(Debug)]
+pub(super) struct ExcerptsFound {
+    pub(super) excerpts: Vec<Excerpt>,
+    pub(super) tokens: u32,
+}
+
 #[derive(Debug)]
 pub(super) struct PlanBuilt {
     pub(super) plan: RankPlan,
     pub(super) question: String,
+    pub(super) tokens: u32,
 }
 
 #[derive(Debug)]
@@ -147,6 +170,14 @@ pub(super) struct PromptBuilt {
     pub(super) meetings: Vec<JobMeta>,
     pub(super) sources: Vec<AskSource>,
     pub(super) user: String,
+}
+
+#[derive(Debug)]
+struct QuestionAdmitted {
+    account: QuestionAccount<'static>,
+    notice: String,
+    question_id: u64,
+    tokens: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -207,6 +238,36 @@ impl AskSource {
             source: excerpt.source,
             start_seconds: excerpt.start_seconds,
         }
+    }
+}
+
+impl QuestionAdmitted {
+    fn finish(&self) -> Option<QuestionFinish> {
+        assert!(self.question_id > 0);
+
+        let tokens = self.tokens?;
+        let bounded = tokens.clamp(1, account::QUESTION_TOKENS_MAX);
+
+        assert!(bounded <= tokens.max(1));
+
+        Some(QuestionFinish::new(self.question_id, bounded))
+    }
+
+    fn tally_answer(&mut self, completion: &Completion) {
+        assert!(self.question_id > 0);
+        assert!(completion.text.len() <= usize_of!(workspace::NOTES_BYTES_MAX));
+
+        self.tokens = self
+            .tokens
+            .zip(completion.tokens)
+            .map(|(counted, answer)| counted.saturating_add(answer));
+    }
+
+    fn tally_parse(&mut self, found: &ExcerptsFound) {
+        assert!(self.question_id > 0);
+        assert!(found.excerpts.len() <= usize_of!(search::EXCERPTS_WHOLE_MAX));
+
+        self.tokens = self.tokens.map(|counted| counted.saturating_add(found.tokens));
     }
 }
 
@@ -271,34 +332,54 @@ pub(crate) async fn notes_ask_streaming(
     endpoint.reasoning_effort = Some(REASONING_EFFORT_ASK.to_owned());
 
     let cancel = AskCancel::register(&app, &stream_id);
+    let mut admitted = question_admit(&app, &stream_id, &endpoint_id, &cancel).await?;
     let now = Local::now();
-    let excerpts = excerpts_find(&endpoint, &text, &turns, scope, now).await?;
+    let found = excerpts_find(&endpoint, &text, &turns, scope, now).await?;
 
     if cancel.cancelled() {
         return Err(AppError::Service(MESSAGE_CANCELLED.to_owned()));
     }
 
-    let question_text = text.clone();
+    if let Some(turn) = admitted.as_mut() {
+        turn.tally_parse(&found);
+    }
 
+    let question_text = text.clone();
+    let excerpts = found.excerpts;
     let built = blocking::run(move || prompt_build(&question_text, &turns, &excerpts, now)).await?;
+    let notice = admitted.as_ref().map(|turn| turn.notice.clone()).unwrap_or_default();
 
     let sources = AskSources {
         meetings: built.meetings,
+        notice,
         sources: built.sources,
         stream_id: stream_id.to_string(),
     };
 
-    let found = !sources.sources.is_empty();
+    let answerable = !sources.sources.is_empty();
 
     sources_emit(&app, sources);
 
-    if !found {
+    if !answerable {
+        if let Some(turn) = admitted.as_ref() {
+            question_finish_logged(turn).await;
+        }
+
         return Ok(MESSAGE_NOTHING_INDEXED.to_owned());
     }
 
     let prompts = ChatPrompts { system: PROMPT_ASK_SYSTEM, user: &built.user };
 
-    chat_completion_streaming(app, stream_id, &endpoint, &prompts).await
+    let Some(mut turn) = admitted else {
+        return chat_completion_streaming(app, stream_id, &endpoint, &prompts).await;
+    };
+
+    let completion = chat_completion_streaming_counted(app, stream_id, &endpoint, &prompts).await?;
+
+    turn.tally_answer(&completion);
+    question_finish_logged(&turn).await;
+
+    Ok(completion.text)
 }
 
 #[tauri::command]
@@ -412,29 +493,31 @@ pub(super) async fn excerpts_find(
     history: &[AskTurn],
     scope: Scope,
     now: DateTime<Local>,
-) -> AppResult<Vec<Excerpt>> {
+) -> AppResult<ExcerptsFound> {
     let scope_whole = scope.clone();
     let whole = blocking::run(move || search::excerpts_whole(&scope_whole)).await?;
 
     if let Some(excerpts) = whole {
-        return Ok(excerpts);
+        return Ok(ExcerptsFound { excerpts, tokens: 0 });
     }
 
-    let plan = if history.is_empty() {
+    let (plan, tokens) = if history.is_empty() {
         let (built, meaning) = tokio::join!(
             plan_build(endpoint, question, history, now),
             vector::question_ranked(question, scope.clone()),
         );
 
-        RankPlan { meaning, ..built.plan }
+        (RankPlan { meaning, ..built.plan }, built.tokens)
     } else {
         let built = plan_build(endpoint, question, history, now).await;
         let meaning = vector::question_ranked(&built.question, scope.clone()).await;
 
-        RankPlan { meaning, ..built.plan }
+        (RankPlan { meaning, ..built.plan }, built.tokens)
     };
 
-    blocking::run(move || excerpts_ranked(&plan, &scope)).await
+    let excerpts = blocking::run(move || excerpts_ranked(&plan, &scope)).await?;
+
+    Ok(ExcerptsFound { excerpts, tokens })
 }
 
 fn excerpts_ranked(plan: &RankPlan, scope: &Scope) -> AppResult<Vec<Excerpt>> {
@@ -625,12 +708,12 @@ pub(super) async fn plan_build(
         Vec::new()
     });
 
-    let reply = match question_parse(endpoint, question, history, &names_known).await {
-        Ok(parsed) => Some(parsed),
+    let (reply, tokens) = match question_parse(endpoint, question, history, &names_known).await {
+        Ok((parsed, tokens)) => (Some(parsed), tokens),
         Err(error) => {
             tracing::warn!(%error, "the question was searched by its own words alone");
 
-            None
+            (None, 0)
         }
     };
 
@@ -647,7 +730,7 @@ pub(super) async fn plan_build(
     assert!(plan.queries.len() <= usize_of!(QUERIES_MAX));
     assert_ne!(standalone, "");
 
-    PlanBuilt { plan, question: standalone }
+    PlanBuilt { plan, question: standalone, tokens }
 }
 
 fn plan_extend(plan: &mut RankPlan, parsed: &QuestionParse) {
@@ -738,12 +821,52 @@ pub(super) fn prompt_build(
     Ok(PromptBuilt { meetings, sources, user })
 }
 
+async fn question_admit(
+    app: &AppHandle,
+    stream_id: &StreamID,
+    endpoint_id: &EndpointID,
+    cancel: &AskCancel,
+) -> AppResult<Option<QuestionAdmitted>> {
+    let Some(account) = account::question_account(endpoint_id).await? else {
+        return Ok(None);
+    };
+
+    for _attempt in 0..QUESTION_WAITS_MAX {
+        let started = account::question_start(&account).await?;
+
+        if let Some(question_id) = started.question_id {
+            let notice = started.notice;
+
+            return Ok(Some(QuestionAdmitted { account, notice, question_id, tokens: Some(0) }));
+        }
+
+        let wait = AskWait { notice: started.notice.clone(), stream_id: stream_id.to_string() };
+
+        wait_emit(app, wait);
+        question_wait(&started, &cancel.flag).await?;
+    }
+
+    Err(AppError::Service(MESSAGE_TURN_MISSED.to_owned()))
+}
+
+async fn question_finish_logged(turn: &QuestionAdmitted) {
+    let Some(finish) = turn.finish() else {
+        return;
+    };
+
+    let finished = account::question_finish(&turn.account, &finish).await;
+
+    if let Err(error) = finished {
+        tracing::warn!(%error, "the tokens of question {} were not recorded", turn.question_id);
+    }
+}
+
 async fn question_parse(
     endpoint: &APIEndpoint,
     question: &str,
     history: &[AskTurn],
     names_known: &[String],
-) -> AppResult<QuestionParse> {
+) -> AppResult<(QuestionParse, u32)> {
     let user = parse_prompt_build(question, history, names_known);
     let prompts = ChatPrompts { system: PROMPT_PARSE_SYSTEM, user: &user };
 
@@ -756,11 +879,13 @@ async fn question_parse(
     let completion = chat_completion_structured(endpoint, &prompts, &reply);
     let limit = Duration::from_secs(PARSE_TIMEOUT_SECONDS);
 
-    let text = tokio::time::timeout(limit, completion).await.map_err(|elapsed| {
+    let completed = tokio::time::timeout(limit, completion).await.map_err(|elapsed| {
         AppError::Service(format!("the notes service did not read the question in time: {elapsed}"))
     })??;
 
-    parse_reply(&text)
+    let parsed = parse_reply(&completed.text)?;
+
+    Ok((parsed, completed.tokens.unwrap_or(0)))
 }
 
 pub(super) fn question_validate(question: &str) -> AppResult<&str> {
@@ -782,6 +907,26 @@ pub(super) fn question_validate(question: &str) -> AppResult<&str> {
     assert!(length <= usize_of!(QUESTION_CHARS_MAX));
 
     Ok(trimmed)
+}
+
+async fn question_wait(started: &QuestionStarted, flag: &AtomicBool) -> AppResult<()> {
+    if started.wait_seconds > QUESTION_WAIT_SECONDS_MAX {
+        return Err(AppError::Service(started.notice.clone()));
+    }
+
+    for _second in 0..started.wait_seconds {
+        if is_cancelled(flag) {
+            return Err(AppError::Service(MESSAGE_CANCELLED.to_owned()));
+        }
+
+        tokio::time::sleep(QUESTION_WAIT_TICK).await;
+    }
+
+    if is_cancelled(flag) {
+        return Err(AppError::Service(MESSAGE_CANCELLED.to_owned()));
+    }
+
+    Ok(())
 }
 
 fn snippet_marker_is(word: &str) -> bool {
@@ -838,9 +983,19 @@ fn sources_emit(app: &AppHandle, sources: AskSources) {
     }
 }
 
+fn wait_emit(app: &AppHandle, wait: AskWait) {
+    assert_ne!(wait.stream_id, "");
+    assert_ne!(wait.notice, "");
+
+    if let Err(error) = app.emit(EVENT_ASK_WAIT, wait) {
+        tracing::warn!("ask wait event could not be emitted: {error}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account::test_support::question_account_at;
     use crate::search::test_support::{job_saved, transcript_saved};
     use crate::transcription::types::Transcript;
     use crate::workspace::TranscriptSlot;
@@ -959,6 +1114,70 @@ mod tests {
         assert!(built.user.contains("[M2] Transcript, 1:00 to 1:30:\nthird line"));
         assert_eq!(built.sources[1].start_seconds, Some(60.0_f64));
         assert_eq!(built.sources[1].segment_index_first, Some(2));
+    }
+
+    fn finish_tokens(finish: &QuestionFinish) -> u64 {
+        let sent = serde_json::to_value(finish).unwrap();
+
+        assert!(sent["question_id"].as_u64().unwrap() > 0);
+
+        sent["tokens"].as_u64().unwrap()
+    }
+
+    fn wait_of(wait_seconds: u32) -> QuestionStarted {
+        assert!(wait_seconds > 0);
+
+        QuestionStarted { notice: "Wait a little.".to_owned(), question_id: None, wait_seconds }
+    }
+
+    #[tokio::test]
+    async fn a_turn_wait_ends_at_once_when_cancelled_or_too_long_and_otherwise_runs_out() {
+        let cancelled = AtomicBool::new(true);
+        let running = AtomicBool::new(false);
+        let started = std::time::Instant::now();
+        let longest = wait_of(QUESTION_WAIT_SECONDS_MAX);
+        let refused = question_wait(&longest, &cancelled).await.unwrap_err();
+        let too_long = wait_of(QUESTION_WAIT_SECONDS_MAX + 1);
+        let refused_long = question_wait(&too_long, &running).await.unwrap_err();
+        let refused_after = started.elapsed();
+
+        question_wait(&wait_of(1), &running).await.unwrap();
+
+        assert_eq!(refused.to_string(), format!("api error: {MESSAGE_CANCELLED}"));
+        assert_eq!(refused_long.to_string(), "api error: Wait a little.");
+        assert!(refused_after < QUESTION_WAIT_TICK);
+        assert!(started.elapsed() >= QUESTION_WAIT_TICK);
+    }
+
+    #[test]
+    fn a_question_tally_adds_the_parse_and_the_answer_and_drops_an_unreported_answer() {
+        let account = question_account_at("https://remi.example.test");
+
+        let mut turn =
+            QuestionAdmitted { account, notice: String::new(), question_id: 7, tokens: Some(0) };
+
+        assert_eq!(turn.finish().map(|finish| finish_tokens(&finish)), Some(1));
+
+        let found = ExcerptsFound { excerpts: Vec::new(), tokens: 900 };
+        let counted = Completion { text: "Sam drafts it.".to_owned(), tokens: Some(4100) };
+
+        turn.tally_parse(&found);
+        turn.tally_answer(&counted);
+
+        assert_eq!(turn.finish().map(|finish| finish_tokens(&finish)), Some(5000));
+
+        turn.tokens = Some(u32::MAX - 10);
+        turn.tally_answer(&counted);
+
+        let tokens_max = u64::from(account::QUESTION_TOKENS_MAX);
+
+        assert_eq!(turn.finish().map(|finish| finish_tokens(&finish)), Some(tokens_max));
+
+        let unreported = Completion { text: "Sam drafts it.".to_owned(), tokens: None };
+
+        turn.tally_answer(&unreported);
+
+        assert!(turn.finish().is_none());
     }
 
     #[test]

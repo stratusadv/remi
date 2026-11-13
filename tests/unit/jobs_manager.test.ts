@@ -261,28 +261,6 @@ describe('JobsManager list ordering', () => {
 
         expect(titles(wrapper).slice(2)).toEqual(['Delta sync', 'Alpha review'])
     })
-
-    it('sorts by status text ascending then descending', async () => {
-        const wrapper = await mount_manager()
-
-        await sort_by(wrapper, 'Status')
-
-        expect(titles(wrapper)).toEqual([
-            'Gamma call',
-            'beta planning',
-            'Delta sync',
-            'Alpha review',
-        ])
-
-        await sort_by(wrapper, 'Status')
-
-        expect(titles(wrapper)).toEqual([
-            'Delta sync',
-            'Alpha review',
-            'beta planning',
-            'Gamma call',
-        ])
-    })
 })
 
 describe('JobsManager list ordering', () => {
@@ -333,14 +311,16 @@ describe('JobsManager cells', () => {
         ])
     })
 
-    it('shows the duration and status per row', async () => {
+    it('shows the duration per row and no status column', async () => {
         const wrapper = await mount_manager()
         const rows = wrapper.findAll('.recording-table-row')
+        const labels = wrapper.findAll('.recording-table-sort').map((button) => button.text())
 
         expect(rows[0]?.findAll('td')[3]?.text()).toBe('1:40')
-        expect(rows[0]?.get('.recording-tile-status').text()).toBe('Notes ready')
         expect(rows[2]?.findAll('td')[3]?.text()).toBe('-:--')
-        expect(rows[2]?.get('.recording-tile-status').text()).toBe('Not transcribed')
+        expect(rows[0]?.findAll('td')).toHaveLength(5)
+        expect(labels).toEqual(['Title', 'Participants', 'Date', 'Duration'])
+        expect(wrapper.find('.recording-tile-status').exists()).toBe(false)
     })
 
     it('falls back to the file stem when a job has no title or label', async () => {
@@ -701,7 +681,7 @@ describe('JobsManager folders', () => {
 
         expect(titles(wrapper)).toEqual(['Delta sync'])
         expect(wrapper.get('.folder-heading-title').text()).toBe('Apollo')
-        expect(wrapper.find('.btn-primary').exists()).toBe(false)
+        expect(wrapper.get('.btn-primary').text()).toBe('Ask about this folder')
 
         await wrapper.get('.folder-crumb').trigger('click')
 
@@ -793,5 +773,28 @@ describe('JobsManager ask', () => {
 
         expect(pipeline.view_current.value).toBe('ask')
         expect(use_ask().scope.value).toEqual({ kind: 'meeting', job_id: 'delta' })
+    })
+
+    it('asks about a folder from its header and offers none before transcription', async () => {
+        vi.mocked(ipc.jobs_list).mockResolvedValue([
+            ...JOBS,
+            job_listing_build({ id: 'omega', title: 'Omega intro', project: 'Board' }),
+        ])
+
+        folders_state.folder_open('Board')
+
+        const wrapper = await mount_manager()
+
+        expect(titles(wrapper)).toEqual(['Omega intro'])
+        expect(wrapper.find('.btn-primary').exists()).toBe(false)
+
+        folders_state.folder_open('Apollo')
+        await flushPromises()
+
+        await wrapper.get('.btn-primary').trigger('click')
+        await flushPromises()
+
+        expect(pipeline.view_current.value).toBe('ask')
+        expect(use_ask().scope.value).toEqual({ kind: 'project', project: 'Apollo' })
     })
 })

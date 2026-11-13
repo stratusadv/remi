@@ -45,19 +45,26 @@ const LABEL_CHARGE: &str = "transcription charge";
 const LABEL_CHECKOUT: &str = "checkout";
 const LABEL_CHECKOUT_FINISH: &str = "checkout confirmation";
 const LABEL_PROMO: &str = "promo code";
+const LABEL_QUESTION: &str = "question";
+const LABEL_QUESTION_FINISH: &str = "question tokens";
 const LABEL_SIGN_UP: &str = "account sign-up";
 const MESSAGE_CHECKOUT_HOURS: &str = "That pack of hours is not on offer.";
-const MESSAGE_CHECKOUT_MALFORMED: &str = "the account server sent a checkout Remi cannot open";
-const MESSAGE_CHECKOUT_UNKNOWN: &str = "That is not a checkout this copy of Remi started.";
+const MESSAGE_CHECKOUT_MALFORMED: &str = "the account server sent a checkout remi cannot open";
+const MESSAGE_CHECKOUT_UNKNOWN: &str = "That is not a checkout this copy of remi started.";
 const MESSAGE_CODE_INVALID: &str = "That sign-in code is not valid.";
 const MESSAGE_KEY_MALFORMED: &str =
     "the account server sent a Stripe key that is not a publishable key";
-const MESSAGE_SIGNED_OUT: &str = "This copy of Remi is not signed in to an account.";
+const MESSAGE_QUESTION_MALFORMED: &str = "the account server sent a question turn remi cannot read";
+const MESSAGE_SIGNED_OUT: &str = "This copy of remi is not signed in to an account.";
 const PATH_ACCOUNT: &str = "/api/v1/account/";
 const PATH_CHARGE: &str = "/api/v1/account/charge/";
 const PATH_CHECKOUT: &str = "/api/v1/account/checkout/";
 const PATH_CHECKOUT_FINISH: &str = "/api/v1/account/checkout/finish/";
 const PATH_PROMO: &str = "/api/v1/account/promo/";
+const PATH_QUESTION: &str = "/api/v1/account/question/";
+const PATH_QUESTION_FINISH: &str = "/api/v1/account/question/finish/";
+const QUESTION_NOTICE_CHARS_MAX: u32 = 2048;
+pub(crate) const QUESTION_TOKENS_MAX: u32 = 1_000_000;
 const REQUEST_TIMEOUT_SECONDS: u64 = 30;
 const STATUS_UNAUTHORIZED: u16 = 401;
 const TOKEN_CHARS_MAX: u32 = 256;
@@ -154,6 +161,30 @@ struct PublishableKey(String);
 #[derive(Clone, Copy, Debug, Serialize)]
 struct PromoRequest<'code> {
     code: &'code str,
+}
+
+#[derive(Debug)]
+pub(crate) struct QuestionAccount<'host> {
+    host: &'host str,
+    token: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+struct QuestionFinished {
+    question_id: u64,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(crate) struct QuestionFinish {
+    question_id: u64,
+    tokens: u32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct QuestionStarted {
+    pub(crate) notice: String,
+    pub(crate) question_id: Option<u64>,
+    pub(crate) wait_seconds: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -318,6 +349,63 @@ pub(crate) async fn charge_apply(job: &ChargeJob<'_>) -> AppResult<()> {
     charge_send(&Session { host, token: &token }, &request).await
 }
 
+pub(crate) async fn question_account(
+    endpoint_id: &str,
+) -> AppResult<Option<QuestionAccount<'static>>> {
+    let endpoint_id_owned = endpoint_id.to_owned();
+
+    let Some(host) = blocking::run(move || billing_host(&endpoint_id_owned)).await? else {
+        return Ok(None);
+    };
+
+    let token = token_required(host).await?;
+
+    assert!(token_is_valid(&token));
+
+    Ok(Some(QuestionAccount { host, token }))
+}
+
+pub(crate) async fn question_finish(
+    account: &QuestionAccount<'_>,
+    finish: &QuestionFinish,
+) -> AppResult<()> {
+    let call = Call {
+        host: account.host,
+        label: LABEL_QUESTION_FINISH,
+        path: PATH_QUESTION_FINISH,
+        token: Some(&account.token),
+    };
+
+    let finished: QuestionFinished = retry_run(|| call_post(&call, finish)).await?;
+
+    if finished.question_id != finish.question_id {
+        return Err(AppError::Service(format!(
+            "the account server finished question {} instead of {}",
+            finished.question_id, finish.question_id,
+        )));
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn question_start(account: &QuestionAccount<'_>) -> AppResult<QuestionStarted> {
+    let call = Call {
+        host: account.host,
+        label: LABEL_QUESTION,
+        path: PATH_QUESTION,
+        token: Some(&account.token),
+    };
+
+    let body = serde_json::Map::new();
+    let started: QuestionStarted = retry_run(|| call_post(&call, &body)).await?;
+
+    if !question_started_is_valid(&started) {
+        return Err(AppError::Service(MESSAGE_QUESTION_MALFORMED.into()));
+    }
+
+    Ok(started)
+}
+
 async fn account_fetch(session: &Session<'_>) -> AppResult<Option<Account>> {
     let call = Call {
         host: session.host,
@@ -476,7 +564,19 @@ fn host_clean(host: Option<&str>) -> Option<&str> {
 
 fn host_required() -> AppResult<&'static str> {
     host_builtin()
-        .ok_or_else(|| AppError::Config("This build of Remi has no account server.".into()))
+        .ok_or_else(|| AppError::Config("This build of remi has no account server.".into()))
+}
+
+fn question_started_is_valid(started: &QuestionStarted) -> bool {
+    if started.notice.chars().count() > usize_of!(QUESTION_NOTICE_CHARS_MAX) {
+        return false;
+    }
+
+    started
+        .question_id
+        .map_or(started.wait_seconds > 0 && !started.notice.is_empty(), |question_id| {
+            question_id > 0 && started.wait_seconds == 0
+        })
 }
 
 async fn reply_ensure_ok(response: reqwest::Response, label: &str) -> AppResult<reqwest::Response> {
@@ -563,6 +663,16 @@ fn token_save(session: &Session<'_>) -> AppResult<()> {
     protected_write(&path, &payload)
 }
 
+impl QuestionFinish {
+    pub(crate) fn new(question_id: u64, tokens: u32) -> Self {
+        assert!(question_id > 0);
+        assert!(tokens > 0);
+        assert!(tokens <= QUESTION_TOKENS_MAX);
+
+        Self { question_id, tokens }
+    }
+}
+
 impl TryFrom<TextRaw> for PublishableKey {
     type Error = AppError;
 
@@ -582,7 +692,22 @@ impl TryFrom<TextRaw> for PublishableKey {
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use super::{QuestionAccount, token_is_valid};
+
+    const TOKEN: &str = "_5l7Sfe4jlqihWxQ9KAatIUrtHzIF7uQ_90oRpUP2MY";
+
+    pub(crate) fn question_account_at(host: &str) -> QuestionAccount<'_> {
+        assert!(host.starts_with("http"));
+        assert!(token_is_valid(TOKEN));
+
+        QuestionAccount { host, token: TOKEN.to_owned() }
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::test_support::question_account_at;
     use super::*;
     use crate::workspace::test_support::root_scoped;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -618,8 +743,19 @@ mod tests {
         r#"this server yet.", "type": "billing_error"}}"#,
     );
 
+    const MESSAGE_INACTIVE: &str = concat!(
+        "Ask answers questions for 30 days after each recording remi processes. ",
+        "Process a recording to keep asking.",
+    );
+
+    const REPLY_INACTIVE: &str = concat!(
+        r#"{"error": {"code": "ask_inactive", "message": "Ask answers questions for 30 days "#,
+        r#"after each recording remi processes. Process a recording to keep asking.", "#,
+        r#""type": "billing_error"}}"#,
+    );
+
     const REPLY_SIGNED_OUT: &str = concat!(
-        r#"{"error": {"code": "token_invalid", "message": "This copy of Remi is not signed in "#,
+        r#"{"error": {"code": "token_invalid", "message": "This copy of remi is not signed in "#,
         r#"to an account.", "type": "billing_error"}}"#,
     );
 
@@ -837,7 +973,7 @@ mod tests {
             let session_id: CheckoutSessionID = serde_json::from_value(text.into()).unwrap();
             let message = account_checkout_finish(session_id).await.unwrap_err().to_string();
 
-            assert!(message.contains("not a checkout this copy of Remi started"), "{message}");
+            assert!(message.contains("not a checkout this copy of remi started"), "{message}");
         }
     }
 
@@ -984,5 +1120,107 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(sent_first, sent_second);
         assert_eq!(sent_first["job_id"], JOB_ID);
+    }
+
+    #[tokio::test]
+    async fn a_question_start_reads_a_turn_or_a_wait_and_refuses_a_reply_that_is_neither() {
+        let shapes = [
+            r#"{"notice": "", "question_id": 7, "wait_seconds": 0}"#,
+            r#"{"notice": "Wait a little.", "question_id": null, "wait_seconds": 120}"#,
+            r#"{"notice": "", "question_id": 7, "wait_seconds": 5}"#,
+            r#"{"notice": "", "question_id": null, "wait_seconds": 0}"#,
+            r#"{"notice": "", "question_id": null, "wait_seconds": 30}"#,
+            r#"{"notice": "", "question_id": 0, "wait_seconds": 0}"#,
+        ];
+
+        let replies = shapes.iter().map(|shape| (200, (*shape).to_owned())).collect();
+        let (host, serving) = service_replying(replies).await;
+        let account = question_account_at(&host);
+        let turn = question_start(&account).await.unwrap();
+
+        assert_eq!(turn.question_id, Some(7));
+        assert_eq!(turn.wait_seconds, 0);
+
+        let wait = question_start(&account).await.unwrap();
+
+        assert_eq!(wait.question_id, None);
+        assert_eq!(wait.wait_seconds, 120);
+        assert_eq!(wait.notice, "Wait a little.");
+
+        for _refused in 2..shapes.len() {
+            let message = question_start(&account).await.unwrap_err().to_string();
+
+            assert!(message.contains("question turn remi cannot read"), "{message}");
+        }
+
+        let requests = serving.await.unwrap();
+        let (head, sent) = request_parts(&requests[0]);
+        let header = format!("authorization: bearer {}", TOKEN.to_ascii_lowercase());
+
+        assert_eq!(requests.len(), shapes.len());
+        assert!(head.starts_with("POST /api/v1/account/question/ HTTP/1.1\r\n"));
+        assert!(head.to_ascii_lowercase().contains(&header));
+        assert_eq!(sent, serde_json::json!({}));
+    }
+
+    #[tokio::test]
+    async fn a_question_refused_for_inactivity_carries_the_server_message_without_retrying() {
+        let (host, serving) = service_replying(vec![(403, REPLY_INACTIVE.to_owned())]).await;
+        let account = question_account_at(&host);
+        let error = question_start(&account).await.unwrap_err().to_string();
+        let requests = serving.await.unwrap();
+
+        assert_eq!(error, format!("api error: {MESSAGE_INACTIVE}"));
+        assert_eq!(requests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_question_finish_sends_its_token_total_and_checks_the_question_echoed() {
+        let replies = vec![
+            (200, r#"{"question_id": 7, "tokens": 1234}"#.to_owned()),
+            (200, r#"{"question_id": 7, "tokens": 1000000}"#.to_owned()),
+            (200, r#"{"question_id": 8, "tokens": 5}"#.to_owned()),
+        ];
+
+        let (host, serving) = service_replying(replies).await;
+        let account = question_account_at(&host);
+
+        question_finish(&account, &QuestionFinish::new(7, 1234)).await.unwrap();
+        question_finish(&account, &QuestionFinish::new(7, QUESTION_TOKENS_MAX)).await.unwrap();
+
+        let finish_other = QuestionFinish::new(7, 5);
+        let mismatch = question_finish(&account, &finish_other).await.unwrap_err().to_string();
+
+        assert!(mismatch.contains("finished question 8 instead of 7"), "{mismatch}");
+
+        let requests = serving.await.unwrap();
+        let (head, _sent) = request_parts(&requests[0]);
+
+        let bodies: Vec<serde_json::Value> =
+            requests.iter().map(|request| request_parts(request).1).collect();
+
+        assert_eq!(requests.len(), 3);
+        assert!(head.starts_with("POST /api/v1/account/question/finish/ HTTP/1.1\r\n"));
+        assert_eq!(bodies[0], serde_json::json!({ "question_id": 7_u64, "tokens": 1234_u32 }));
+        assert_eq!(bodies[1], serde_json::json!({ "question_id": 7_u64, "tokens": 1_000_000_u32 }));
+        assert_eq!(bodies[2], serde_json::json!({ "question_id": 7_u64, "tokens": 5_u32 }));
+    }
+
+    #[test]
+    #[should_panic(expected = "tokens > 0")]
+    fn a_question_finish_with_no_tokens_is_a_bug() {
+        let _finish = QuestionFinish::new(7, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "tokens <= QUESTION_TOKENS_MAX")]
+    fn a_question_finish_over_the_token_limit_is_a_bug() {
+        let _finish = QuestionFinish::new(7, QUESTION_TOKENS_MAX + 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "question_id > 0")]
+    fn a_question_finish_without_a_question_is_a_bug() {
+        let _finish = QuestionFinish::new(0, 5);
     }
 }

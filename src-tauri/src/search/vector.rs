@@ -1,7 +1,11 @@
 use super::chunk::CHUNKS_MAX;
 use super::{LIST_CHUNKS_MAX, MEETINGS_MAX, Scope, index_open};
 use crate::blocking;
-use crate::endpoints::storage::embeddings_target_load;
+use crate::endpoints::storage::{
+    MODEL_EMBEDDINGS,
+    embeddings_model_resolve,
+    embeddings_target_load,
+};
 use crate::endpoints::types::EmbeddingsTarget;
 use crate::error::{AppError, AppResult};
 use crate::http::{
@@ -182,6 +186,7 @@ struct Scored {
 pub(crate) struct SearchStatus {
     error: Option<String>,
     model: Option<String>,
+    model_default: &'static str,
     passages: u32,
     passages_embedded: u32,
 }
@@ -572,7 +577,7 @@ pub(crate) fn worker_wake() {
     };
 
     if worker.requests.try_send(()) == Err(TrySendError::Closed(())) {
-        tracing::warn!("the search model worker has stopped, restart Remi to resume it");
+        tracing::warn!("the search model worker has stopped, restart remi to resume it");
     }
 }
 
@@ -675,11 +680,7 @@ fn scored_keep(
 }
 
 fn status_load() -> AppResult<SearchStatus> {
-    let model = settings_load()?
-        .embeddings_model
-        .map(|model| model.trim().to_owned())
-        .filter(|model| !model.is_empty());
-
+    let model = embeddings_model_resolve(&settings_load()?);
     let connection = index_open()?;
     let space = model.as_deref().map_or_default(space_of);
 
@@ -696,7 +697,7 @@ fn status_load() -> AppResult<SearchStatus> {
         assert_eq!(passages_embedded, 0);
     }
 
-    Ok(SearchStatus { error, model, passages, passages_embedded })
+    Ok(SearchStatus { error, model, model_default: MODEL_EMBEDDINGS, passages, passages_embedded })
 }
 
 fn vector_bytes(values: &[f32]) -> Vec<u8> {
@@ -1168,10 +1169,22 @@ mod tests {
     fn the_status_counts_passages_and_the_vectors_ready_for_the_chosen_model() {
         let _root = root_scoped();
         let _meetings = meetings_saved();
+        let unset = status_load().unwrap();
+
+        assert_eq!(unset.model.as_deref(), Some(MODEL_EMBEDDINGS));
+        assert_eq!(unset.model_default, MODEL_EMBEDDINGS);
+        assert_ne!(unset.passages, 0);
+        assert_eq!(unset.passages_embedded, 0);
+
+        let emptied = Settings { embeddings_model: Some(String::new()), ..Settings::initial() };
+
+        settings_save(&emptied).unwrap();
+
         let off = status_load().unwrap();
 
         assert!(off.model.is_none());
-        assert_ne!(off.passages, 0);
+        assert_eq!(off.model_default, MODEL_EMBEDDINGS);
+        assert_eq!(off.passages, unset.passages);
         assert_eq!(off.passages_embedded, 0);
 
         let settings = Settings { embeddings_model: Some(MODEL.to_owned()), ..Settings::initial() };

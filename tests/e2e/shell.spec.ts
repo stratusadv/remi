@@ -35,7 +35,7 @@ test('the sidebar navigates between the screens', async ({ page }) => {
 
 test('the brand button resets the pipeline and returns home', async ({ page }) => {
     await recording_open(page, RECORDING_TITLED)
-    await page.getByRole('button', { name: 'Remi', exact: true }).click()
+    await page.getByRole('button', { name: 'remi', exact: true }).click()
 
     await expect(page.getByRole('heading', { name: 'Home' })).toBeVisible()
 })
