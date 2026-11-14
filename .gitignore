@@ -1,3 +1,5 @@
+*.db
+*.db-journal
 *.env
 *.key
 *.local
@@ -21,6 +23,7 @@ design/
 dist/
 node_modules/
 playwright-report/
+robit.log*
 server/static/
 site/
 src-tauri/gen/schemas/

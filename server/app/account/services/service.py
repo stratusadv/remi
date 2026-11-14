@@ -4,6 +4,7 @@ from typing_extensions import TYPE_CHECKING
 
 from django_spire.contrib.constructor.service import BaseDjangoModelService
 
+from app.account.services.automation_service import AccountAutomationService
 from app.account.services.checkout_service import AccountCheckoutService
 from app.account.services.factory_service import AccountFactoryService
 from app.account.services.processor_service import AccountProcessorService
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
 class AccountService(BaseDjangoModelService['Account']):
     obj: Account
 
+    automation = AccountAutomationService()
     checkout = AccountCheckoutService()
     factory = AccountFactoryService()
     processor = AccountProcessorService()

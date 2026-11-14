@@ -11,7 +11,12 @@ from typing_extensions import TYPE_CHECKING
 
 from django.db import connection, transaction
 
-from app.account.constants import CHARGE_SECONDS_MAX, SECONDS_PER_HOUR, SECONDS_PER_MINUTE
+from app.account.constants import (
+    CHARGE_SECONDS_MAX,
+    SECONDS_PER_HOUR,
+    SECONDS_PER_MINUTE,
+    TOPUP_BALANCE_SECONDS,
+)
 from app.account.ledger.models import AccountLedgerEntry
 from app.account.ledger.querysets import AccountLedgerEntryQuerySet
 from app.account.models import Account
@@ -22,7 +27,11 @@ from app.promo_code.tests.factories import create_test_promo_code
 from harness.api import ACCOUNT_CHARGE_PATH, account_create, account_get, api_post
 
 if TYPE_CHECKING:
+    from pytest_django.fixtures import DjangoCaptureOnCommitCallbacks
+
     from django.test import Client
+
+    from harness.metric import MetricExecutorFake
 
 
 pytestmark = pytest.mark.django_db
@@ -65,6 +74,47 @@ def _duration_step(seconds: int) -> int:
         return SECONDS_PER_MINUTE
 
     return SECONDS_PER_HOUR_TENTH
+
+
+def test_balance_topup_after_a_charge_grants_back_exactly_the_charge() -> None:
+    account = create_test_account(email='topup@example.com')
+
+    _ = account.services.processor.balance_topup(reference='topup:test:1')
+
+    account.services.processor.charge(job_id=JOB_ID_FIRST, seconds=SECONDS_PER_HOUR)
+
+    granted = account.services.processor.balance_topup(reference='topup:test:2')
+
+    assert granted == SECONDS_PER_HOUR
+    assert account.ledger_entries.balance_seconds() == TOPUP_BALANCE_SECONDS
+    assert account.ledger_entries.grants().count() == 2
+
+
+def test_balance_topup_grants_the_shortfall_and_nothing_once_the_target_is_held() -> None:
+    account = create_test_account(email='topup@example.com', seconds=10 * SECONDS_PER_HOUR)
+    granted = account.services.processor.balance_topup(reference='topup:test:1')
+    granted_again = account.services.processor.balance_topup(reference='topup:test:2')
+    grants = list(account.ledger_entries.grants().values_list('seconds', flat=True))
+
+    assert granted == TOPUP_BALANCE_SECONDS - 10 * SECONDS_PER_HOUR
+    assert granted_again == 0
+    assert grants == [granted]
+    assert account.ledger_entries.balance_seconds() == TOPUP_BALANCE_SECONDS
+
+
+def test_balance_topup_records_no_metric_and_counts_as_no_purchase_or_promo(
+    django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
+    metric_dispatched: MetricExecutorFake,
+) -> None:
+    account = create_test_account(email='topup@example.com')
+
+    with django_capture_on_commit_callbacks(execute=True):
+        granted = account.services.processor.balance_topup(reference='topup:test:1')
+
+    assert granted == TOPUP_BALANCE_SECONDS
+    assert metric_dispatched.statistic_keys() == []
+    assert not account.ledger_entries.purchases().exists()
+    assert not account.ledger_entries.promos().exists()
 
 
 def test_charge_beyond_the_balance_is_refused_without_a_ledger_entry(client: Client) -> None:
@@ -247,6 +297,53 @@ def test_lock_makes_a_second_charge_wait_for_the_first(monkeypatch: pytest.Monke
 
     assert outcomes == {'first': 'charged', 'second': 'insufficient'}
     assert account.ledger_entries.balance_seconds() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_lock_makes_a_second_topup_grant_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    account = create_test_account(email='lock@example.com', seconds=SECONDS_PER_HOUR)
+    read_first = threading.Event()
+    done_second = threading.Event()
+    granted = {}
+    balance_seconds_original = AccountLedgerEntryQuerySet.balance_seconds
+
+    def balance_seconds_pausing(queryset: AccountLedgerEntryQuerySet) -> int:
+        balance = balance_seconds_original(queryset)
+
+        if threading.current_thread().name == 'first':
+            if not read_first.is_set():
+                read_first.set()
+                done_second.wait(timeout=LOCK_HOLD_SECONDS)
+
+        return balance
+
+    def topup(reference: str) -> None:
+        name = threading.current_thread().name
+
+        try:
+            granted[name] = account.services.processor.balance_topup(reference=reference)
+        finally:
+            if name == 'second':
+                done_second.set()
+
+            connection.close()
+
+    monkeypatch.setattr(AccountLedgerEntryQuerySet, 'balance_seconds', balance_seconds_pausing)
+
+    first = threading.Thread(target=topup, args=('topup:first',), name='first')
+    second = threading.Thread(target=topup, args=('topup:second',), name='second')
+
+    first.start()
+
+    assert read_first.wait(timeout=THREAD_WAIT_SECONDS)
+
+    second.start()
+    first.join(timeout=THREAD_WAIT_SECONDS)
+    second.join(timeout=THREAD_WAIT_SECONDS)
+    monkeypatch.undo()
+
+    assert granted == {'first': TOPUP_BALANCE_SECONDS - SECONDS_PER_HOUR, 'second': 0}
+    assert account.ledger_entries.balance_seconds() == TOPUP_BALANCE_SECONDS
 
 
 @pytest.mark.django_db(transaction=True)

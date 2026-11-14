@@ -16,6 +16,7 @@ from app.account.constants import (
     SECONDS_PER_HOUR,
     SECONDS_PER_MINUTE,
     TENTHS_PER_HOUR,
+    TOPUP_BALANCE_SECONDS,
 )
 from app.account.ledger.models import AccountLedgerEntry
 from app.account.question.models import AccountQuestion
@@ -135,6 +136,34 @@ class AccountProcessorService(BaseDjangoModelService['Account']):
 
         return self.obj_class.objects.by_id(self.obj.pk).locked().get()
 
+    def balance_topup(self, *, reference: str) -> int:
+        with transaction.atomic():
+            account = self._account_locked()
+            balance_seconds = account.ledger_entries.balance_seconds()
+
+            if balance_seconds < 0:
+                message = f'account {account.pk} holds {balance_seconds} seconds'
+                raise RuntimeError(message)
+
+            if balance_seconds >= TOPUP_BALANCE_SECONDS:
+                return 0
+
+            seconds = TOPUP_BALANCE_SECONDS - balance_seconds
+
+            AccountLedgerEntry.services.factory.grant_create(
+                account=account,
+                reference=reference,
+                seconds=seconds,
+            )
+
+            balance_seconds_after = account.ledger_entries.balance_seconds()
+
+            if balance_seconds_after != TOPUP_BALANCE_SECONDS:
+                message = f'account {account.pk} was topped up to {balance_seconds_after} seconds'
+                raise RuntimeError(message)
+
+        return seconds
+
     def charge(self, *, job_id: str, seconds: int) -> None:
         if CHARGE_JOB_ID_PATTERN.fullmatch(job_id) is None:
             message = 'A charge needs the 32-character job id of the recording.'
@@ -182,6 +211,20 @@ class AccountProcessorService(BaseDjangoModelService['Account']):
                 )
 
                 raise RuntimeError(message)
+
+    def complimentary_end(self) -> None:
+        with transaction.atomic():
+            account = self._account_locked()
+            account.is_complimentary = False
+            account.services.save_model_obj()
+
+    def complimentary_start(self, *, reference: str) -> int:
+        with transaction.atomic():
+            account = self._account_locked()
+            account.is_complimentary = True
+            account.services.save_model_obj()
+
+            return self.balance_topup(reference=reference)
 
     def promo_redeem(self, code: str) -> Account:
         if code.strip() == '':

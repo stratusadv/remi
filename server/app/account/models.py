@@ -33,6 +33,7 @@ class Account(HistoryModelMixin):
     )
 
     email = models.EmailField(max_length=ACCOUNT_EMAIL_LENGTH_MAX)
+    is_complimentary = models.BooleanField(default=False)
     name = models.CharField(max_length=ACCOUNT_NAME_LENGTH_MAX)
 
     token_hash = models.CharField(

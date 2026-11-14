@@ -24,5 +24,8 @@ class AccountQuerySet(BaseQuerySet['Account']):
 
         return self.filter(token_hash=token_hash)
 
+    def complimentary(self) -> Self:
+        return self.filter(is_complimentary=True)
+
     def with_balance(self) -> Self:
         return self.annotate(balance_seconds=Coalesce(Sum('ledger_entry__seconds'), 0))
