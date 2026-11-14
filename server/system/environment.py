@@ -37,6 +37,7 @@ class EnvironmentVariable(Enum):
     REMI_ASK_WINDOW_DAYS = auto()
     REMI_OFFERS = auto()
     REMI_PRICE_CURRENCY = auto()
+    ROBIT_KEY = auto()
     SENDGRID_API_KEY = auto()
     STRIPE_PUBLISHABLE_KEY = auto()
     STRIPE_SECRET_KEY = auto()

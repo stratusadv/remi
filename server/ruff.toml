@@ -79,7 +79,9 @@ runtime-evaluated-base-classes = ["ninja.Schema"]
 "**/tests/**" = ["S105", "S106", "S107"]
 "conftest.py" = ["S105", "S106"]
 "harness/**" = ["S105", "S106"]
+"development_worker.py" = ["E402"]
 "system/*/settings.py" = ["E402", "F403", "F405"]
+"worker.py" = ["E402", "S104"]
 
 [format]
 quote-style = "single"

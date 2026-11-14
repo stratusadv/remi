@@ -59,7 +59,12 @@ def test_checkout_charges_the_configured_price_of_the_pack_chosen(
         response = api_post(client, ACCOUNT_CHECKOUT_PATH, body=body, token=token)
         parameters = stripe_fake.created[index]
         session_id = f'cs_test_{index + 1}'
-        metadata = {'account_id': str(account.pk), 'seconds': str(hours * SECONDS_PER_HOUR)}
+
+        metadata = {
+            'account_id': str(account.pk),
+            'app': 'remi',
+            'seconds': str(hours * SECONDS_PER_HOUR),
+        }
 
         price = {
             'currency': PRICE_CURRENCY,
@@ -274,9 +279,10 @@ def test_checkout_paid_with_malformed_metadata_credits_nothing(stripe_fake: Stri
 
     for index, metadata in enumerate(metadatas):
         session_id = f'cs_test_metadata{index}'
+        metadata_owned = {**metadata, 'app': 'remi'}
 
         stripe_fake.session_add(
-            metadata=metadata,
+            metadata=metadata_owned,
             payment_status='paid',
             session_id=session_id,
         )
@@ -285,6 +291,28 @@ def test_checkout_paid_with_malformed_metadata_credits_nothing(stripe_fake: Stri
             AccountLedgerEntry.services.factory.purchase_from_session(session_id)
 
     assert account.ledger_entries.balance_seconds() == SECONDS_PER_HOUR
+
+
+def test_checkout_finish_refuses_a_paid_session_another_app_started(
+    client: Client,
+    stripe_fake: StripeFake,
+) -> None:
+    token = account_create(client)
+    account = Account.objects.get()
+    metadata = {'account_id': str(account.pk), 'seconds': str(PURCHASE_SECONDS)}
+
+    stripe_fake.session_add(
+        client_reference_id=str(account.pk),
+        metadata=metadata,
+        payment_status='paid',
+        session_id='cs_test_foreign',
+    )
+
+    refused = checkout_finish(client, session_id='cs_test_foreign', token=token)
+
+    assert refused.status_code == 404
+    assert refused.json()['error']['code'] == 'checkout_unknown'
+    assert account_get(client, token)['balance_seconds'] == 0
 
 
 def test_checkout_refused_by_stripe_reports_payments_unavailable(

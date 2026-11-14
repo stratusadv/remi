@@ -59,7 +59,13 @@ class AccountCheckoutService(BaseDjangoModelService['Account']):
 
         line_item = SessionCreateParamsLineItem(price_data=price, quantity=1)
         line_items = [line_item]
-        metadata = {'account_id': account_id, 'seconds': str(hours * SECONDS_PER_HOUR)}
+
+        metadata = {
+            'account_id': account_id,
+            'app': client.CHECKOUT_METADATA_APP,
+            'seconds': str(hours * SECONDS_PER_HOUR),
+        }
+
         payment_method_types_allowed = list(client.CHECKOUT_PAYMENT_METHOD_TYPES_ALLOWED)
 
         parameters = SessionCreateParams(

@@ -42,6 +42,7 @@ class AccountLedgerEntry(models.Model):
             models.CheckConstraint(
                 condition=(
                     Q(kind=AccountLedgerEntryKindChoices.CHARGE, seconds__lt=0)
+                    | Q(kind=AccountLedgerEntryKindChoices.GRANT, seconds__gt=0)
                     | Q(kind=AccountLedgerEntryKindChoices.PROMO, seconds__gt=0)
                     | Q(kind=AccountLedgerEntryKindChoices.PURCHASE, seconds__gt=0)
                 ),

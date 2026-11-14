@@ -52,7 +52,7 @@ def _ledger_model_step(
     if operation == 'purchase':
         seconds = generator.randint(1, 3) * SECONDS_PER_HOUR
         session_id = f'cs_test_model{account.pk}x{generator.getrandbits(48):x}'
-        metadata = {'account_id': str(account.pk), 'seconds': str(seconds)}
+        metadata = {'account_id': str(account.pk), 'app': 'remi', 'seconds': str(seconds)}
 
         stripe_fake.session_add(
             metadata=metadata,
@@ -118,6 +118,8 @@ def test_ledger_entry_signed_against_its_kind_is_refused_before_the_database() -
     entries = [
         (AccountLedgerEntryKindChoices.CHARGE, 60),
         (AccountLedgerEntryKindChoices.CHARGE, 0),
+        (AccountLedgerEntryKindChoices.GRANT, -60),
+        (AccountLedgerEntryKindChoices.GRANT, 0),
         (AccountLedgerEntryKindChoices.PROMO, -60),
         (AccountLedgerEntryKindChoices.PROMO, 0),
         (AccountLedgerEntryKindChoices.PURCHASE, -60),

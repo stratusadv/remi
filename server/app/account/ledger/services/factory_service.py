@@ -14,6 +14,7 @@ from app.account.constants import (
     CHARGE_JOB_ID_PATTERN,
     CHARGE_SECONDS_MAX,
     SECONDS_PER_HOUR,
+    TOPUP_BALANCE_SECONDS,
 )
 from app.account.ledger.choices import AccountLedgerEntryKindChoices
 from app.checkout import client
@@ -251,6 +252,18 @@ class AccountLedgerEntryFactoryService(BaseDjangoModelService['AccountLedgerEntr
                 source_model=entry,
             )
 
+    def grant_create(self, *, account: Account, reference: str, seconds: int) -> None:
+        if not 0 < seconds <= TOPUP_BALANCE_SECONDS:
+            message = f'a grant moves 1 to {TOPUP_BALANCE_SECONDS} seconds: {seconds}'
+            raise ValueError(message)
+
+        _ = self._entry_create(
+            account=account,
+            kind=AccountLedgerEntryKindChoices.GRANT,
+            reference=reference,
+            seconds=seconds,
+        )
+
     def promo_create(self, *, account: Account, promo: PromoCode) -> None:
         if promo.pk is None:
             message = f'promo must be saved: {promo!r}'
@@ -278,6 +291,9 @@ class AccountLedgerEntryFactoryService(BaseDjangoModelService['AccountLedgerEntr
         if client.CHECKOUT_SESSION_PATTERN.fullmatch(session.id) is None:
             message = f'session must be a checkout session: {session.id!r}'
             raise ValueError(message)
+
+        if not client.checkout_session_owned(session):
+            raise CheckoutUnknownError(client.CHECKOUT_SESSION_UNKNOWN_MESSAGE)
 
         if session.payment_status != 'paid':
             return False
@@ -309,8 +325,7 @@ class AccountLedgerEntryFactoryService(BaseDjangoModelService['AccountLedgerEntr
 
         session_id = event.data.object.id
 
-        if not self.purchase_from_session(session_id):
-            logger.info('Checkout session %s is not paid yet', session_id)
+        _ = self.purchase_from_session(session_id)
 
     def purchase_from_session(self, session_id: str) -> bool:
         if client.CHECKOUT_SESSION_PATTERN.fullmatch(session_id) is None:
@@ -318,4 +333,14 @@ class AccountLedgerEntryFactoryService(BaseDjangoModelService['AccountLedgerEntr
 
         session = client.checkout_session_retrieve(session_id)
 
-        return self.purchase_from_checkout(session)
+        if not client.checkout_session_owned(session):
+            logger.info('Checkout session %s belongs to another app', session_id)
+
+            return False
+
+        purchased = self.purchase_from_checkout(session)
+
+        if not purchased:
+            logger.info('Checkout session %s is not paid yet', session_id)
+
+        return purchased

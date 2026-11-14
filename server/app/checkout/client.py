@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CHECKOUT_EVENT_TYPES = ('checkout.session.async_payment_succeeded', 'checkout.session.completed')
+CHECKOUT_METADATA_APP = 'remi'
 CHECKOUT_MODE = 'payment'
 CHECKOUT_PAYMENT_METHOD_TYPES_ALLOWED = ('card',)
 CHECKOUT_RETURN_URL_SCHEMES = ('http://', 'https://')
@@ -90,6 +91,12 @@ def checkout_session_create(parameters: SessionCreateParams) -> stripe.checkout.
         raise PaymentsUnavailableError(message)
 
     return session
+
+
+def checkout_session_owned(session: stripe.checkout.Session) -> bool:
+    metadata = {} if session.metadata is None else session.metadata.to_dict()
+
+    return metadata.get('app') == CHECKOUT_METADATA_APP
 
 
 def checkout_session_retrieve(session_id: str) -> stripe.checkout.Session:
