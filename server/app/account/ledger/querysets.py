@@ -53,6 +53,9 @@ class AccountLedgerEntryQuerySet(QuerySet['AccountLedgerEntry']):
     def charges(self) -> Self:
         return self.filter(kind=AccountLedgerEntryKindChoices.CHARGE)
 
+    def grants(self) -> Self:
+        return self.filter(kind=AccountLedgerEntryKindChoices.GRANT)
+
     def promos(self) -> Self:
         return self.filter(kind=AccountLedgerEntryKindChoices.PROMO)
 

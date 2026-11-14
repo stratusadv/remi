@@ -8,6 +8,7 @@ import stripe
 
 from typing_extensions import TYPE_CHECKING
 
+from app.account.models import Account
 from harness.api import account_create, account_get, checkout_start, stripe_event_deliver
 from harness.fixtures import PRICE_HOURS
 from harness.stripe import STRIPE_WEBHOOK_SECRET, stripe_event_payload, stripe_signature_header
@@ -67,6 +68,42 @@ def test_webhook_completion_waits_for_an_async_payment_to_succeed(
 
     assert paid.status_code == 200
     assert account_get(client, token)['balance_seconds'] == PRICE_HOURS * SECONDS_PER_HOUR
+
+
+def test_webhook_completion_from_another_app_is_acknowledged_and_credits_nothing(
+    caplog: pytest.LogCaptureFixture,
+    client: Client,
+    stripe_fake: StripeFake,
+) -> None:
+    caplog.set_level(logging.INFO, logger=LOGGER_LEDGER_FACTORY)
+
+    token = account_create(client)
+    account = Account.objects.get()
+    now = int(time.time())
+
+    metadatas = [
+        {'account_id': str(account.pk), 'seconds': '36000'},
+        {'account_id': str(account.pk), 'app': 'business-base', 'seconds': '36000'},
+    ]
+
+    for index, metadata in enumerate(metadatas):
+        session_id = f'cs_test_foreign{index}'
+
+        stripe_fake.session_add(
+            client_reference_id=str(account.pk),
+            metadata=metadata,
+            payment_status='paid',
+            session_id=session_id,
+        )
+
+        payload = stripe_event_payload(event_type=EVENT_COMPLETED, session_id=session_id)
+        header = stripe_signature_header(payload, secret=STRIPE_WEBHOOK_SECRET, timestamp=now)
+        response = stripe_event_deliver(client, header=header, payload=payload)
+
+        assert response.status_code == 200, metadata
+        assert f'Checkout session {session_id} belongs to another app' in caplog.text
+
+    assert account_get(client, token)['balance_seconds'] == 0
 
 
 def test_webhook_signed_completion_credits_once_even_when_delivered_twice(

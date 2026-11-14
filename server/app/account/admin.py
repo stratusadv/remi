@@ -4,8 +4,9 @@ from typing_extensions import TYPE_CHECKING
 
 from django.contrib import admin, messages
 from django.contrib.auth.models import PermissionsMixin
+from django.utils import timezone
 
-from app.account.constants import SECONDS_PER_HOUR
+from app.account.constants import SECONDS_PER_HOUR, TOPUP_BALANCE_SECONDS
 from app.account.ledger.models import AccountLedgerEntry
 from app.account.models import Account
 
@@ -14,7 +15,9 @@ if TYPE_CHECKING:
     from django.http import HttpRequest
 
 
+ACCOUNT_ACTION_COUNT_MAX = 25
 PERMISSION_ACCOUNT_CHANGE = 'account.change_account'
+TOPUP_HOURS = TOPUP_BALANCE_SECONDS // SECONDS_PER_HOUR
 
 
 class AccountLedgerEntryInline(admin.TabularInline):
@@ -34,9 +37,9 @@ class AccountLedgerEntryInline(admin.TabularInline):
 
 @admin.register(Account)
 class AccountAdmin(admin.ModelAdmin):
-    actions = ['code_issue']
+    actions = ['code_issue', 'complimentary_end', 'complimentary_start']
     inlines = [AccountLedgerEntryInline]
-    list_filter = ['campaign', 'is_active']
+    list_filter = ['campaign', 'is_active', 'is_complimentary']
     ordering = ['-created_datetime']
     search_fields = ['email', 'name']
 
@@ -46,6 +49,7 @@ class AccountAdmin(admin.ModelAdmin):
         'campaign',
         'created_datetime',
         'balance_hours',
+        'is_complimentary',
         'is_active',
     ]
 
@@ -55,6 +59,7 @@ class AccountAdmin(admin.ModelAdmin):
         'campaign',
         'created_datetime',
         'balance_hours',
+        'is_complimentary',
         'is_active',
     ]
 
@@ -64,8 +69,26 @@ class AccountAdmin(admin.ModelAdmin):
         'created_datetime',
         'email',
         'is_active',
+        'is_complimentary',
         'name',
     ]
+
+    def _change_permitted(self, request: HttpRequest) -> bool:
+        user = request.user
+
+        if not isinstance(user, PermissionsMixin):
+            return False
+
+        return user.has_perm(PERMISSION_ACCOUNT_CHANGE)
+
+    def _selection_bounded(self, request: HttpRequest, count: int) -> bool:
+        if count <= ACCOUNT_ACTION_COUNT_MAX:
+            return True
+
+        message = f'Select at most {ACCOUNT_ACTION_COUNT_MAX} accounts at once.'
+        self.message_user(request, message, messages.ERROR)
+
+        return False
 
     @admin.display(description='Balance (hours)', ordering='balance_seconds')
     def balance_hours(self, account: Account) -> str:
@@ -92,6 +115,40 @@ class AccountAdmin(admin.ModelAdmin):
 
         self.message_user(request, message, messages.SUCCESS)
 
+    @admin.action(description='End complimentary', permissions=['complimentary_end'])
+    def complimentary_end(self, request: HttpRequest, queryset: QuerySet[Account]) -> None:
+        count = queryset.count()
+
+        if not self._selection_bounded(request, count):
+            return
+
+        accounts = queryset.order_by('pk')[:ACCOUNT_ACTION_COUNT_MAX]
+
+        for account in accounts:
+            account.services.processor.complimentary_end()
+
+        message = 'The selected accounts are no longer complimentary. Their hours stay.'
+        self.message_user(request, message, messages.SUCCESS)
+
+    @admin.action(
+        description=f'Make complimentary and top up to {TOPUP_HOURS:,} hours',
+        permissions=['complimentary_start'],
+    )
+    def complimentary_start(self, request: HttpRequest, queryset: QuerySet[Account]) -> None:
+        count = queryset.count()
+
+        if not self._selection_bounded(request, count):
+            return
+
+        accounts = queryset.order_by('pk')[:ACCOUNT_ACTION_COUNT_MAX]
+        reference = f'topup:{request.user.get_username()}:{timezone.now().isoformat()}'
+
+        for account in accounts:
+            _ = account.services.processor.complimentary_start(reference=reference)
+
+        message = f'The selected accounts are complimentary, topped up to {TOPUP_HOURS:,} hours.'
+        self.message_user(request, message, messages.SUCCESS)
+
     def get_queryset(self, request: HttpRequest) -> QuerySet[Account]:
         _ = request
 
@@ -109,9 +166,10 @@ class AccountAdmin(admin.ModelAdmin):
         return False
 
     def has_code_issue_permission(self, request: HttpRequest) -> bool:
-        user = request.user
+        return self._change_permitted(request)
 
-        if not isinstance(user, PermissionsMixin):
-            return False
+    def has_complimentary_end_permission(self, request: HttpRequest) -> bool:
+        return self._change_permitted(request)
 
-        return user.has_perm(PERMISSION_ACCOUNT_CHANGE)
+    def has_complimentary_start_permission(self, request: HttpRequest) -> bool:
+        return self._change_permitted(request)

@@ -423,7 +423,7 @@ def test_purchase_that_is_free_credits_the_hours_and_records_no_revenue(
     caplog.set_level(logging.WARNING, logger=LOGGER_LEDGER)
 
     account = create_test_account()
-    metadata = {'account_id': str(account.pk), 'seconds': str(SECONDS_PER_HOUR)}
+    metadata = {'account_id': str(account.pk), 'app': 'remi', 'seconds': str(SECONDS_PER_HOUR)}
 
     stripe_fake.session_add(
         amount_total=0,
@@ -451,7 +451,7 @@ def test_purchase_with_a_negative_amount_is_refused_and_credits_nothing(
     django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
 ) -> None:
     account = create_test_account()
-    metadata = {'account_id': str(account.pk), 'seconds': str(SECONDS_PER_HOUR)}
+    metadata = {'account_id': str(account.pk), 'app': 'remi', 'seconds': str(SECONDS_PER_HOUR)}
 
     stripe_fake.session_add(
         amount_total=-1,
@@ -480,7 +480,7 @@ def test_purchase_without_an_amount_credits_the_hours_and_records_no_revenue(
     caplog.set_level(logging.WARNING, logger=LOGGER_LEDGER)
 
     account = create_test_account()
-    metadata = {'account_id': str(account.pk), 'seconds': str(SECONDS_PER_HOUR)}
+    metadata = {'account_id': str(account.pk), 'app': 'remi', 'seconds': str(SECONDS_PER_HOUR)}
 
     stripe_fake.session_add(
         metadata=metadata,
@@ -507,7 +507,7 @@ def test_purchases_count_a_paying_client_only_on_the_first(
     django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
 ) -> None:
     account = create_test_account()
-    metadata = {'account_id': str(account.pk), 'seconds': str(SECONDS_PER_HOUR)}
+    metadata = {'account_id': str(account.pk), 'app': 'remi', 'seconds': str(SECONDS_PER_HOUR)}
 
     for session_id in ('cs_test_first', 'cs_test_second'):
         stripe_fake.session_add(
