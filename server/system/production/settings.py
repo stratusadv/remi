@@ -7,7 +7,7 @@ from system.base_settings import *
 
 CSRF_COOKIE_SECURE = True
 MIDDLEWARE_SECURITY = 'django.middleware.security.SecurityMiddleware'
-NINJA_NUM_PROXIES = 1
+NINJA_NUM_PROXIES = 0
 SECRET_KEY_PLACEHOLDERS = ('', 'MUST_BE_SET_IN_PRODUCTION')
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_SECONDS = 31_536_000
@@ -34,6 +34,7 @@ if MIDDLEWARE[0] != MIDDLEWARE_SECURITY:
 MIDDLEWARE = [
     MIDDLEWARE_SECURITY,
     'whitenoise.middleware.WhiteNoiseMiddleware',
+    'app.core.middleware.RemoteAddressMiddleware',
     *MIDDLEWARE[1:],
 ]
 

@@ -10,8 +10,8 @@ from app.funnel.promo import funnel_promo_downloaded
 
 
 STATUS_NO_CONTENT = 204
-THROTTLE_RATE_BEACON = '600/m'
-THROTTLE_RATE_EMAIL = '30/m'
+THROTTLE_RATE_BEACON = '3000/m'
+THROTTLE_RATE_EMAIL = '300/m'
 
 
 class FunnelBeaconThrottle(AnonRateThrottle):

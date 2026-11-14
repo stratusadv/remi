@@ -38,4 +38,4 @@ USER remi
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "python manage.py migrate --noinput && exec gunicorn system.production.wsgi --bind 0.0.0.0:8000 --workers 2 --access-logfile -"]
+CMD ["sh", "-c", "python manage.py migrate --noinput && exec gunicorn system.production.wsgi --bind 0.0.0.0:8000 --workers 1 --threads 4 --access-logfile -"]

@@ -348,7 +348,7 @@ def test_email_stops_at_the_daily_maximum_and_resumes_the_next_day(
     assert sendgrid_fake.recipients() == recipients
 
 
-def test_email_to_an_address_already_sent_today_sends_nothing_more(
+def test_email_to_an_address_already_sent_this_hour_sends_nothing_more(
     client: Client,
     sendgrid_fake: SendgridFake,
 ) -> None:
