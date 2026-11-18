@@ -148,6 +148,18 @@ watch(current, (next) => {
                             <path d="M9 9l6 6" />
                         </svg>
                         <svg
+                            v-else-if="current.kind === 'success'"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            aria-hidden="true"
+                        >
+                            <path d="M5 12.5l4.5 4.5L19 7.5" />
+                        </svg>
+                        <svg
                             v-else
                             viewBox="0 0 24 24"
                             fill="none"

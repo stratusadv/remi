@@ -360,6 +360,9 @@
     :root[data-theme="standard"] .app-dialog[data-kind="error"] .app-dialog-icon {
         color: var(--color-danger-text);
     }
+    :root[data-theme="standard"] .app-dialog[data-kind="success"] .app-dialog-icon {
+        color: var(--color-online);
+    }
     :root[data-theme="standard"] .app-dialog-icon svg {
         width: 1.5rem;
         height: 1.5rem;
@@ -419,21 +422,17 @@
 }
 
 :root[data-theme="standard"] .checkout-header[data-step="choose"],
-:root[data-theme="standard"] .offer[data-best="true"] {
+:root[data-theme="standard"] .hours-card {
     background: var(--color-panel);
 }
-:root[data-theme="standard"] .offer:hover,
-:root[data-theme="standard"] .offer[data-best="true"],
-:root[data-theme="standard"] .offer[data-best="true"]:hover {
+:root[data-theme="standard"] .hours-card {
+    border-color: var(--color-border);
     box-shadow: none;
-    transform: none;
 }
-:root[data-theme="standard"] .offer-tag {
-    background-color: var(--color-accent);
-    color: var(--color-accent-content);
-    font-size: 0.75rem;
-    letter-spacing: 0;
-    text-transform: none;
+:root[data-theme="standard"] .hours-card-mark,
+:root[data-theme="standard"] .hours-card:hover .hours-card-mark,
+:root[data-theme="standard"] .hours-card:focus-within .hours-card-mark {
+    transform: none;
 }
 
 :root[data-theme="standard"] .sidebar-section-title {

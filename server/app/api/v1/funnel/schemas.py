@@ -3,19 +3,33 @@ from __future__ import annotations
 import re
 
 from ninja import Schema
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 
 from app.account.constants import ACCOUNT_NAME_LENGTH_MAX
 from app.funnel.choices import (
     CampaignChoices,
+    FunnelPageChoices,
     FunnelPlatformChoices,
-    FunnelSourceChoices,
 )
 from app.funnel.mail import funnel_email_address_clean
+from app.funnel.metric import funnel_page_belongs
 from app.promo_code.constants import PROMO_CODE_LENGTH_MAX
 
 
 FUNNEL_CODE_PATTERN = re.compile(rf'[A-Za-z0-9-]{{0,{PROMO_CODE_LENGTH_MAX}}}')
+
+
+class FunnelClickSchema(Schema):
+    campaign: CampaignChoices
+    page: FunnelPageChoices
+
+    @model_validator(mode='after')
+    def page_validate(self) -> FunnelClickSchema:
+        if not funnel_page_belongs(campaign=self.campaign, page=self.page):
+            message = f'the {self.campaign.value} campaign has no {self.page.value} page'
+            raise ValueError(message)
+
+        return self
 
 
 class FunnelDownloadSchema(Schema):
@@ -68,8 +82,3 @@ class FunnelEmailSchema(Schema):
             raise ValueError(message)
 
         return name
-
-
-class FunnelVisitSchema(Schema):
-    campaign: CampaignChoices
-    source: FunnelSourceChoices

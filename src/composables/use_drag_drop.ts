@@ -1,5 +1,6 @@
 import { onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
+import { action_report } from '../lib/actions'
 import { assert, unreachable } from '../lib/assert'
 import { path_is_media } from '../lib/media'
 import { use_batch_transcribe } from './use_batch_transcribe'
@@ -105,6 +106,7 @@ function paths_dropped(paths: string[]): void {
 
         source_replace(media_path_first)
         view_set('transcribe')
+        action_report('upload-recording')
 
         return
     }

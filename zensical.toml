@@ -4,7 +4,7 @@ site_description = "A desktop app that transforms meetings into notes."
 site_url = "https://remirememberthat.com/"
 repo_name = "stratusadv/remi"
 repo_url = "https://github.com/stratusadv/remi"
-copyright = "Copyright (c) 2026 Stratus Advanced Technologies"
+copyright = "Copyright (c) 2026 Stratus Advanced Technologies. <a href=\"#cookie-settings\">Cookie settings</a>"
 dev_addr = "localhost:8007"
 extra_css = ["assets/stylesheets/brand.css"]
 nav = [
@@ -16,6 +16,7 @@ nav = [
     { "Templates" = "templates.md" },
     { "Exporting" = "exporting.md" },
     { "Troubleshooting" = "troubleshooting.md" },
+    { "Privacy" = "privacy.md" },
 ]
 
 [project.theme]

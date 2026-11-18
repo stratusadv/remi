@@ -6,6 +6,7 @@ from django.urls import reverse
 from app.account.models import Account
 from app.api.auth import AccountRequest
 from app.api.v1.account.schemas import (
+    AccountActionSchema,
     AccountChargeSchema,
     AccountCreatedSchema,
     AccountCreateSchema,
@@ -19,9 +20,17 @@ from app.api.v1.account.schemas import (
     QuestionFinishSchema,
     QuestionStartedSchema,
 )
+from app.core.exceptions import RequestInvalidError
+from app.funnel.metric import (
+    METRIC_ACTIONS_REPORTED,
+    MetricAction,
+    metric_action_record,
+)
 
 
+ACTION_UNKNOWN_MESSAGE = 'That is not an action remi counts.'
 STATUS_CREATED = 201
+STATUS_NO_CONTENT = 204
 
 router = Router(tags=['account'])
 
@@ -52,6 +61,24 @@ def account_detail(request: AccountRequest) -> Account:
         raise ValueError(message)
 
     return request.auth
+
+
+@router.post('/action/', response={STATUS_NO_CONTENT: None})
+def account_action(request: AccountRequest, payload: AccountActionSchema) -> Status:
+    if not isinstance(payload, AccountActionSchema):
+        message = f'payload must be an AccountActionSchema: {type(payload).__name__}'
+        raise TypeError(message)
+
+    if request.auth.pk is None:
+        message = f'the authenticated account must be saved: {request.auth!r}'
+        raise ValueError(message)
+
+    if payload.action not in METRIC_ACTIONS_REPORTED:
+        raise RequestInvalidError(ACTION_UNKNOWN_MESSAGE)
+
+    metric_action_record(MetricAction(payload.action))
+
+    return Status(STATUS_NO_CONTENT, None)
 
 
 @router.post('/charge/', response=AccountSchema)

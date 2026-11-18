@@ -11,7 +11,7 @@ from app.account.models import Account
 from app.funnel.choices import CampaignChoices
 from app.promo_code.tests.factories import create_test_promo_code
 from harness.api import ACCOUNT_PATH, account_create, account_get, api_post
-from harness.fixtures import OFFERS, PRICE_CURRENCY
+from harness.fixtures import PRICE_CURRENCY, PRICE_HOUR_CENTS
 from harness.stripe import STRIPE_PUBLISHABLE_KEY
 
 if TYPE_CHECKING:
@@ -97,16 +97,19 @@ def test_account_create_without_a_promo_starts_empty_and_reports_the_offers(
     token_hash = hashlib.sha256(token.encode()).hexdigest()
 
     offers = [
-        {'currency': PRICE_CURRENCY, 'hours': hours, 'price_cents': price_cents}
-        for hours, price_cents in sorted(OFFERS)
+        {'currency': PRICE_CURRENCY, 'hours': hours, 'price_cents': hours * PRICE_HOUR_CENTS}
+        for hours in (10, 50, 200)
     ]
 
     assert account == {
         'balance_seconds': 0,
+        'checkout_hours_max': 1_000,
         'email': 'avery@example.com',
         'name': 'Avery',
         'offers': offers,
         'payments': True,
+        'price_currency': PRICE_CURRENCY,
+        'price_hour_cents': PRICE_HOUR_CENTS,
         'publishable_key': STRIPE_PUBLISHABLE_KEY,
     }
 

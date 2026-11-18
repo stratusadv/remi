@@ -489,8 +489,6 @@ function trigger_focus(): void {
 
 .ask-history-open:hover:enabled {
     color: var(--color-content-strong);
-    text-decoration: underline;
-    text-underline-offset: 3px;
 }
 
 .ask-history-open[aria-current="true"] {

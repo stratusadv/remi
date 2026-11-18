@@ -162,6 +162,40 @@ describe('folder_create', () => {
     })
 })
 
+describe('folder_create reports', () => {
+    it('reports a folder once made, and none for a cancel, a repeat, or a failure', async () => {
+        vi.mocked(ipc.folders_list).mockResolvedValue(['Acme', 'Board', 'Legal'])
+        vi.mocked(ipc.folder_create).mockRejectedValueOnce(new Error('io error: disk full'))
+
+        const cancelled = folders_state.folder_create()
+
+        await prompt_answer(null)
+        await cancelled
+
+        const repeated = folders_state.folder_create()
+
+        await prompt_answer('HIRING')
+        await confirm_answer(true)
+        await repeated
+
+        const failed = folders_state.folder_create().catch((error: unknown) => error)
+
+        await prompt_answer('Legal')
+        await failed
+
+        expect(ipc.account_action_report).not.toHaveBeenCalled()
+
+        const created = folders_state.folder_create()
+
+        await prompt_answer('Legal')
+
+        const name = await created
+
+        expect(name).toBe('Legal')
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([['new-folder-created']])
+    })
+})
+
 describe('folder menu', () => {
     it('offers Ask only for a folder with notes or a transcript in it', () => {
         const ids_acme = folders_state.folder_menu_items('Acme').map((item) => item.id)

@@ -1,15 +1,39 @@
 import { expect, test } from '@playwright/test'
 import { assert } from '../../src/lib/assert'
-import { HAS_TEXT, app_open, dialog, editor, nav_to, row_menu_pick } from './helpers'
+import {
+    HAS_TEXT,
+    actions_reported,
+    actions_watch,
+    app_open,
+    dialog,
+    editor,
+    nav_to,
+    row_menu_pick,
+} from './helpers'
 import type { Locator, Page } from '@playwright/test'
 
 
 const PLACEHOLDER_NAME = 'e.g. Meeting notes'
 const PLACEHOLDER_DESCRIPTION = 'One line on what this template is for'
 const DESCRIPTION_MEETING_NOTES = 'A summary, the decisions, and who does what next.'
+const DESCRIPTION_PROCEDURE = 'Best practices for company policy and procedures.'
 
 const PLACEHOLDER_AI = 'Describe the document, e.g. weekly team meeting: decisions, who does '
     + 'what by when, problems to watch'
+
+const PROCEDURE_HEADINGS = Object.freeze([
+    'Document details',
+    '1. Purpose',
+    '2. Scope',
+    '3. Policy and expectations',
+    '4. Roles and responsibilities',
+    '5. Procedure',
+    '6. Exceptions and escalation',
+    '7. Verification and accountability',
+    '8. Related documents and processes',
+    '9. Definitions',
+    'Document revision history',
+])
 
 
 function row(page: Page, name: string): Locator {
@@ -32,10 +56,18 @@ test.beforeEach(async ({ page }) => {
 })
 
 test('the list shows the seeded templates with the default marked', async ({ page }) => {
-    await expect(rows(page)).toHaveCount(2)
+    await expect(rows(page)).toHaveCount(3)
     await expect(row(page, 'Meeting notes')).toContainText(DESCRIPTION_MEETING_NOTES)
     await expect(row(page, 'Meeting notes').locator('.pill-active')).toHaveText('Default')
     await expect(row(page, 'Stand-up digest').locator('.pill-active')).toHaveCount(0)
+    await expect(row(page, 'Company procedure')).toContainText(DESCRIPTION_PROCEDURE)
+})
+
+test('the company procedure template lays out each section', async ({ page }) => {
+    await row(page, 'Company procedure').locator('.list-row-main').click()
+
+    await expect(editor(page).locator('h2')).toHaveText(PROCEDURE_HEADINGS)
+    await expect(editor(page).locator('table')).toHaveCount(2)
 })
 
 test('Add template saves a name, description, and layout', async ({ page }) => {
@@ -57,7 +89,7 @@ test('Add template saves a name, description, and layout', async ({ page }) => {
 
     await save.click()
 
-    await expect(rows(page)).toHaveCount(3)
+    await expect(rows(page)).toHaveCount(4)
     await expect(row(page, 'Retro')).toContainText('What went well and what did not.')
 
     await row(page, 'Retro').locator('.list-row-main').click()
@@ -65,12 +97,37 @@ test('Add template saves a name, description, and layout', async ({ page }) => {
     await expect(editor(page)).toContainText('Went well')
 })
 
+test('a new template reports once, and an edit or a cancel nothing', async ({ page }) => {
+    await actions_watch(page)
+    await page.getByRole('button', { name: 'Add template' }).click()
+    await page.getByPlaceholder(PLACEHOLDER_NAME).fill('Dropped')
+    await page.getByRole('button', { name: 'Cancel' }).click()
+    await page.getByRole('button', { name: 'Add template' }).click()
+    await page.getByPlaceholder(PLACEHOLDER_NAME).fill('Retro')
+    await editor(page).click()
+    await page.keyboard.type('Went well')
+    await page.getByRole('button', { name: 'Save' }).click()
+
+    await expect(row(page, 'Retro')).toBeVisible()
+    await expect.poll(async () => actions_reported(page)).toEqual(['new-template'])
+
+    await row(page, 'Retro').locator('.list-row-main').click()
+    await page.getByPlaceholder(PLACEHOLDER_NAME).fill('Retrospective')
+    await page.getByRole('button', { name: 'Save' }).click()
+
+    await expect(row(page, 'Retrospective')).toBeVisible()
+
+    const reported = await actions_reported(page)
+
+    expect(reported).toEqual(['new-template'])
+})
+
 test('Cancel abandons a new template', async ({ page }) => {
     await page.getByRole('button', { name: 'Add template' }).click()
     await page.getByPlaceholder(PLACEHOLDER_NAME).fill('Dropped')
     await page.getByRole('button', { name: 'Cancel' }).click()
 
-    await expect(rows(page)).toHaveCount(2)
+    await expect(rows(page)).toHaveCount(3)
     await expect(page.getByText('Dropped')).toHaveCount(0)
 })
 
@@ -105,12 +162,12 @@ test('the row menu deletes a template after confirmation', async ({ page }) => {
 
     await confirm.getByRole('button', { name: 'Cancel' }).click()
 
-    await expect(rows(page)).toHaveCount(2)
+    await expect(rows(page)).toHaveCount(3)
 
     await row_menu_pick(page, 'Stand-up digest', 'Delete')
     await confirm.getByRole('button', { name: 'OK' }).click()
 
-    await expect(rows(page)).toHaveCount(1)
+    await expect(rows(page)).toHaveCount(2)
     await expect(row(page, 'Meeting notes')).toBeVisible()
 })
 
@@ -118,7 +175,7 @@ test('deleting the default template clears the default', async ({ page }) => {
     await row_menu_pick(page, 'Meeting notes', 'Delete')
     await dialog(page, 'Delete template').getByRole('button', { name: 'OK' }).click()
 
-    await expect(rows(page)).toHaveCount(1)
+    await expect(rows(page)).toHaveCount(2)
     await expect(page.locator('.pill-active')).toHaveCount(0)
 
     await nav_to(page, 'Settings')
@@ -187,5 +244,5 @@ test('Escape closes the editor form', async ({ page }) => {
     await page.keyboard.press('Escape')
 
     await expect(page.getByPlaceholder(PLACEHOLDER_NAME)).toBeHidden()
-    await expect(rows(page)).toHaveCount(2)
+    await expect(rows(page)).toHaveCount(3)
 })

@@ -87,6 +87,7 @@ const {
     meta_refresh,
     pipeline_reset,
     template_id_ensure,
+    view_intent_take,
 } = use_pipeline()
 
 const { confirm: dialog_confirm, message: dialog_message } = use_dialog()
@@ -325,6 +326,8 @@ onActivated(() => {
     template_id_ensure()
 
     if (returning) void meta_refresh()
+
+    intent_apply()
 })
 
 onDeactivated(() => {
@@ -614,6 +617,19 @@ async function generation_run(
             return generation.job_id
         },
     })
+}
+
+function intent_apply(): void {
+    const intent = view_intent_take()
+
+    assert(intent === null || intent === 'notes_generate')
+    assert(view_active.value)
+
+    if (intent === null) return
+    if (notes_present.value) return
+    if (!can_generate.value) return
+
+    void generate()
 }
 
 function notes_edit(markdown: Markdown): void {

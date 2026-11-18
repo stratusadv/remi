@@ -3,6 +3,8 @@ import { assert } from '../../src/lib/assert'
 import {
     HAS_TEXT,
     STREAM_TIMEOUT_MS,
+    actions_reported,
+    actions_watch,
     app_open,
     step_current,
     transcript_rows,
@@ -140,6 +142,23 @@ test('a picked file transcribes with a streaming preview', async ({ page }) => {
     await expect(transcript_rows(page)).toHaveCount(8, { timeout: STREAM_TIMEOUT_MS })
     await expect(transcript_rows(page).first()).toContainText('Alright, everyone is here')
     await expect(page.getByRole('button', { name: 'Next' })).toBeVisible()
+})
+
+test('a picked file reports one upload, and its transcription none', async ({ page }) => {
+    await actions_watch(page)
+    await new_recording_open(page)
+    await page.getByRole('button', { name: 'Open or drop a recording' }).click()
+
+    await expect(page.locator('.file-picker-name')).toHaveText('weekly-sync.m4a')
+    await expect.poll(async () => actions_reported(page)).toEqual(['upload-recording'])
+
+    await page.getByRole('button', { name: 'Transcribe' }).click()
+
+    await expect(transcript_rows(page)).toHaveCount(8, { timeout: STREAM_TIMEOUT_MS })
+
+    const reported = await actions_reported(page)
+
+    expect(reported).toEqual(['upload-recording'])
 })
 
 test('a failed transcription shows a short message and logs the traceback', async ({ page }) => {

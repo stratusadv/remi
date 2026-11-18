@@ -272,6 +272,25 @@ describe('theme_set', () => {
         expect(localStorage.getItem(PALETTE_STORAGE_KEY)).toBeNull()
     })
 
+    it('reports a new theme, and nothing for the same theme, a mode, or a palette', async () => {
+        match_media_install(media_query_stub(false))
+
+        const theme = await theme_import()
+
+        theme.theme_set('cubism')
+        theme.mode_set('light')
+        theme.palette_set('nord')
+        await flush()
+
+        expect(theme.ipc.account_action_report).not.toHaveBeenCalled()
+
+        theme.theme_set('standard')
+        await flush()
+
+        expect(theme.ipc.account_action_report).toHaveBeenCalledTimes(1)
+        expect(theme.ipc.account_action_report).toHaveBeenCalledWith('change-theme')
+    })
+
     it('returns to the Cubist colour scheme with the Cubism theme', async () => {
         match_media_install(media_query_stub(false))
 

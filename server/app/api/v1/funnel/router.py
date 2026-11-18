@@ -2,10 +2,10 @@ from ninja import Form, Router, Status
 
 from django.http import HttpRequest
 
-from app.api.v1.funnel.schemas import FunnelDownloadSchema, FunnelEmailSchema, FunnelVisitSchema
+from app.api.v1.funnel.schemas import FunnelClickSchema, FunnelDownloadSchema, FunnelEmailSchema
 from app.core.throttles import AddressRateThrottle
 from app.funnel.mail import funnel_email_send
-from app.funnel.metric import funnel_download_record, funnel_visit_record
+from app.funnel.metric import funnel_click_record, funnel_download_record
 from app.funnel.promo import funnel_promo_downloaded
 
 
@@ -17,6 +17,19 @@ router = Router(
     tags=['funnel'],
     throttle=[AddressRateThrottle(THROTTLE_RATE_BEACON, scope='funnel_beacon')],
 )
+
+
+@router.post('/click/', auth=None, response={STATUS_NO_CONTENT: None})
+def funnel_click(request: HttpRequest, payload: Form[FunnelClickSchema]) -> Status:
+    if not isinstance(payload, FunnelClickSchema):
+        message = f'payload must be a FunnelClickSchema: {type(payload).__name__}'
+        raise TypeError(message)
+
+    _ = request
+
+    funnel_click_record(campaign=payload.campaign, page=payload.page)
+
+    return Status(STATUS_NO_CONTENT, None)
 
 
 @router.post('/download/', auth=None, response={STATUS_NO_CONTENT: None})
@@ -54,18 +67,5 @@ def funnel_email(request: HttpRequest, payload: Form[FunnelEmailSchema]) -> Stat
         name_first=payload.name_first,
         name_last=payload.name_last,
     )
-
-    return Status(STATUS_NO_CONTENT, None)
-
-
-@router.post('/visit/', auth=None, response={STATUS_NO_CONTENT: None})
-def funnel_visit(request: HttpRequest, payload: Form[FunnelVisitSchema]) -> Status:
-    if not isinstance(payload, FunnelVisitSchema):
-        message = f'payload must be a FunnelVisitSchema: {type(payload).__name__}'
-        raise TypeError(message)
-
-    _ = request
-
-    funnel_visit_record(campaign=payload.campaign, source=payload.source)
 
     return Status(STATUS_NO_CONTENT, None)

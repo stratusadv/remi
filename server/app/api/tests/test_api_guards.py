@@ -16,12 +16,12 @@ from app.account.tests.factories import create_test_account
 from app.api.auth import AccountBearerAuth
 from app.api.v1 import api
 from app.api.v1.account import router as account_router
-from app.api.v1.account.schemas import AccountCreateSchema, AccountSchema
+from app.api.v1.account.schemas import AccountActionSchema, AccountCreateSchema, AccountSchema
 from app.api.v1.funnel import router as funnel_router
-from app.api.v1.funnel.schemas import FunnelDownloadSchema, FunnelEmailSchema, FunnelVisitSchema
+from app.api.v1.funnel.schemas import FunnelClickSchema, FunnelDownloadSchema, FunnelEmailSchema
 from app.core.exceptions import EmailUnavailableError
-from app.funnel.choices import CampaignChoices, FunnelPlatformChoices, FunnelSourceChoices
-from harness.fixtures import OFFERS
+from app.funnel.choices import CampaignChoices, FunnelPageChoices, FunnelPlatformChoices
+from harness.fixtures import PRICE_CURRENCY, PRICE_HOUR_CENTS
 from harness.stripe import STRIPE_PUBLISHABLE_KEY
 
 if TYPE_CHECKING:
@@ -185,6 +185,7 @@ def test_account_views_refuse_a_payload_of_another_schema() -> None:
 
     views = [
         (account_router.account_create, 'an AccountCreateSchema'),
+        (account_router.account_action, 'an AccountActionSchema'),
         (account_router.account_charge, 'an AccountChargeSchema'),
         (account_router.account_checkout, 'a CheckoutStartSchema'),
         (account_router.account_checkout_finish, 'a CheckoutFinishSchema'),
@@ -215,8 +216,14 @@ def test_account_views_refuse_an_authenticated_account_that_is_not_saved() -> No
     saved = create_test_account()
     request_saved = cast('AccountRequest', _request())
     request_saved.auth = saved
+    action = AccountActionSchema(action='new-chat')
+    acted = account_router.account_action(request_saved, action)
 
     assert account_router.account_detail(request_saved) == saved
+    assert acted.status_code == 204
+
+    with pytest.raises(ValueError, match='the authenticated account must be saved'):
+        account_router.account_action(request, action)
 
     with pytest.raises(ValueError, match='the authenticated account must be saved'):
         account_router.account_detail(request)
@@ -229,21 +236,29 @@ def test_account_views_refuse_an_authenticated_account_that_is_not_saved() -> No
 
 @pytest.mark.usefixtures('stripe_configured')
 def test_account_schema_refuses_to_describe_an_unsaved_account() -> None:
-    unsaved = Account(email='unsaved@example.com', name='Unsaved')
     saved = create_test_account(seconds=SECONDS_PER_HOUR)
     offers = AccountSchema.resolve_offers(saved)
+    offers_expected = [(hours, hours * PRICE_HOUR_CENTS) for hours in (10, 50, 200)]
+
+    assert AccountSchema.resolve_balance_seconds(saved) == SECONDS_PER_HOUR
+    assert AccountSchema.resolve_checkout_hours_max(saved) == 1_000
+    assert [(offer.hours, offer.price_cents) for offer in offers] == offers_expected
+    assert AccountSchema.resolve_payments(saved)
+    assert AccountSchema.resolve_price_currency(saved) == PRICE_CURRENCY
+    assert AccountSchema.resolve_price_hour_cents(saved) == PRICE_HOUR_CENTS
+    assert AccountSchema.resolve_publishable_key(saved) == STRIPE_PUBLISHABLE_KEY
+
+    unsaved = Account(email='unsaved@example.com', name='Unsaved')
 
     resolvers = [
         AccountSchema.resolve_balance_seconds,
+        AccountSchema.resolve_checkout_hours_max,
         AccountSchema.resolve_offers,
         AccountSchema.resolve_payments,
+        AccountSchema.resolve_price_currency,
+        AccountSchema.resolve_price_hour_cents,
         AccountSchema.resolve_publishable_key,
     ]
-
-    assert AccountSchema.resolve_balance_seconds(saved) == SECONDS_PER_HOUR
-    assert [(offer.hours, offer.price_cents) for offer in offers] == list(OFFERS)
-    assert AccountSchema.resolve_payments(saved)
-    assert AccountSchema.resolve_publishable_key(saved) == STRIPE_PUBLISHABLE_KEY
 
     for resolver in resolvers:
         with pytest.raises(ValueError, match='account must be saved'):
@@ -259,17 +274,17 @@ def test_funnel_views_refuse_a_payload_of_another_schema() -> None:
         platform=FunnelPlatformChoices.LINUX,
     )
 
-    visit = FunnelVisitSchema(campaign=CampaignChoices.WIB, source=FunnelSourceChoices.QR_CODE)
+    click = FunnelClickSchema(campaign=CampaignChoices.WIB, page=FunnelPageChoices.PROMO)
+    clicked = funnel_router.funnel_click(request, click)
     downloaded = funnel_router.funnel_download(request, download)
-    visited = funnel_router.funnel_visit(request, visit)
 
+    assert clicked.status_code == 204
     assert downloaded.status_code == 204
-    assert visited.status_code == 204
 
     views = [
+        (funnel_router.funnel_click, 'a FunnelClickSchema'),
         (funnel_router.funnel_download, 'a FunnelDownloadSchema'),
         (funnel_router.funnel_email, 'a FunnelEmailSchema'),
-        (funnel_router.funnel_visit, 'a FunnelVisitSchema'),
     ]
 
     for view, phrase in views:

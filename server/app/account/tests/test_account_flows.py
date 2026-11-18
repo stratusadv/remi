@@ -123,7 +123,7 @@ def test_a_charge_sent_again_with_another_duration_keeps_the_first(client: Clien
     assert balance_seconds == SECONDS_PER_HOUR - 600
 
 
-def test_a_pack_bought_before_the_offers_change_credits_what_was_bought(
+def test_hours_bought_before_the_price_changes_credit_what_was_bought(
     client: Client,
     settings: Settings,
     stripe_fake: StripeFake,
@@ -131,19 +131,20 @@ def test_a_pack_bought_before_the_offers_change_credits_what_was_bought(
     token = account_create(client)
     session_id = checkout_start(client, hours=PRICE_HOURS, token=token)
 
-    settings.REMI_OFFERS = {10: 300, 200: 3000}
+    settings.REMI_PRICE_HOUR_CENTS = 90
     stripe_fake.pay(session_id)
 
     finished = checkout_finish(client, session_id=session_id, token=token)
-    balance_seconds = account_get(client, token)['balance_seconds']
-    offers = account_get(client, token)['offers']
+    account = account_get(client, token)
 
     assert finished.status_code == 200
     assert finished.json()['paid'] is True
-    assert balance_seconds == PURCHASE_SECONDS
-    assert offers == [
-        {'currency': 'cad', 'hours': 10, 'price_cents': 300},
-        {'currency': 'cad', 'hours': 200, 'price_cents': 3000},
+    assert account['balance_seconds'] == PURCHASE_SECONDS
+    assert account['price_hour_cents'] == 90
+    assert account['offers'] == [
+        {'currency': 'cad', 'hours': 10, 'price_cents': 900},
+        {'currency': 'cad', 'hours': 50, 'price_cents': 4500},
+        {'currency': 'cad', 'hours': 200, 'price_cents': 18000},
     ]
 
 

@@ -17,9 +17,11 @@ A group ticks several people at once. Press *Add group*, name it, and add member
 1. Check the title on the Meeting step and pick a template.
 2. Tick everyone who was there under *In the meeting*. The AI treats this as the complete list.
 3. Tick anyone who came up but was not there under *Mentioned*.
-4. Press *Next*, then *Generate notes*.
+4. Press *Next*. The Notes step starts writing the notes right away.
 5. Edit the result. The editor saves after each change.
 6. Press *Done*.
+
+A meeting that already has notes keeps them. The step waits for *Generate notes* when it opens without a connection.
 
 The *Regenerate notes* button replaces the whole document, including your edits, so it asks first.
 

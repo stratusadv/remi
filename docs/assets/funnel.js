@@ -2,8 +2,8 @@ const campaigns = Object.freeze(['general', 'wib']);
 const code_pattern = /^[A-Za-z0-9-]{1,64}$/u;
 const email_timeout_milliseconds = 15_000;
 const funnel_origin = '';
+const pages = Object.freeze(['landing', 'promo']);
 const platforms = Object.freeze(['linux', 'macos', 'windows']);
-const sources = Object.freeze(['email', 'link', 'qr']);
 
 const email_statuses = Object.freeze({
     failed: 'The email did not send. Your mail app can send it instead.',
@@ -22,13 +22,16 @@ const installers = Object.freeze([
 
 const campaign = document.body.dataset.campaign;
 const installers_known = installers.every((installer) => platforms.includes(installer.platform));
+const page = document.body.dataset.page ?? null;
 
 assert(campaigns.includes(campaign), `the page names no known campaign: ${campaign}`);
 assert(installers_known, 'each installer names a platform the server counts');
+assert(page === null || pages.includes(page), `the page names no known funnel page: ${page}`);
 
 if (funnel_origin !== '') {
-    beacon_send('visit', { campaign, source: source_detect() });
-    document.addEventListener('click', download_watch);
+    if (page === 'promo') beacon_send('click', { campaign, page });
+
+    document.addEventListener('click', click_watch);
     email_offer();
 }
 
@@ -42,7 +45,7 @@ function assert(condition, message) {
 }
 
 function beacon_send(kind, fields) {
-    assert(kind === 'visit' || kind === 'download', `${kind} is not a funnel beacon`);
+    assert(kind === 'click' || kind === 'download', `${kind} is not a funnel beacon`);
     assert(campaigns.includes(fields.campaign), `${fields.campaign} is not a campaign`);
     assert(funnel_origin.startsWith('https://'), 'the funnel origin is not https');
 
@@ -52,19 +55,17 @@ function beacon_send(kind, fields) {
     if (!queued) console.warn(`the ${kind} beacon was not queued`);
 }
 
-function code_given() {
-    const given = (new URLSearchParams(location.search).get('code') ?? '').trim();
-
-    assert(typeof given === 'string', 'a code from the address is text');
-
-    return code_pattern.test(given) ? given.toUpperCase() : '';
-}
-
-function download_watch(event) {
-    assert(event.type === 'click', 'the download watcher saw an event other than a click');
-    assert(event.currentTarget === document, 'the download watcher listens on the document');
+function click_watch(event) {
+    assert(event.type === 'click', 'the click watcher saw an event other than a click');
+    assert(event.currentTarget === document, 'the click watcher listens on the document');
 
     if (!(event.target instanceof Element)) return;
+
+    const cta = event.target.closest('[data-cta]');
+
+    if (cta !== null) {
+        if (page === 'landing') beacon_send('click', { campaign, page });
+    }
 
     const link = event.target.closest('a[href]');
 
@@ -78,6 +79,14 @@ function download_watch(event) {
     const fields = code === '' ? { campaign, platform } : { campaign, code, platform };
 
     beacon_send('download', fields);
+}
+
+function code_given() {
+    const given = (new URLSearchParams(location.search).get('code') ?? '').trim();
+
+    assert(typeof given === 'string', 'a code from the address is text');
+
+    return code_pattern.test(given) ? given.toUpperCase() : '';
 }
 
 function email_offer() {
@@ -175,13 +184,4 @@ function platform_of(address) {
     const installer = installers.find((candidate) => path.endsWith(candidate.suffix));
 
     return installer === undefined ? null : installer.platform;
-}
-
-function source_detect() {
-    const given = new URLSearchParams(location.search).get('utm_source');
-    const source = sources.includes(given) ? given : 'link';
-
-    assert(sources.includes(source), `${source} is not a funnel source`);
-
-    return source;
 }

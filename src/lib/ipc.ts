@@ -8,6 +8,7 @@ import type { InvokeArgs } from '@tauri-apps/api/core'
 import type {
     APIEndpoint,
     Account,
+    AccountAction,
     AccountSignUp,
     AccountStatus,
     AskScope,
@@ -98,6 +99,12 @@ function query<Reply>(command: string): () => Promise<Reply> {
 }
 
 export const ipc = Object.freeze({
+    async account_action_report(action: AccountAction): Promise<void> {
+        assert(action.length > 0)
+        assert(!action.includes(' '))
+
+        return invoke_void('account_action_report', { action })
+    },
     async account_checkout_finish(session_id: CheckoutSessionID): Promise<CheckoutFinished> {
         assert(session_id.startsWith('cs_'))
         assert(!session_id.includes(' '))
@@ -159,6 +166,8 @@ export const ipc = Object.freeze({
 
         return invoke_void('desktop_notification_show', { title, body })
     },
+    desktop_privacy_open: query<undefined>('desktop_privacy_open'),
+    desktop_website_open: query<undefined>('desktop_website_open'),
     endpoints_list: query<APIEndpoint[]>('endpoints_list'),
     async folder_create(name: FolderName): Promise<void> {
         assert(name.length > 0)

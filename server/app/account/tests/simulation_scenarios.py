@@ -21,7 +21,7 @@ from app.account.tests.simulation_engine import (
 )
 from app.account.tests.simulation_model import WorldModel
 from app.checkout import client as checkout_client
-from harness.fixtures import OFFERS, PRICE_CURRENCY
+from harness.fixtures import PRICE_CURRENCY, PRICE_HOUR_CENTS
 from harness.metric import MetricExecutorFake
 from harness.sendgrid import SENDGRID_API_KEY
 from harness.simulation.fault import Faults
@@ -54,7 +54,7 @@ def _fakes_install(
     client: Client,
 ) -> RemiWorld:
     assert not world_model.accounts
-    assert world_model.offers
+    assert world_model.price_hour_cents > 0
 
     stripe_fake = SimulatedStripe()
     sendgrid_fake = SimulatedSendgrid()
@@ -84,14 +84,14 @@ def world_build(client: Client, monkeypatch: pytest.MonkeyPatch, settings: Setti
     settings.REMI_ASK_TOKENS_ESTIMATE = 1000
     settings.REMI_ASK_TOKENS_SOFT_CAP = 20_000
     settings.REMI_ASK_WINDOW_DAYS = 30
-    settings.REMI_OFFERS = dict(OFFERS)
     settings.REMI_PRICE_CURRENCY = PRICE_CURRENCY
+    settings.REMI_PRICE_HOUR_CENTS = PRICE_HOUR_CENTS
     settings.SENDGRID_API_KEY = SENDGRID_API_KEY
     settings.STRIPE_PUBLISHABLE_KEY = STRIPE_PUBLISHABLE_KEY
     settings.STRIPE_SECRET_KEY = STRIPE_SECRET_KEY
     settings.STRIPE_WEBHOOK_SECRET = STRIPE_WEBHOOK_SECRET
 
-    world_model = WorldModel(limits=ask_limits(), offers=dict(OFFERS))
+    world_model = WorldModel(limits=ask_limits(), price_hour_cents=PRICE_HOUR_CENTS)
 
     assert world_model.limits.burst_count == settings.REMI_ASK_BURST_COUNT
     assert world_model.limits.tokens_soft_cap == settings.REMI_ASK_TOKENS_SOFT_CAP
@@ -100,12 +100,16 @@ def world_build(client: Client, monkeypatch: pytest.MonkeyPatch, settings: Setti
 
 
 def world_fresh(world: RemiWorld, monkeypatch: pytest.MonkeyPatch) -> RemiWorld:
-    assert world.model.offers
+    assert world.model.price_hour_cents > 0
 
     call_command('flush', '--noinput', verbosity=0)
     cache.clear()
 
-    world_model = WorldModel(limits=world.model.limits, offers=dict(world.model.offers))
+    world_model = WorldModel(
+        limits=world.model.limits,
+        price_hour_cents=world.model.price_hour_cents,
+    )
+
     fresh = _fakes_install(monkeypatch, world_model, world.client)
     fresh.faults = world.faults
 

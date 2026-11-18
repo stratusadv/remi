@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from django.test.client import _MonkeyPatchedWSGIResponse
 
 
+ACCOUNT_ACTION_PATH = '/api/v1/account/action/'
 ACCOUNT_CHARGE_PATH = '/api/v1/account/charge/'
 ACCOUNT_CHECKOUT_FINISH_PATH = '/api/v1/account/checkout/finish/'
 ACCOUNT_CHECKOUT_PATH = '/api/v1/account/checkout/'
@@ -20,9 +21,9 @@ AI_MODELS_PATH = '/api/v1/ai/v1/models'
 AI_TRANSCRIPTION_PATH = '/api/v1/ai/v1/audio/transcriptions'
 BEACON_CONTENT_TYPE = 'application/x-www-form-urlencoded;charset=UTF-8'
 BODY_BYTES_MAX = 64 << 20
+FUNNEL_CLICK_PATH = '/api/v1/funnel/click/'
 FUNNEL_DOWNLOAD_PATH = '/api/v1/funnel/download/'
 FUNNEL_EMAIL_PATH = '/api/v1/funnel/email/'
-FUNNEL_VISIT_PATH = '/api/v1/funnel/visit/'
 STATUS_CREATED = 201
 STATUS_OK = 200
 STRIPE_EVENT_PATH = '/api/stripe/event/'

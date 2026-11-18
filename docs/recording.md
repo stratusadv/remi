@@ -11,6 +11,8 @@ A recording starts as a file or a microphone capture. The app turns it into line
 3. Press *Transcribe*.
 4. Check the lines, then press *Next*.
 
+The recording panel draws the microphone's sound as a moving line, so a line that stays flat while people talk means the microphone hears nothing.
+
 A drop of two or more files transcribes them one after another. Press *Paste a transcript* in step 2 to use a transcript made elsewhere, and enter its title on the Meeting step.
 
 !!! warning "Stop Before Six Hours"

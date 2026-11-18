@@ -8,8 +8,12 @@ from decimal import Decimal
 from typing_extensions import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
-from app.funnel.choices import CampaignChoices
-from app.funnel.metric import METRIC_DOMAIN_KEY, METRIC_GROUP_KEYS
+from app.funnel.metric import (
+    METRIC_DOMAIN_KEY,
+    METRIC_GROUP_KEY,
+    METRIC_SUB_DOMAIN_KEY,
+    MetricStatistic,
+)
 from harness.world.http import Reply, http_json, http_request
 
 if TYPE_CHECKING:
@@ -17,17 +21,12 @@ if TYPE_CHECKING:
 
 
 BEACON_CONTENT_TYPE = 'application/x-www-form-urlencoded;charset=UTF-8'
+PORTAL_DAY_OFFSETS = (-1, 0, 1)
+PORTAL_PAGE_COUNT_MAX = 20
+PORTAL_PAGE_SIZE = 5000
 PORTAL_POLL_SECONDS = 0.25
+PORTAL_REFERENCE_PREFIX = f'{METRIC_DOMAIN_KEY}:'
 PORTAL_WAIT_SECONDS = 30.0
-PORTAL_WINDOW = datetime.timedelta(days=1)
-
-
-def statistic_keys() -> list[str]:
-    return sorted(
-        f'{METRIC_DOMAIN_KEY}--{group_key}--{statistic.value}'
-        for choices, group_key in METRIC_GROUP_KEYS.items()
-        for statistic in choices
-    )
 
 
 def address_unique(prefix: str) -> str:
@@ -140,61 +139,107 @@ def fakes_control(world: World, path: str, payload: object) -> dict[str, Any]:
     return reply.json()
 
 
-def portal_total(world: World, *, campaign: str, statistic: str) -> Decimal:
-    if campaign not in CampaignChoices.values:
-        message = f'campaign must be one of {CampaignChoices.values}: {campaign!r}'
-        raise ValueError(message)
+def portal_day_totals(
+    world: World,
+    *,
+    day: datetime.date,
+    statistic: MetricStatistic,
+) -> dict[str, Decimal]:
+    if not isinstance(day, datetime.date):
+        message = f'day must be a date, not {type(day).__name__}'
+        raise TypeError(message)
 
-    if statistic not in statistic_keys():
-        message = f'statistic must be a statistic key of remi: {statistic!r}'
-        raise ValueError(message)
+    if not isinstance(statistic, MetricStatistic):
+        message = f'statistic must be a MetricStatistic: {statistic!r}'
+        raise TypeError(message)
 
-    today = datetime.datetime.now(tz=datetime.UTC).date()
-
-    fields = {
-        'end_date': (today + PORTAL_WINDOW).isoformat(),
-        'start_date': (today - PORTAL_WINDOW).isoformat(),
-        'sub_domain_key': f'{METRIC_DOMAIN_KEY}--{campaign}',
-    }
-
-    query = urlencode(fields)
+    statistic_key = f'{METRIC_DOMAIN_KEY}--{METRIC_GROUP_KEY}--{statistic.value}'
     base = f'{world.descriptor["portal_url"]}/ds/api/v1/metric/domain/statistic'
-    url = f'{base}/{statistic}/summary?{query}'
     headers = {'X-API-Key': str(world.descriptor['portal_api_key'])}
-    reply = http_request(url, headers=headers)
+    totals: dict[str, Decimal] = {}
 
-    if reply.status != 200:
-        message = f'the portal answered {reply.status} for {statistic}: {reply.body!r}'
-        raise AssertionError(message)
+    for page_index in range(PORTAL_PAGE_COUNT_MAX):
+        fields = {
+            'limit': str(PORTAL_PAGE_SIZE),
+            'offset': str(page_index * PORTAL_PAGE_SIZE),
+            'sub_domain_key': f'{METRIC_DOMAIN_KEY}--{METRIC_SUB_DOMAIN_KEY}',
+            'value_date': day.isoformat(),
+        }
 
-    totals = reply.json()['totals']
-    return sum((Decimal(total) for total in totals.values()), Decimal(0))
+        query = urlencode(fields)
+        reply = http_request(f'{base}/{statistic_key}/values?{query}', headers=headers)
+
+        if reply.status != 200:
+            message = f'the portal answered {reply.status} for {statistic_key}: {reply.body!r}'
+            raise AssertionError(message)
+
+        values = reply.json()
+
+        for value in values:
+            reference = str(value['reference'])
+            totals[reference] = totals.get(reference, Decimal(0)) + Decimal(value['value'])
+
+        if len(values) < PORTAL_PAGE_SIZE:
+            return totals
+
+    message = (
+        f'the portal holds over {PORTAL_PAGE_COUNT_MAX * PORTAL_PAGE_SIZE} values '
+        f'of {statistic_key} on {day}'
+    )
+
+    raise AssertionError(message)
 
 
-def portal_totals(world: World) -> dict[tuple[str, str], Decimal]:
-    return {
-        (statistic, campaign): portal_total(world, campaign=campaign, statistic=statistic)
-        for statistic in statistic_keys()
-        for campaign in CampaignChoices.values
-    }
+def portal_totals(world: World) -> dict[str, Decimal]:
+    today = datetime.datetime.now(tz=datetime.UTC).date()
+    totals: dict[str, Decimal] = {}
+
+    for statistic in MetricStatistic:
+        for day_offset in PORTAL_DAY_OFFSETS:
+            day = today + datetime.timedelta(days=day_offset)
+            day_totals = portal_day_totals(world, day=day, statistic=statistic)
+
+            for reference, total in day_totals.items():
+                totals[reference] = totals.get(reference, Decimal(0)) + total
+
+    return totals
 
 
 def portal_totals_wait(
     world: World,
     *,
-    before: dict[tuple[str, str], Decimal],
-    expected: dict[tuple[str, str], Decimal],
-) -> dict[tuple[str, str], Decimal]:
-    if not expected.keys() <= before.keys():
-        message = f'expected names totals before does not hold: {expected.keys() - before.keys()}'
-        raise ValueError(message)
+    before: dict[str, Decimal],
+    expected: dict[str, Decimal],
+) -> dict[str, Decimal]:
+    if not isinstance(before, dict):
+        message = f'before must be a dict, not {type(before).__name__}'
+        raise TypeError(message)
+
+    if not isinstance(expected, dict):
+        message = f'expected must be a dict, not {type(expected).__name__}'
+        raise TypeError(message)
+
+    for reference, delta in expected.items():
+        if not reference.startswith(PORTAL_REFERENCE_PREFIX):
+            message = f'expected names a reference outside remi: {reference!r}'
+            raise ValueError(message)
+
+        if delta == 0:
+            message = f'expected names {reference} with no change'
+            raise ValueError(message)
 
     deadline = time.monotonic() + PORTAL_WAIT_SECONDS
-    deltas: dict[tuple[str, str], Decimal] = {}
+    deltas: dict[str, Decimal] = {}
 
     while time.monotonic() < deadline:
         after = portal_totals(world)
-        deltas = {key: after[key] - before[key] for key in after if after[key] != before[key]}
+        deltas = {}
+
+        for reference in sorted(before.keys() | after.keys()):
+            delta = after.get(reference, Decimal(0)) - before.get(reference, Decimal(0))
+
+            if delta != 0:
+                deltas[reference] = delta
 
         if deltas == expected:
             return deltas

@@ -29,7 +29,7 @@ from harness.api import (
     checkout_finish,
     checkout_start,
 )
-from harness.fixtures import OFFERS, PRICE_CURRENCY, PRICE_HOURS
+from harness.fixtures import PRICE_CURRENCY, PRICE_HOUR_CENTS, PRICE_HOURS
 from harness.stripe import STRIPE_PUBLISHABLE_KEY, STRIPE_SECRET_KEY
 
 if TYPE_CHECKING:
@@ -45,17 +45,18 @@ LOGGER_API = 'app.api.v1.api'
 LOGGER_CLIENT = 'app.checkout.client'
 RETURN_PATH = '/checkout/return/'
 RETURN_URL = f'http://testserver{RETURN_PATH}'
+HOURS_BOUGHT = (1, PRICE_HOURS, 1_000)
 PURCHASE_SECONDS = PRICE_HOURS * SECONDS_PER_HOUR
 
 
-def test_checkout_charges_the_configured_price_of_the_pack_chosen(
+def test_checkout_charges_the_configured_price_for_each_hour_chosen(
     client: Client,
     stripe_fake: StripeFake,
 ) -> None:
     token = account_create(client)
     account = Account.objects.get()
 
-    for index, (hours, price_cents) in enumerate(OFFERS):
+    for index, hours in enumerate(HOURS_BOUGHT):
         body = {'hours': hours}
         response = api_post(client, ACCOUNT_CHECKOUT_PATH, body=body, token=token)
         parameters = stripe_fake.created[index]
@@ -69,11 +70,11 @@ def test_checkout_charges_the_configured_price_of_the_pack_chosen(
 
         price = {
             'currency': PRICE_CURRENCY,
-            'product_data': {'name': f'remi: {hours} hours of transcription'},
-            'unit_amount': price_cents,
+            'product_data': {'name': 'remi: hour of transcription'},
+            'unit_amount': PRICE_HOUR_CENTS,
         }
 
-        line_item = {'price_data': price, 'quantity': 1}
+        line_item = {'price_data': price, 'quantity': hours}
 
         assert parameters == {
             'allowed_payment_method_types': ['card'],
@@ -91,7 +92,7 @@ def test_checkout_charges_the_configured_price_of_the_pack_chosen(
         assert response.status_code == 200
         assert response.json() == started
 
-    assert len(stripe_fake.created) == len(OFFERS)
+    assert len(stripe_fake.created) == len(HOURS_BOUGHT)
 
 
 def test_checkout_return_page_answers_a_redirect_that_card_payments_never_make(
@@ -106,18 +107,24 @@ def test_checkout_return_page_answers_a_redirect_that_card_payments_never_make(
     assert posted.status_code == 405
 
 
-def test_checkout_refuses_a_pack_that_is_not_on_offer(
+def test_checkout_refuses_hours_outside_one_to_the_maximum(
     client: Client,
     stripe_fake: StripeFake,
 ) -> None:
     token = account_create(client)
-    bodies = [{'hours': 49}, {'hours': 0}, {'hours': -50}, {'hours': '50'}, {'hours': 50.5}, {}]
+    bodies = [{'hours': 1_001}, {'hours': 0}, {'hours': -50}, {'hours': '50'}, {'hours': 50.5}, {}]
 
     for body in bodies:
         response = api_post(client, ACCOUNT_CHECKOUT_PATH, body=body, token=token)
 
         assert response.status_code == 400
         assert response.json()['error']['code'] == 'request_invalid'
+
+    for hours in (0, 1_001):
+        body = {'hours': hours}
+        response = api_post(client, ACCOUNT_CHECKOUT_PATH, body=body, token=token)
+
+        assert response.json()['error']['message'] == 'Choose from 1 to 1000 hours.'
 
     assert stripe_fake.created == []
 
@@ -179,12 +186,12 @@ def test_checkout_finish_credits_a_paid_session_once_however_often_it_is_sent(
     assert AccountLedgerEntry.objects.purchases().count() == 1
 
 
-def test_checkout_finish_credits_the_hours_of_each_pack_bought(
+def test_checkout_finish_credits_the_hours_of_each_purchase(
     client: Client,
     stripe_fake: StripeFake,
 ) -> None:
     token = account_create(client)
-    hours_bought = (10, 200, 10)
+    hours_bought = (1, 7, 200, 7)
 
     for hours in hours_bought:
         session_id = checkout_start(client, hours=hours, token=token)

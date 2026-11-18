@@ -1,17 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, useTemplateRef, watch } from 'vue'
 import { use_account } from '../composables/use_account'
+import { use_dialog } from '../composables/use_dialog'
 import { assert } from '../lib/assert'
 import { error_shown } from '../lib/errors'
-import {
-    REGIONS_CANADA,
-    REGIONS_UNITED_STATES,
-    REGION_OUTSIDE,
-    REGION_OUTSIDE_NAME,
-    region_is_known,
-} from '../lib/regions'
+import { REGIONS_CANADA, region_is_known } from '../lib/regions'
 import ClearableInput from './clearable_input.vue'
 import NoticeBanner from './notice_banner.vue'
+import PrivacyLink from './privacy_link.vue'
 import RemiMark from './remi_mark.vue'
 import StratusCredit from './stratus_credit.vue'
 import type { AccountSignUp } from '../types'
@@ -20,6 +16,7 @@ import type { AccountSignUp } from '../types'
 type WelcomeStep = 'sign_in' | 'sign_up'
 
 const ICON_ARROW = 'M5 12h14M13 6l6 6-6 6'
+const MESSAGE_WELCOME = 'Your account is ready. Buy hours to start transcribing.'
 
 const STEP_ACTIONS: Readonly<Record<WelcomeStep, string>> = Object.freeze({
     sign_in: 'Sign in',
@@ -31,7 +28,8 @@ const STEP_ACTIONS_BUSY: Readonly<Record<WelcomeStep, string>> = Object.freeze({
     sign_up: 'Setting up…',
 })
 
-const { create: account_create, sign_in: account_sign_in } = use_account()
+const { balance_text, create: account_create, sign_in: account_sign_in } = use_account()
+const { message: dialog_message } = use_dialog()
 const problem = ref<string | null>(null)
 const side_element = useTemplateRef<HTMLElement>('side_element')
 const sign_in_draft = ref('')
@@ -84,6 +82,17 @@ function sign_up_ready(): boolean {
     return sign_up_draft.region !== ''
 }
 
+async function sign_up_submit(): Promise<void> {
+    const sign_up = sign_up_trimmed()
+
+    assert(step.value === 'sign_up')
+    assert(submitting.value)
+
+    await account_create(sign_up)
+
+    void welcome_show(sign_up.promo_code)
+}
+
 function sign_up_trimmed(): AccountSignUp {
     assert(sign_up_draft.name.trim().length > 0)
     assert(sign_up_draft.email.trim().length > 0)
@@ -123,8 +132,19 @@ async function submit_step(): Promise<void> {
 
             return account_sign_in(sign_in_draft.value)
         case 'sign_up':
-            return account_create(sign_up_trimmed())
+            return sign_up_submit()
     }
+}
+
+async function welcome_show(promo_code: string): Promise<void> {
+    assert(promo_code === promo_code.trim())
+    assert(balance_text.value !== '')
+
+    const applied = `Your promo code ${promo_code} has been applied.`
+    const balance = `You have ${balance_text.value} of transcription to start.`
+    const text = promo_code === '' ? MESSAGE_WELCOME : `${applied} ${balance}`
+
+    return dialog_message(text, { kind: 'success', title: 'Welcome to remi' })
 }
 </script>
 
@@ -146,8 +166,8 @@ async function submit_step(): Promise<void> {
                     Welcome to <span class="welcome-brand">remi</span>
                 </h1>
                 <p v-if="step === 'sign_up'" class="welcome-text">
-                    Enter your name, email, and province or state to start transcribing. A promo
-                    code adds free hours.
+                    Enter your name, email, and province or territory to start. A promo code adds
+                    free hours.
                 </p>
                 <p v-else class="welcome-text">
                     Enter the sign-in code for your account.
@@ -175,31 +195,19 @@ async function submit_step(): Promise<void> {
                             />
                         </label>
                         <label class="welcome-field">
-                            <span class="welcome-label">Province or state</span>
+                            <span class="welcome-label">Province or territory</span>
                             <select
                                 v-model="sign_up_draft.region"
                                 class="welcome-input"
                                 autocomplete="address-level1"
                             >
-                                <optgroup label="Canada">
-                                    <option
-                                        v-for="(name, code) in REGIONS_CANADA"
-                                        :key="code"
-                                        :value="code"
-                                    >
-                                        {{ name }}
-                                    </option>
-                                </optgroup>
-                                <optgroup label="United States">
-                                    <option
-                                        v-for="(name, code) in REGIONS_UNITED_STATES"
-                                        :key="code"
-                                        :value="code"
-                                    >
-                                        {{ name }}
-                                    </option>
-                                </optgroup>
-                                <option :value="REGION_OUTSIDE">{{ REGION_OUTSIDE_NAME }}</option>
+                                <option
+                                    v-for="(name, code) in REGIONS_CANADA"
+                                    :key="code"
+                                    :value="code"
+                                >
+                                    {{ name }}
+                                </option>
                             </select>
                         </label>
                         <label class="welcome-field">
@@ -261,7 +269,8 @@ async function submit_step(): Promise<void> {
         </div>
 
         <footer class="welcome-art">
-            <StratusCredit class="welcome-credit" />
+            <StratusCredit class="footer-credit" />
+            <PrivacyLink class="footer-credit" />
         </footer>
     </section>
 </template>
@@ -342,25 +351,10 @@ async function submit_step(): Promise<void> {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.75rem;
+    gap: 2.5rem;
     height: 3rem;
     border-top: 1px solid var(--color-border);
     background: var(--color-panel);
-}
-
-.welcome-credit {
-    color: var(--color-content-meta);
-    font-size: 0.625rem;
-    font-weight: 500;
-    letter-spacing: 0.24em;
-    opacity: 0.5;
-    text-transform: uppercase;
-    white-space: nowrap;
-    transition: opacity 140ms ease;
-}
-
-.welcome-credit:hover {
-    opacity: 0.85;
 }
 
 .welcome-mark {

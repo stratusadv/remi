@@ -1,3 +1,4 @@
+import { flushPromises } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { use_endpoints } from '../../src/composables/use_endpoints'
 import { use_notes_templates } from '../../src/composables/use_notes_templates'
@@ -87,6 +88,31 @@ describe('save and remove', () => {
 
         expect(templates_state.error_message.value).toBe('full')
         expect(ipc.notes_templates_list).not.toHaveBeenCalled()
+    })
+})
+
+describe('save reports', () => {
+    it('reports a template saved the first time, and none for an edit or a failure', async () => {
+        vi.mocked(ipc.notes_template_save).mockResolvedValue(undefined)
+        vi.mocked(ipc.notes_templates_list).mockResolvedValue([TEMPLATE])
+
+        await templates_state.refresh()
+        await templates_state.save({ ...TEMPLATE, name: 'Weekly notes' })
+
+        const created: NotesTemplate = { ...TEMPLATE, id: 'retro', name: 'Retro notes' }
+
+        vi.mocked(ipc.notes_template_save).mockRejectedValueOnce(new Error('full'))
+
+        await templates_state.save(created)
+        await flushPromises()
+
+        expect(templates_state.error_message.value).toBe('full')
+        expect(ipc.account_action_report).not.toHaveBeenCalled()
+
+        await templates_state.save(created)
+        await flushPromises()
+
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([['new-template']])
     })
 })
 

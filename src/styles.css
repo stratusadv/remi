@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import "tailwindcss" source(".");
 
 @theme {
     --text-xs: 0.8125rem;
@@ -692,6 +692,31 @@
         );
         scrollbar-gutter: stable;
     }
+    .app-frame {
+        display: grid;
+        flex: 1;
+        grid-template-columns: auto minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr) auto;
+        min-height: 0;
+        overflow: hidden;
+    }
+    .app-frame > .sidebar {
+        grid-row: 1 / -1;
+    }
+    .app-footer {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: calc(3.125rem + 1px);
+        border-top: 1px solid var(--color-border);
+        background: var(--color-sidebar);
+    }
+    .footer-credit {
+        @apply text-sm;
+        color: var(--color-content-meta);
+        font-weight: 400;
+        white-space: nowrap;
+    }
     *::-webkit-scrollbar {
         width: 8px;
         height: 8px;
@@ -731,6 +756,7 @@
         -moz-osx-font-smoothing: grayscale;
         -webkit-user-select: none;
         user-select: none;
+        overflow: hidden;
         overscroll-behavior: none;
     }
     a,
@@ -1349,6 +1375,9 @@
     .view-fill {
         @apply flex flex-col flex-1 min-h-0;
     }
+    .view-stretch {
+        flex: 1 0 auto;
+    }
     .step-view {
         gap: 1.5rem;
     }
@@ -1454,11 +1483,17 @@
         max-width: 28rem;
         margin: 0;
     }
-    main:has(> .app-content > .view-fill) {
+    main:has(> .app-content > .view-fill),
+    main:has(> .app-content > .view-stretch) {
         @apply flex flex-col;
     }
     main:has(> .app-content > .view-fill) > .app-content {
         @apply flex flex-col flex-1 min-h-0;
+    }
+    main:has(> .app-content > .view-stretch) > .app-content {
+        @apply flex flex-col;
+        container-type: inline-size;
+        flex: 1 0 auto;
     }
     .list-divider > * + * {
         border-top: 1px solid var(--color-border);
@@ -1622,10 +1657,14 @@
         outline: 2px solid var(--color-focus-ring);
         outline-offset: -2px;
     }
+    .recording-table-name {
+        @apply flex items-center gap-2;
+        max-width: 24rem;
+    }
     .recording-table-title {
         @apply font-medium;
+        min-width: 0;
         color: var(--color-content-strong);
-        max-width: 24rem;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -2791,6 +2830,9 @@
     }
     .app-dialog[data-kind="error"] .app-dialog-icon {
         --dialog-accent: var(--color-danger-text);
+    }
+    .app-dialog[data-kind="success"] .app-dialog-icon {
+        --dialog-accent: var(--color-online);
     }
     .app-dialog-icon svg {
         width: 1.375rem;

@@ -4,11 +4,14 @@ import {
     HAS_TEXT,
     RECORDING_TITLED,
     STREAM_TIMEOUT_MS,
+    actions_reported,
+    actions_watch,
     app_open,
     folder_item,
     nav_to,
     recording_open,
     step_current,
+    tiles,
 } from './helpers'
 import type { Locator, Page } from '@playwright/test'
 
@@ -39,6 +42,8 @@ const TITLE_JUMP = 'scrolling up offers a jump back to the latest answer'
 const TITLE_MOMENT = 'a transcript citation opens the transcript at the moment it cites'
 const TITLE_NEW_CHAT = 'New chat clears the conversation and returns to the suggestions'
 const TITLE_PACED = 'a paced question shows its wait, then answers with the pace noted under it'
+const TITLE_REPORT_ALL = 'a new chat reports its first question, and Ask again reports nothing'
+const TITLE_REPORT_SCOPED = 'a question about a folder or a meeting reports its own scope'
 const TITLE_SCOPE = 'asking about a folder scopes the chat to it until the chip is cleared'
 const TITLE_STOP = 'Stop keeps what arrived and Ask again answers the question in full'
 const TITLE_SUGGESTION = 'a suggestion asks at once and Enter asks the next question in the thread'
@@ -291,6 +296,63 @@ test(TITLE_PACED, async ({ page }) => {
     await expect(exchange.locator('.ask-answer')).toContainText(ANSWER)
     await expect(exchange.locator('.ask-notice')).toHaveText(NOTICE_PACED)
     await expect(exchange.locator('.ask-status')).toHaveCount(0)
+})
+
+test(TITLE_REPORT_ALL, async ({ page }) => {
+    const main = page.locator('main')
+    const answer = main.locator('.ask-answer')
+
+    await actions_watch(page)
+    await main.getByRole('button', { name: SUGGESTION_SUMMARY }).click()
+
+    await expect(answer).toContainText(ANSWER_SUMMARY_FIRST, { timeout: STREAM_TIMEOUT_MS })
+
+    await main.getByRole('button', { name: 'Stop' }).click()
+    await main.getByRole('button', { name: 'Ask again' }).click()
+
+    await expect(answer).toContainText(ANSWER_SUMMARY_LAST, { timeout: STREAM_TIMEOUT_MS })
+
+    await expect.poll(async () => actions_reported(page)).toEqual([
+        'new-chat',
+        'ask-library-question',
+    ])
+
+    await question_send(page, QUESTION_FOLLOW_UP)
+    await settled(exchanges(page).nth(1))
+    await main.getByRole('button', { name: 'New chat' }).click()
+    await question_send(page, QUESTION)
+    await settled(exchanges(page).first())
+
+    await expect.poll(async () => actions_reported(page)).toEqual([
+        'new-chat',
+        'ask-library-question',
+        'ask-library-question',
+        'new-chat',
+        'ask-library-question',
+    ])
+})
+
+test(TITLE_REPORT_SCOPED, async ({ page }) => {
+    const main = page.locator('main')
+
+    await actions_watch(page)
+    await folder_item(page, 'Remi').click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Ask about this folder' }).click()
+    await question_send(page, QUESTION)
+
+    await expect(main.locator('.ask-answer')).toContainText(ANSWER, { timeout: STREAM_TIMEOUT_MS })
+
+    await nav_to(page, 'Home')
+    await tiles(page).filter({ [HAS_TEXT]: RECORDING_TITLED }).click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Ask about this meeting' }).click()
+    await question_send(page, QUESTION)
+
+    await expect.poll(async () => actions_reported(page)).toEqual([
+        'new-chat',
+        'ask-folder-question',
+        'new-chat',
+        'ask-note-question',
+    ])
 })
 
 test(TITLE_SCOPE, async ({ page }) => {

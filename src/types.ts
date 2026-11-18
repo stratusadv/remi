@@ -189,18 +189,25 @@ export interface SearchStatus {
 
 export interface Account {
     balance_seconds: number
+    checkout_hours_max: number
     email: string
     name: string
-    offers: AccountOffer[]
     payments: boolean
+    price_currency: string
+    price_hour_cents: number
     publishable_key: string
 }
 
-export interface AccountOffer {
-    currency: string
-    hours: number
-    price_cents: number
-}
+export type AccountAction =
+    | 'ask-folder-question'
+    | 'ask-library-question'
+    | 'ask-note-question'
+    | 'change-theme'
+    | 'in-app-recording'
+    | 'new-chat'
+    | 'new-folder-created'
+    | 'new-template'
+    | 'upload-recording'
 
 export interface AccountSignUp {
     email: string

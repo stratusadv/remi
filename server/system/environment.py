@@ -28,12 +28,6 @@ CURRENCY_CODES_DECIMAL_ZERO = (
 
 CURRENCY_PATTERN = re.compile(r'[a-z]{3}')
 INTEGER_PATTERN = re.compile(r'[0-9]{1,15}')
-OFFER_HOURS_MAX = 10_000
-OFFER_HOURS_MIN = 1
-OFFER_PATTERN = re.compile(r'([0-9]{1,6}):([0-9]{1,6})')
-OFFER_PRICE_CENTS_MAX = 100_000
-OFFER_PRICE_CENTS_MIN = 50
-OFFERS_MAX = 4
 STRIPE_PUBLISHABLE_KEY_PATTERN = re.compile(r'pk_(?:live|test)_[A-Za-z0-9]{1,250}')
 
 
@@ -62,46 +56,13 @@ class EnvironmentVariable(Enum):
     REMI_CHAT_MINUTE_MAX = auto()
     REMI_EMBEDDINGS_DAY_MAX = auto()
     REMI_EMBEDDINGS_MINUTE_MAX = auto()
-    REMI_OFFERS = auto()
     REMI_PRICE_CURRENCY = auto()
+    REMI_PRICE_HOUR_CENTS = auto()
     ROBIT_KEY = auto()
     SENDGRID_API_KEY = auto()
     STRIPE_PUBLISHABLE_KEY = auto()
     STRIPE_SECRET_KEY = auto()
     STRIPE_WEBHOOK_SECRET = auto()
-
-
-def _offer_parse(variable: EnvironmentVariable, item: str) -> tuple[int, int]:
-    if item == '':
-        message = f'{variable.name} lists an empty offer; remove the stray comma'
-        raise ImproperlyConfigured(message)
-
-    match = OFFER_PATTERN.fullmatch(item)
-
-    if match is None:
-        message = f'{variable.name} lists hours:price_cents pairs, and {item!r} is not one'
-        raise ImproperlyConfigured(message)
-
-    hours = int(match[1])
-    price_cents = int(match[2])
-
-    if not OFFER_HOURS_MIN <= hours <= OFFER_HOURS_MAX:
-        message = (
-            f'{variable.name} offers {hours} hours, outside '
-            f'{OFFER_HOURS_MIN} to {OFFER_HOURS_MAX}'
-        )
-
-        raise ImproperlyConfigured(message)
-
-    if not OFFER_PRICE_CENTS_MIN <= price_cents <= OFFER_PRICE_CENTS_MAX:
-        message = (
-            f'{variable.name} prices {hours} hours at {price_cents} cents, outside '
-            f'{OFFER_PRICE_CENTS_MIN} to {OFFER_PRICE_CENTS_MAX}'
-        )
-
-        raise ImproperlyConfigured(message)
-
-    return hours, price_cents
 
 
 def environment_currency(variable: EnvironmentVariable, *, default: str) -> str:
@@ -168,32 +129,6 @@ def environment_integer(
 def environment_list(variable: EnvironmentVariable) -> list[str]:
     text = environment_text(variable)
     return [item.strip() for item in text.split(',') if item.strip() != '']
-
-
-def environment_offers(variable: EnvironmentVariable, *, default: str) -> dict[int, int]:
-    if default.strip() == '':
-        message = f'{variable.name} has no default offers, and a server needs at least one'
-        raise ImproperlyConfigured(message)
-
-    text = environment_text(variable) or default
-    items = [item.strip() for item in text.split(',')]
-
-    if len(items) > OFFERS_MAX:
-        message = f'{variable.name} lists {len(items)} offers, more than {OFFERS_MAX}'
-        raise ImproperlyConfigured(message)
-
-    offers = {}
-
-    for item in items:
-        hours, price_cents = _offer_parse(variable, item)
-
-        if hours in offers:
-            message = f'{variable.name} lists {hours} hours more than once'
-            raise ImproperlyConfigured(message)
-
-        offers[hours] = price_cents
-
-    return dict(sorted(offers.items()))
 
 
 def environment_publishable_key(variable: EnvironmentVariable) -> str:

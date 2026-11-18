@@ -739,6 +739,42 @@ describe('JobsManager wording', () => {
     })
 })
 
+describe('JobsManager folder tags', () => {
+    it('tags each filed recording with its folder on Home in both views', async () => {
+        vi.mocked(ipc.folders_list).mockResolvedValue(['apollo'])
+
+        await folders_state.refresh()
+
+        const list = await mount_manager('list')
+        const rows = list.findAll('.recording-table-row')
+        const tagged = rows.filter((row) => row.find('.folder-tag').exists())
+
+        expect(rows).toHaveLength(4)
+        expect(tagged).toHaveLength(1)
+        expect(tagged[0]?.get('.recording-table-title').text()).toBe('Delta sync')
+        expect(tagged[0]?.get('.folder-tag-name').text()).toBe('apollo')
+
+        list.unmount()
+        jobs_state.jobs.value = []
+
+        const grid = await mount_manager('grid')
+        const tiles = grid.findAll('.recording-tile:not(.recording-tile-new)')
+        const names = grid.findAll('.recording-tile .folder-tag-name').map((name) => name.text())
+
+        expect(tiles).toHaveLength(4)
+        expect(names).toEqual(['apollo'])
+    })
+
+    it('leaves the tags out inside a folder, where the heading names it', async () => {
+        folders_state.folder_open('Apollo')
+
+        const wrapper = await mount_manager('list')
+
+        expect(wrapper.findAll('.recording-table-row')).toHaveLength(1)
+        expect(wrapper.find('.folder-tag').exists()).toBe(false)
+    })
+})
+
 describe('JobsManager folders', () => {
     it('shows only the open folder and leaves New recording to Home', async () => {
         folders_state.folder_open('Apollo')

@@ -6,13 +6,15 @@ import { hash_fnv } from '../lib/hash'
 import { job_askable, job_duration_text } from '../lib/job_status'
 import { log_warn } from '../lib/log'
 import AskButton from './ask_button.vue'
+import FolderTag from './folder_tag.vue'
 import RowMenu from './row_menu.vue'
 import StarButton from './star_button.vue'
 import type { MenuItem } from '../lib/menu'
-import type { JobListing, Waveform } from '../types'
+import type { FolderName, JobListing, Waveform } from '../types'
 
 
 const properties = defineProps<{
+    folder: FolderName | null
     job: JobListing
     title: string
     when: string
@@ -225,6 +227,7 @@ onMounted(async () => {
             </div>
             <div class="recording-tile-foot meta">
                 <span class="recording-tile-when">{{ properties.when }}</span>
+                <FolderTag :name="properties.folder" />
             </div>
         </div>
     </article>

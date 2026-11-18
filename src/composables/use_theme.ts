@@ -1,4 +1,5 @@
 import { computed, watch } from 'vue'
+import { action_report } from '../lib/actions'
 import { assert } from '../lib/assert'
 import {
     MODE_STORAGE_KEY,
@@ -177,6 +178,8 @@ export function theme_resolve(saved: string | null): ThemeChoice {
 function theme_set(theme: ThemeChoice): void {
     assert(theme.length > 0)
     assert(THEMES.some((candidate) => candidate.id === theme))
+
+    if (theme !== theme_effective.value) action_report('change-theme')
 
     void update({ theme, palette: null })
     theme_apply_to_html(theme)

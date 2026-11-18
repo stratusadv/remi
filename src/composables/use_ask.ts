@@ -1,5 +1,6 @@
 import { computed, ref, shallowRef } from 'vue'
 import { listen } from '@tauri-apps/api/event'
+import { action_report } from '../lib/actions'
 import { sources_cited } from '../lib/answer'
 import { assert } from '../lib/assert'
 import { error_shown } from '../lib/errors'
@@ -9,6 +10,7 @@ import { MESSAGE_ENDPOINT_MISSING, use_endpoints } from './use_endpoints'
 import { use_pipeline } from './use_pipeline'
 import type { Event } from '@tauri-apps/api/event'
 import type {
+    AccountAction,
     AskScope,
     AskSource,
     AskSources,
@@ -48,6 +50,12 @@ interface ThreadScroll {
     chat_id: ChatID
     top_px: number
 }
+
+const ACTION_OF_SCOPE: Readonly<Record<AskScope['kind'], AccountAction>> = Object.freeze({
+    all: 'ask-library-question',
+    meeting: 'ask-note-question',
+    project: 'ask-folder-question',
+})
 
 const CHAT_ID_PATTERN = /^[0-9a-f-]{36}$/u
 const EVENT_ASK_SOURCES = 'notes_ask_sources'
@@ -101,6 +109,10 @@ async function ask(question: string, asked_in: AskScope): Promise<void> {
     assert(scope_valid(asked_in))
 
     if (busy.value) return
+
+    if (exchanges.value.length === 0) action_report('new-chat')
+
+    action_report(ACTION_OF_SCOPE[asked_in.kind])
 
     return exchange_run(exchange_start(question.trim(), asked_in))
 }

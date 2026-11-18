@@ -62,7 +62,7 @@ function agent_script(agent: string): string {
     return `Object.defineProperty(navigator, 'userAgent', { get: () => '${agent}' })`
 }
 
-function beacon_expected(kind: 'download' | 'visit', body: string): Beacon {
+function beacon_expected(kind: 'click' | 'download', body: string): Beacon {
     assert(kind.length > 0)
     assert(body.startsWith('campaign='))
 
@@ -161,47 +161,43 @@ function release_asset(name: string): object {
     return { browser_download_url: `${RELEASE_DOWNLOAD}${name}`, name, size: 9_000_000 }
 }
 
-test('a scan of the WIB code counts a visit and a scan, not a download', async ({ page }) => {
+test('a scan of the WIB code counts a promo click, not a download', async ({ page }) => {
     const beacons = await landing_open(page, PAGE_WIB_SCANNED)
-    const visit = beacon_expected('visit', 'campaign=wib&source=qr')
+    const promo = beacon_expected('click', 'campaign=wib&page=promo')
 
-    await expect.poll(() => beacons).toEqual([visit])
+    await expect.poll(() => beacons).toEqual([promo])
     await expect(page.getByLabel('Your email')).toBeVisible()
     await expect(page.locator('a[href$="-setup.exe"]')).toHaveCount(0)
 })
 
 test('the emailed download page sends its code with each download', async ({ page }) => {
     const beacons = await landing_open(page, PAGE_WIB_EMAILED)
-    const visit = beacon_expected('visit', 'campaign=wib&source=email')
     const fields = `campaign=wib&code=${CODE_EMAILED}`
+    const windows = beacon_expected('download', `${fields}&platform=windows`)
 
     await expect(page.locator('#code')).toHaveText(CODE_EMAILED)
     await expect(page.getByRole('button', { name: 'Copy code' })).toBeVisible()
-    await expect.poll(() => beacons).toEqual([visit])
-
-    const windows = beacon_expected('download', `${fields}&platform=windows`)
 
     await page.locator('a[href$="-setup.exe"]').first().click()
 
-    await expect.poll(() => beacons).toEqual([visit, windows])
+    await expect.poll(() => beacons).toEqual([windows])
 
     const linux = beacon_expected('download', `${fields}&platform=linux`)
 
     await page.locator('a[href$=".AppImage"]').first().click()
 
-    await expect.poll(() => beacons).toEqual([visit, windows, linux])
+    await expect.poll(() => beacons).toEqual([windows, linux])
 })
 
 test('a download page without a usable code shows the printed one', async ({ page }) => {
     const beacons = await landing_open(page, `${PAGE_WIB_DOWNLOAD}?code=two%20words`)
-    const visit = beacon_expected('visit', 'campaign=wib&source=link')
     const windows = beacon_expected('download', 'campaign=wib&platform=windows')
 
     await expect(page.locator('#code')).toHaveText(CODE_PRINTED)
 
     await page.locator('a[href$="-setup.exe"]').first().click()
 
-    await expect.poll(() => beacons).toEqual([visit, windows])
+    await expect.poll(() => beacons).toEqual([windows])
 })
 
 test('the WIB page offers the email form on a computer too', async ({ page }) => {
@@ -244,9 +240,9 @@ test.describe('on a Mac', () => {
         await page.addInitScript({ content: agent_script(AGENT_MAC) })
     })
 
-    test('the home page offers the disk image and counts it as macOS', async ({ page }) => {
+    test('the home page counts its disk image as a landing and a macOS click', async ({ page }) => {
         const beacons = await landing_open(page, PAGE_GENERAL)
-        const visit = beacon_expected('visit', 'campaign=general&source=link')
+        const landing = beacon_expected('click', 'campaign=general&page=landing')
         const macos = beacon_expected('download', 'campaign=general&platform=macos')
         const button = page.locator('#get-main')
         const image = `${RELEASE_DOWNLOAD}remi_1.4.0_universal.dmg`
@@ -256,7 +252,7 @@ test.describe('on a Mac', () => {
 
         await button.click()
 
-        await expect.poll(() => beacons).toEqual([visit, macos])
+        await expect.poll(() => beacons).toEqual([landing, macos])
     })
 
     test('the WIB download page recommends the disk image', async ({ page }) => {
@@ -269,19 +265,23 @@ test.describe('on a Mac', () => {
     })
 })
 
-test('the home page counts a linked visit, then only clicks on installers', async ({ page }) => {
+test('the home page counts clicks on its calls to action and installers only', async ({ page }) => {
     const beacons = await landing_open(page, PAGE_GENERAL)
-    const visit = beacon_expected('visit', 'campaign=general&source=link')
-    const linux = beacon_expected('download', 'campaign=general&platform=linux')
-    const installer = page.locator('a[href$=".deb"]').first()
+    const landing = beacon_expected('click', 'campaign=general&page=landing')
+    const installer = page.locator('#others a[href$=".rpm"]')
 
-    await expect.poll(() => beacons).toEqual([visit])
     await expect(installer).toBeVisible()
 
-    await page.locator('a[href="#download"]').first().click()
+    await page.locator('.hero a[href="#how"]').click()
+    await page.locator('header a[href="#download"]').click()
+
+    await expect.poll(() => beacons).toEqual([landing])
+
+    const linux = beacon_expected('download', 'campaign=general&platform=linux')
+
     await installer.click()
 
-    await expect.poll(() => beacons).toEqual([visit, linux])
+    await expect.poll(() => beacons).toEqual([landing, linux])
 })
 
 test.describe('on a phone', () => {

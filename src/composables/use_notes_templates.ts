@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import { action_report } from '../lib/actions'
 import { assert } from '../lib/assert'
 import { error_shown } from '../lib/errors'
 import { ipc } from '../lib/ipc'
@@ -65,9 +66,14 @@ async function save(template: NotesTemplate): Promise<void> {
     assert(typeof template.id === 'string')
     assert(typeof template.name === 'string')
 
+    const created = !templates.value.some((existing) => existing.id === template.id)
+
     error_message.value = null
 
     return ipc.notes_template_save(template)
+        .then(() => {
+            if (created) action_report('new-template')
+        })
         .then(refresh)
         .catch((error: unknown) => {
             error_message.value = error_shown(error)

@@ -26,6 +26,7 @@ from app.account.models import Account
 from app.account.payment.models import AccountPayment
 from app.account.question.models import AccountQuestion
 from app.account.tests.simulation_model import (
+    CHECKOUT_HOURS_MAX,
     JOB_ID_PATTERN,
     PROMO_CODE_LENGTH_MAX,
     AccountModel,
@@ -42,6 +43,7 @@ from app.checkout.client import CHECKOUT_SESSION_PATTERN
 from app.funnel import mail as funnel_mail
 from app.promo_code.models import PromoCode
 from harness.api import (
+    ACCOUNT_ACTION_PATH,
     ACCOUNT_CHARGE_PATH,
     ACCOUNT_CHECKOUT_FINISH_PATH,
     ACCOUNT_CHECKOUT_PATH,
@@ -50,9 +52,9 @@ from harness.api import (
     ACCOUNT_QUESTION_FINISH_PATH,
     ACCOUNT_QUESTION_PATH,
     BEACON_CONTENT_TYPE,
+    FUNNEL_CLICK_PATH,
     FUNNEL_DOWNLOAD_PATH,
     FUNNEL_EMAIL_PATH,
-    FUNNEL_VISIT_PATH,
     STRIPE_EVENT_PATH,
 )
 from harness.sendgrid import SendgridFake
@@ -97,6 +99,8 @@ CAMPAIGNS_DECLARED = ('general', 'wib')
 CAMPAIGN_UNDECLARED = 'gala'
 CHARGE_SECONDS_CHOICES = (1, 59, 60, 61, 599, 600, 3599, 3600, 3601, 7200, 21_600)
 CHARGE_SECONDS_INVALID = (0, -1, 21_601)
+CHECKOUT_HOURS_INVALID = (0, CHECKOUT_HOURS_MAX + 1)
+CHECKOUT_HOURS_VALID = (1, 7, 50, CHECKOUT_HOURS_MAX)
 EMAIL_DAY_COUNT_MAX = 6
 EMAILS_INVALID = ('not-an-email', 'avery@', '   ', 'a' * 250 + '@example.com')
 EVENT_ASYNC_SUCCEEDED = 'checkout.session.async_payment_succeeded'
@@ -108,27 +112,46 @@ JOB_IDS_INVALID = ('short', '86DFB1D3B0140ECF2FD59075421F1CB5')
 NAME_LENGTH_MAX = 200
 NAMES_INVALID = ('', '   ', 'x' * 201)
 NAMES_VALID = ('Avery', '  Morgan Lee ', 'R')
-OFFER_HOURS_INVALID = (0, 49)
+PAGES_DECLARED = ('landing', 'promo')
 PLATFORMS_DECLARED = ('linux', 'macos', 'windows')
 PROMO_CODE_OVERLONG = 'P' * 65
 QUESTION_ID_UNKNOWN = 999_999
 QUESTION_IDS_INVALID = (0, -3)
 QUESTION_TOKENS_INVALID = (0, 1_000_001)
-REGIONS_INVALID = ('', ' CA-AB', 'CA-XX', 'ca-ab')
-REGIONS_VALID = ('CA-AB', 'CA-QC', 'US-DC', 'US-NY', 'outside')
-REGION_UNKNOWN_MESSAGE = 'Choose your province or state.'
+REGIONS_INVALID = ('', ' CA-AB', 'CA-XX', 'ca-ab', 'US-DC', 'US-NY', 'outside')
+REGIONS_VALID = ('CA-AB', 'CA-NU', 'CA-ON', 'CA-QC', 'CA-YT')
+REGION_UNKNOWN_MESSAGE = 'Choose your province or territory.'
 RETRY_ATTEMPTS_MAX = 3
 SESSION_ID_INVALID = 'pi_3Hremi'
 SESSION_ID_UNKNOWN = 'cs_test_missing'
 SESSION_IDS_UNKNOWN = (SESSION_ID_INVALID, SESSION_ID_UNKNOWN)
 SIGNATURE_STALE_SECONDS = 400
 SIGNINGS = ('forged', 'missing', 'stale', 'valid')
-SOURCES_DECLARED = ('email', 'link', 'qr')
 STATUS_TRANSIENT_MIN = 500
 STATUS_TOO_MANY = 429
 STATUSES_KNOWN = frozenset(HTTPStatus)
 ROWS_CHECK_EVERY_STEPS = 50
 TOKEN_CHECK_EVERY_STEPS = 25
+
+ACTIONS_APP = (
+    'ask-folder-question',
+    'ask-library-question',
+    'ask-note-question',
+    'change-theme',
+    'in-app-recording',
+    'new-chat',
+    'new-folder-created',
+    'new-template',
+    'upload-recording',
+)
+
+ACTIONS_REFUSED = (
+    'hours-transcribed',
+    'meeting-transcribed',
+    'purchase-hours',
+    'new-meeting',
+    'NEW-CHAT',
+)
 
 EMAILS_VALID = (
     'avery@example.com',
@@ -398,9 +421,11 @@ class RemiSimulation:
     def _actions_weighted(self) -> tuple[Callable[[Run], None], ...]:
         weighted = (
             (self.account_read, 2),
+            (self.action, 2),
             (self.charge, 6),
             (self.checkout_finish, 3),
             (self.checkout_start, 3),
+            (self.click, 2),
             (self.complimentary_end, 1),
             (self.complimentary_start, 1),
             (self.download, 2),
@@ -417,7 +442,6 @@ class RemiSimulation:
             (self.stripe_foreign, 1),
             (self.stripe_pay, 3),
             (self.token_issue, 1),
-            (self.visit, 2),
             (self.webhook, 3),
         )
 
@@ -477,10 +501,13 @@ class RemiSimulation:
 
         return {
             'balance_seconds': account.balance,
+            'checkout_hours_max': CHECKOUT_HOURS_MAX,
             'email': account.email,
             'name': account.name,
             'offers': self.model.offers_listed(settings.REMI_PRICE_CURRENCY),
             'payments': True,
+            'price_currency': settings.REMI_PRICE_CURRENCY,
+            'price_hour_cents': self.model.price_hour_cents,
             'publishable_key': STRIPE_PUBLISHABLE_KEY,
         }
 
@@ -732,7 +759,7 @@ class RemiSimulation:
         if form.promo_code.strip() != '':
             self.model.promo_apply(account, form.promo_code)
 
-        self.model.metric_add(campaign=account.campaign, statistic='remi--funnel--signups')
+        self.model.signup_record(account)
 
         return account
 
@@ -769,7 +796,7 @@ class RemiSimulation:
         if form.promo_code.strip() != '':
             self.model.promo_apply(account, form.promo_code)
 
-        self.model.metric_add(campaign=account.campaign, statistic='remi--funnel--signups')
+        self.model.signup_record(account)
 
         return [account]
 
@@ -817,6 +844,51 @@ class RemiSimulation:
                     invariant_violated(f'account read answered {_body(response)} for {account}')
 
         exchange = Exchange('account read', lambda: None, retried=True, send=send, settle=settle)
+
+        self._exchange(run, exchange)
+
+    def action(self, run: Run) -> None:
+        assert 0 <= run.step < STEP_COUNT_MAX
+
+        account = self._account_pick(run)
+
+        if account is None:
+            return
+
+        action = run.rng.choice([*ACTIONS_APP, *ACTIONS_APP, *ACTIONS_REFUSED])
+        body = {'action': action}
+        token = account.token
+        expected = Expected('', '', 204)
+
+        if action in ACTIONS_REFUSED:
+            expected = Expected('request_invalid', 'That is not an action remi counts.', 400)
+
+        if run.rng.random() < 0.1:
+            token = run.rng.choice(self.world.tokens_garbage)
+            expected = Expected('token_invalid', '', 401)
+
+        def send() -> Response:
+            assert token is not None
+            assert self.model.accounts.get(account.id) is account
+
+            return self._post_json(ACCOUNT_ACTION_PATH, body, token)
+
+        def settle(response: Response) -> None:
+            assert response.status_code in STATUSES_KNOWN
+            assert self.model.accounts.get(account.id) is account
+
+            _expected_check(response, expected, 'action')
+
+            counted = response.status_code == HTTPStatus.NO_CONTENT
+            refused = expected.code == 'request_invalid'
+
+            run.sometimes('action counted', condition=counted)
+            run.sometimes('action refused as no app action', condition=refused)
+
+            if counted:
+                self.model.metric_add(f'remi:action:{action}')
+
+        exchange = Exchange('action', lambda: None, retried=False, send=send, settle=settle)
 
         self._exchange(run, exchange)
 
@@ -975,9 +1047,11 @@ class RemiSimulation:
         if account is None:
             return
 
-        assert self.model.offers.keys().isdisjoint(OFFER_HOURS_INVALID)
+        assert all(1 <= hours <= CHECKOUT_HOURS_MAX for hours in CHECKOUT_HOURS_VALID)
+        assert not any(1 <= hours <= CHECKOUT_HOURS_MAX for hours in CHECKOUT_HOURS_INVALID)
 
-        hours = run.rng.choice([*self.model.offers, *self.model.offers, *OFFER_HOURS_INVALID])
+        hours_choices = [*CHECKOUT_HOURS_VALID, *CHECKOUT_HOURS_VALID, *CHECKOUT_HOURS_INVALID]
+        hours = run.rng.choice(hours_choices)
         body = {'hours': hours}
         fault_rolled: list[bool] = []
 
@@ -997,7 +1071,7 @@ class RemiSimulation:
 
             self.world.stripe.fault_next = False
 
-            if hours not in self.model.offers:
+            if not 1 <= hours <= CHECKOUT_HOURS_MAX:
                 expected = Expected('request_invalid', '', 400)
             elif fault_rolled[-1]:
                 expected = Expected('payments_unavailable', '', 503)
@@ -1024,7 +1098,7 @@ class RemiSimulation:
 
     def _checkout_started(self, account: AccountModel, hours: int, reply: dict[str, Any]) -> None:
         assert self.model.accounts.get(account.id) is account
-        assert hours in self.model.offers
+        assert 1 <= hours <= CHECKOUT_HOURS_MAX
         assert reply.keys() >= {'client_secret', 'session_id'}
 
         session_id = reply['session_id']
@@ -1046,13 +1120,11 @@ class RemiSimulation:
 
         self.model.sessions[session_id] = SessionModel(
             account_pk=account.id,
-            amount_cents=self.model.offers[hours],
+            amount_cents=hours * self.model.price_hour_cents,
             hours=hours,
             owned=True,
             session_id=session_id,
         )
-
-        self.model.metric_add(campaign=account.campaign, statistic='remi--funnel--checkouts')
 
     def _stripe_fault_roll(self, run: Run) -> bool:
         assert 0 <= run.step < STEP_COUNT_MAX
@@ -1598,31 +1670,37 @@ class RemiSimulation:
         if _body(response) != {'question_id': question_id, 'tokens': question.tokens}:
             invariant_violated(f'question finish answered {_body(response)}, model {question}')
 
-    def visit(self, run: Run) -> None:
+    def click(self, run: Run) -> None:
         assert 0 <= run.step < STEP_COUNT_MAX
 
         campaign = run.rng.choice([*CAMPAIGNS_DECLARED, *CAMPAIGNS_DECLARED, CAMPAIGN_UNDECLARED])
-        source = run.rng.choice([*SOURCES_DECLARED, *SOURCES_DECLARED, 'billboard'])
-        fields = {'campaign': campaign, 'source': source}
-        valid = campaign in CAMPAIGNS_DECLARED and source in SOURCES_DECLARED
+        page = run.rng.choice([*PAGES_DECLARED, *PAGES_DECLARED, 'pricing'])
+        fields = {'campaign': campaign, 'page': page}
+        declared = campaign in CAMPAIGNS_DECLARED and page in PAGES_DECLARED
+        valid = declared and (page == 'landing') == (campaign == 'general')
 
         def send() -> Response:
-            return self._beacon(FUNNEL_VISIT_PATH, fields)
+            return self._beacon(FUNNEL_CLICK_PATH, fields)
 
         def settle(response: Response) -> None:
             assert response.status_code in STATUSES_KNOWN
 
             expected = Expected('', '', 204) if valid else Expected('request_invalid', '', 400)
 
-            _expected_check(response, expected, 'visit')
+            _expected_check(response, expected, 'click')
 
-            if valid:
-                self.model.metric_add(campaign=campaign, statistic='remi--funnel--visits')
+            run.sometimes('click counted', condition=valid)
+            run.sometimes('click refused outside its campaign', condition=declared and not valid)
 
-                if source == 'qr':
-                    self.model.metric_add(campaign=campaign, statistic='remi--funnel--scans')
+            if not valid:
+                return
 
-        exchange = Exchange('visit', lambda: None, retried=False, send=send, settle=settle)
+            if campaign == 'general':
+                self.model.metric_add('remi:acquisition:click:landing')
+            else:
+                self.model.metric_add(f'remi:acquisition:click:{campaign}:promo')
+
+        exchange = Exchange('click', lambda: None, retried=False, send=send, settle=settle)
 
         self._exchange(run, exchange)
 
@@ -1652,7 +1730,7 @@ class RemiSimulation:
             if not valid:
                 return
 
-            self.model.metric_add(campaign=campaign, statistic='remi--funnel--downloads')
+            self.model.download_record(campaign=campaign, platform=platform)
             promo = self.model.promo_find(code) if code != '' else None
 
             if promo is None:
@@ -1666,7 +1744,7 @@ class RemiSimulation:
             assert self.world.faults is not None
 
             if valid:
-                self.model.metric_add(campaign=campaign, statistic='remi--funnel--downloads')
+                self.model.download_record(campaign=campaign, platform=platform)
 
             promo = self.model.promo_find(code) if code != '' else None
 
@@ -2216,7 +2294,7 @@ def account_entry(*, account_id: int, kind: str, reference: str) -> AccountLedge
 
 def snapshot_database(metric: MetricExecutorFake) -> dict[str, object]:
     assert all(dispatch.value > 0 for dispatch in metric.dispatched)
-    assert all(dispatch.sub_domain_key.startswith('remi--') for dispatch in metric.dispatched)
+    assert all(dispatch.sub_domain_key == 'remi--metrics' for dispatch in metric.dispatched)
 
     accounts = sorted(
         (
@@ -2265,10 +2343,7 @@ def snapshot_database(metric: MetricExecutorFake) -> dict[str, object]:
     sums: dict[Metric, Decimal] = {}
 
     for dispatch in metric.dispatched:
-        key = Metric(
-            campaign=dispatch.sub_domain_key.removeprefix('remi--'),
-            statistic=dispatch.statistic_key,
-        )
+        key = Metric(reference=dispatch.reference, statistic=dispatch.statistic_key)
 
         counts[key] += 1
         sums[key] = sums.get(key, Decimal(0)) + dispatch.value

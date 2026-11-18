@@ -24,10 +24,9 @@ if TYPE_CHECKING:
     from pytest_django.fixtures import Settings
 
 
-PRICE_CENTS = 1000
 PRICE_CURRENCY = 'cad'
+PRICE_HOUR_CENTS = 60
 PRICE_HOURS = 50
-OFFERS = ((10, 300), (PRICE_HOURS, PRICE_CENTS), (200, 3000))
 
 
 @pytest.fixture(autouse=True)
@@ -64,8 +63,8 @@ def sendgrid_fake(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> Sendgr
 
 @pytest.fixture
 def stripe_configured(settings: Settings) -> None:
-    settings.REMI_OFFERS = dict(OFFERS)
     settings.REMI_PRICE_CURRENCY = PRICE_CURRENCY
+    settings.REMI_PRICE_HOUR_CENTS = PRICE_HOUR_CENTS
     settings.STRIPE_PUBLISHABLE_KEY = STRIPE_PUBLISHABLE_KEY
     settings.STRIPE_SECRET_KEY = STRIPE_SECRET_KEY
     settings.STRIPE_WEBHOOK_SECRET = STRIPE_WEBHOOK_SECRET

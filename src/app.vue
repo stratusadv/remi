@@ -13,6 +13,7 @@ import StepImport from './components/step_import.vue'
 import StepMeeting from './components/step_meeting.vue'
 import StepNotes from './components/step_notes.vue'
 import StepTranscribe from './components/step_transcribe.vue'
+import StratusCredit from './components/stratus_credit.vue'
 import TemplatesManager from './components/templates_manager.vue'
 import WelcomeScreen from './components/welcome_screen.vue'
 import { use_account } from './composables/use_account'
@@ -143,7 +144,7 @@ onMounted(async () => {
 
 <template>
     <div
-        class="flex flex-col h-screen overflow-hidden app-shell"
+        class="flex flex-col fixed inset-0 overflow-hidden app-shell"
         :data-ready="ready ? 'true' : 'false'"
         :inert="modal_shown"
     >
@@ -166,15 +167,18 @@ onMounted(async () => {
         </NoticeBanner>
         <Transition name="welcome" mode="out-in" @before-leave="transition_leave_inert">
             <WelcomeScreen v-if="ready && sign_up_needed" key="welcome" />
-            <div v-else key="app" class="flex flex-1 overflow-hidden">
+            <div v-else key="app" class="app-frame">
                 <Sidebar />
-                <main class="flex-1 overflow-y-auto">
+                <main class="overflow-y-auto">
                     <div class="app-content px-5 py-6 sm:px-8 sm:py-8 lg:px-12 lg:py-10">
                         <KeepAlive :key="notes_reopen_count" include="step_notes" :max="1">
                             <component :is="component_current" :key="view_key" />
                         </KeepAlive>
                     </div>
                 </main>
+                <footer class="app-footer">
+                    <StratusCredit class="footer-credit" />
+                </footer>
             </div>
         </Transition>
         <div v-if="dragging_over" class="drop-overlay">

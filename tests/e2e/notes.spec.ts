@@ -6,6 +6,8 @@ import {
     RECORDING_UNTITLED,
     STREAM_TIMEOUT_MS,
     app_open,
+    command_count,
+    command_watch,
     dialog,
     editor,
     editor_content_set,
@@ -24,7 +26,9 @@ const LINE_SECOND = 'Gamma delta'
 const EXPORT_PATH = '/home/you/Documents/notes.docx'
 const PRINT_STUB = 'window.print = () => { document.body.dataset.printed = "true" }'
 const TITLE_GENERATION_ELSEWHERE = 'notes that finish after another meeting opens never land in it'
+const TITLE_GENERATION_NEXT = 'Next on the Meeting step writes the notes without a click'
 const TITLE_GENERATION_RETURN = 'a meeting reopened mid-generation shows the notes still coming'
+const TITLE_NOTES_KEPT = 'Next on a meeting that has notes keeps them and writes nothing'
 
 const TITLE_SELECTION_COUNT = 'the selection count follows the selection '
     + 'and resets when it is cleared'
@@ -51,13 +55,13 @@ async function generation_wait(page: Page): Promise<void> {
     await expect(editor(page).locator('h1')).toHaveText(RECORDING_TITLED)
 }
 
-async function notes_empty_open(page: Page): Promise<void> {
+async function notes_generated_open(page: Page): Promise<void> {
     assert(!page.isClosed())
 
     await recording_open(page, RECORDING_UNTITLED)
     await page.getByRole('button', { name: 'Next' }).click()
     await expect(step_current(page)).toHaveText('Notes')
-    await expect(page.locator('.notes-empty')).toBeVisible()
+    await expect(page.locator('.notes-stream-pane')).toBeVisible()
 }
 
 async function notes_open(page: Page): Promise<void> {
@@ -79,14 +83,11 @@ test.beforeEach(async ({ page }) => {
     await app_open(page)
 })
 
-test('Generate notes streams and lands in the editor', async ({ page }) => {
-    await notes_empty_open(page)
+test(TITLE_GENERATION_NEXT, async ({ page }) => {
+    await notes_generated_open(page)
 
-    const generate = page.getByRole('button', { name: 'Generate notes' })
+    await expect(page.getByRole('button', { name: 'Generate notes' })).toHaveCount(0)
 
-    await expect(generate).toBeEnabled()
-
-    await generate.click()
     await generation_wait(page)
 
     await expect(editor(page).locator('h2')).toHaveText(['Summary', 'Decisions', 'Action items'])
@@ -97,6 +98,25 @@ test('Generate notes streams and lands in the editor', async ({ page }) => {
     await recording_open(page, RECORDING_UNTITLED)
 
     await expect(step_current(page)).toHaveText('Notes')
+})
+
+test(TITLE_NOTES_KEPT, async ({ page }) => {
+    await notes_open(page)
+    await page.getByRole('button', { name: 'Back' }).click()
+
+    await expect(step_current(page)).toHaveText('Meeting')
+
+    await command_watch(page, 'notes_generate_remote_streaming')
+    await page.getByRole('button', { name: 'Next' }).click()
+
+    await expect(step_current(page)).toHaveText('Notes')
+    await expect(editor(page).locator('p')).toHaveText([LINE_FIRST, LINE_SECOND])
+    await expect(page.locator('.notes-stream-pane')).toHaveCount(0)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+
+    const streams = await command_count(page, 'notes_generate_remote_streaming')
+
+    expect(streams).toBe(0)
 })
 
 test('Regenerate asks before overwriting', async ({ page }) => {
@@ -133,9 +153,7 @@ test('an edit made just before leaving Notes is kept', async ({ page }) => {
 test(TITLE_GENERATION_ELSEWHERE, async ({ page }) => {
     await notes_open(page)
     await nav_to(page, 'Home')
-    await notes_empty_open(page)
-    await page.getByRole('button', { name: 'Generate notes' }).click()
-    await expect(page.locator('.notes-stream-pane')).toBeVisible()
+    await notes_generated_open(page)
     await nav_to(page, 'Home')
     await recording_open(page, RECORDING_TITLED)
 
@@ -157,8 +175,7 @@ test(TITLE_GENERATION_ELSEWHERE, async ({ page }) => {
 })
 
 test(TITLE_GENERATION_RETURN, async ({ page }) => {
-    await notes_empty_open(page)
-    await page.getByRole('button', { name: 'Generate notes' }).click()
+    await notes_generated_open(page)
     await expect(page.locator('.streaming-status')).toHaveText('Writing notes')
     await nav_to(page, 'Home')
     await recording_open(page, RECORDING_UNTITLED)
