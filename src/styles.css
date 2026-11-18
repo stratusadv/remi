@@ -1144,22 +1144,35 @@
         @apply px-2 justify-center;
     }
     .sidebar-balance {
-        @apply flex flex-col items-start gap-1 px-5 py-2.5;
-        color: var(--color-content-meta);
-        font: 500 0.6875rem/1.3 var(--font-mono);
+        @apply flex flex-col items-stretch gap-2.5 px-4 py-3;
     }
     .sidebar-balance-text {
+        @apply inline-flex items-center gap-2;
+        color: var(--color-content);
+        font: 500 0.75rem/1.3 var(--font-mono);
         white-space: nowrap;
+    }
+    .sidebar-balance-dot {
+        flex: none;
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 999px;
+        background-color: var(--color-online);
+    }
+    .sidebar-balance[data-balance="low"] .sidebar-balance-text {
+        color: var(--color-warning-content);
+    }
+    .sidebar-balance[data-balance="low"] .sidebar-balance-dot {
+        background-color: var(--color-warning-content);
+    }
+    .sidebar-balance[data-balance="empty"] .sidebar-balance-text {
+        color: var(--color-danger-text);
+    }
+    .sidebar-balance[data-balance="empty"] .sidebar-balance-dot {
+        background-color: var(--color-danger-text);
     }
     .sidebar-balance-buy {
-        color: var(--color-accent-strong);
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        white-space: nowrap;
-    }
-    .sidebar-balance-buy:hover {
-        text-decoration: underline;
-        text-underline-offset: 0.2em;
+        width: 100%;
     }
     .sidebar-footer-actions {
         @apply px-2.5 py-2 flex flex-col gap-0.5;

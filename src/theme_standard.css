@@ -120,12 +120,8 @@
         outline-color: var(--color-overlay-border);
     }
 
-    :root[data-theme="standard"] .sidebar-balance {
+    :root[data-theme="standard"] .sidebar-balance-text {
         font-size: 0.8125rem;
-    }
-    :root[data-theme="standard"] .sidebar-balance-buy {
-        letter-spacing: 0;
-        text-transform: none;
     }
     :root[data-theme="standard"] .sidebar-nav-item-active {
         background: var(--color-row-active);

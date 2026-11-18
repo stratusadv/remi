@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { use_account } from '../composables/use_account'
 import { use_ask } from '../composables/use_ask'
 import { use_context_menu } from '../composables/use_context_menu'
 import { use_folders } from '../composables/use_folders'
 import { use_pipeline } from '../composables/use_pipeline'
 import { AssertionError, assert } from '../lib/assert'
+import { SECONDS_PER_HOUR, SECONDS_PER_MINUTE } from '../lib/duration'
 import RemiMark from './remi_mark.vue'
 import SidebarFolders from './sidebar_folders.vue'
 import SidebarIcon from './sidebar_icon.vue'
@@ -53,6 +54,15 @@ const {
 const collapsed = ref<boolean>(
     typeof localStorage !== 'undefined' && localStorage.getItem(COLLAPSED_STORAGE_KEY) === '1',
 )
+
+const balance_state = computed(() => {
+    const seconds = account.value?.balance_seconds ?? SECONDS_PER_HOUR
+
+    if (seconds < SECONDS_PER_MINUTE) return 'empty'
+    if (seconds < SECONDS_PER_HOUR) return 'low'
+
+    return 'ok'
+})
 
 const workflow_items = Object.freeze<NavItem[]>([
     { id: 'jobs', label: 'Home', icon: 'jobs' },
@@ -212,9 +222,21 @@ async function nav_menu_select(id: string): Promise<void> {
 
         <TasksPanel v-if="!collapsed" />
 
-        <div v-if="account !== null && !collapsed" class="sidebar-balance sidebar-divider border-t">
-            <span class="sidebar-balance-text">{{ balance_text }} left</span>
-            <button type="button" class="sidebar-balance-buy" @click="view_reopen('checkout')">
+        <div
+            v-if="account !== null && !collapsed"
+            class="sidebar-balance sidebar-divider border-t"
+            :data-balance="balance_state"
+        >
+            <span class="sidebar-balance-text">
+                <span class="sidebar-balance-dot" aria-hidden="true" />
+                {{ balance_text }} left
+            </span>
+            <button
+                type="button"
+                class="sidebar-balance-buy"
+                :class="balance_state === 'ok' ? 'btn-default' : 'btn-primary'"
+                @click="view_reopen('checkout')"
+            >
                 Buy hours
             </button>
         </div>
