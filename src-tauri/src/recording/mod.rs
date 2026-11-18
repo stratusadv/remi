@@ -17,6 +17,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, State};
 
+const MESSAGE_RECORDING_UNSAVED: &str =
+    "the recording could not be saved to disk; check that the disk has free space";
+
 const RECORDING_CHUNK_BYTES_MAX: u32 = 1 << 20;
 const RECORDING_FILE_EXTENSION: &str = "wav";
 const RECORDING_FILE_PREFIX: &str = "Recording ";
@@ -32,6 +35,12 @@ const _: () = assert!(RECORDING_CHUNK_BYTES_MAX.is_multiple_of(PCM16_SAMPLE_BYTE
 const _: () = assert!((RECORDING_SAMPLES_MAX << PCM16_SAMPLE_BYTES.ilog2()) < (1_u64 << 32));
 
 pub(crate) type RecordingSlot = Arc<Mutex<Option<RecordingActive>>>;
+
+pub(crate) struct RecordingActive {
+    path: PathBuf,
+    sample_rate: u32,
+    writer: hound::WavWriter<BufWriter<File>>,
+}
 
 #[cfg(target_os = "linux")]
 pub(crate) fn microphone_permission_install(window: &tauri::WebviewWindow) {
@@ -60,12 +69,6 @@ pub(crate) fn microphone_permission_install(window: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "linux"))]
 pub(crate) const fn microphone_permission_install(_window: &tauri::WebviewWindow) {}
 
-pub(crate) struct RecordingActive {
-    path: PathBuf,
-    sample_rate: u32,
-    writer: hound::WavWriter<BufWriter<File>>,
-}
-
 #[tauri::command]
 pub(crate) async fn recording_append(
     state: State<'_, AppState>,
@@ -74,7 +77,7 @@ pub(crate) async fn recording_append(
     let bytes = match request.body() {
         InvokeBody::Raw(bytes) => bytes,
         InvokeBody::Json(_) => {
-            return Err(AppError::Audio("recording chunk must be raw PCM bytes".into()));
+            return Err(AppError::Internal("recording chunk must be raw PCM bytes".into()));
         }
     };
 
@@ -110,7 +113,7 @@ pub(crate) async fn recordings_directory_default() -> AppResult<String> {
 
 fn recording_append_blocking(slot: &RecordingSlot, bytes: &[u8]) -> AppResult<()> {
     if bytes.len() > usize_of!(RECORDING_CHUNK_BYTES_MAX) {
-        return Err(AppError::Audio(format!(
+        return Err(AppError::Internal(format!(
             "a recording chunk of {} bytes is over the {} byte limit",
             bytes.len(),
             RECORDING_CHUNK_BYTES_MAX,
@@ -118,7 +121,7 @@ fn recording_append_blocking(slot: &RecordingSlot, bytes: &[u8]) -> AppResult<()
     }
 
     if !bytes.len().is_multiple_of(usize_of!(PCM16_SAMPLE_BYTES)) {
-        return Err(AppError::Audio("a recording chunk has a half sample at its end".into()));
+        return Err(AppError::Internal("a recording chunk has a half sample at its end".into()));
     }
 
     let mut guard = recording_slot_lock(slot)?;
@@ -127,7 +130,7 @@ fn recording_append_blocking(slot: &RecordingSlot, bytes: &[u8]) -> AppResult<()
         guard.as_mut().ok_or_else(|| AppError::Audio("no recording is in progress".into()))?;
 
     let samples_chunk = u64::try_from(bytes.len().div_euclid(usize_of!(PCM16_SAMPLE_BYTES)))
-        .map_err(|error| AppError::Audio(format!("recording chunk size: {error}")))?;
+        .map_err(|error| AppError::Internal(format!("recording chunk size: {error}")))?;
 
     let samples_max = u64::from(active.sample_rate) * AUDIO_SECONDS_MAX;
     let samples_before = u64::from(active.writer.len());
@@ -149,10 +152,10 @@ fn recording_append_blocking(slot: &RecordingSlot, bytes: &[u8]) -> AppResult<()
         active
             .writer
             .write_sample(i16::from_le_bytes(*pair))
-            .map_err(|error| AppError::Audio(format!("recording write: {error}")))?;
+            .map_err(|error| recording_write_failure("write", &error))?;
     }
 
-    active.writer.flush().map_err(|error| AppError::Audio(format!("recording flush: {error}")))?;
+    active.writer.flush().map_err(|error| recording_write_failure("flush", &error))?;
 
     assert_eq!(u64::from(active.writer.len()), samples_before + samples_chunk);
 
@@ -177,7 +180,7 @@ fn recording_finish_blocking(slot: &RecordingSlot) -> AppResult<String> {
     let RecordingActive { path, writer, .. } = recording_take(slot)?;
     let sample_count = writer.len();
 
-    writer.finalize().map_err(|error| AppError::Audio(format!("recording finalize: {error}")))?;
+    writer.finalize().map_err(|error| recording_write_failure("finalize", &error))?;
 
     if sample_count == 0 {
         fs::remove_file(&path)?;
@@ -204,7 +207,15 @@ fn recording_open(slot: &RecordingSlot, sample_rate: u32, path: PathBuf) -> AppR
     }
 
     let writer = hound::WavWriter::create(&path, wav_specification_mono_pcm16(sample_rate))
-        .map_err(|error| AppError::Audio(format!("could not create the recording: {error}")))?;
+        .map_err(|error| {
+            tracing::warn!("the recording {} could not be created: {error}", path.display());
+
+            AppError::Audio(
+                "the recording could not be created; check that the recordings folder in \
+                 Settings can be written to"
+                    .into(),
+            )
+        })?;
 
     let path_text = path.to_string_lossy().into_owned();
 
@@ -224,8 +235,13 @@ fn recording_path_new() -> AppResult<PathBuf> {
     };
 
     fs::create_dir_all(&directory).map_err(|error| {
+        tracing::warn!(
+            "the recordings folder {} could not be opened: {error}",
+            directory.display(),
+        );
+
         AppError::Audio(format!(
-            "could not open the recordings folder {}: {error}; pick another one in Settings",
+            "could not open the recordings folder {}; pick another one in Settings",
             directory.display(),
         ))
     })?;
@@ -247,8 +263,9 @@ fn recording_path_new() -> AppResult<PathBuf> {
 }
 
 fn recording_slot_lock(slot: &RecordingSlot) -> AppResult<MutexGuard<'_, Option<RecordingActive>>> {
-    slot.lock()
-        .map_err(|_poisoned| AppError::Audio("the recording state was poisoned by a crash".into()))
+    slot.lock().map_err(|_poisoned| {
+        AppError::Internal("the recording state was poisoned by a crash".into())
+    })
 }
 
 fn recording_start_blocking(
@@ -280,6 +297,15 @@ fn recording_take(slot: &RecordingSlot) -> AppResult<RecordingActive> {
     assert!(active.path.extension().is_some());
 
     Ok(active)
+}
+
+fn recording_write_failure(stage: &str, error: &hound::Error) -> AppError {
+    assert!(["finalize", "flush", "write"].contains(&stage));
+    assert_ne!(error.to_string(), "");
+
+    tracing::warn!("recording {stage} failed: {error}");
+
+    AppError::Audio(MESSAGE_RECORDING_UNSAVED.into())
 }
 
 fn recordings_directory_default_resolve() -> AppResult<PathBuf> {

@@ -30,11 +30,7 @@ class AccountLedgerEntryQuerySet(QuerySet['AccountLedgerEntry']):
             message = f'campaign must be one of {CampaignChoices.values}: {campaign!r}'
             raise ValueError(message)
 
-        from app.promo_code.models import PromoCode
-
-        codes = PromoCode.objects.by_campaign(campaign).values('code')
-
-        return self.filter(reference__in=codes)
+        return self.filter(promo_code__campaign=campaign)
 
     def by_email(self, email: str) -> Self:
         if email == '':
@@ -61,6 +57,12 @@ class AccountLedgerEntryQuerySet(QuerySet['AccountLedgerEntry']):
 
     def purchases(self) -> Self:
         return self.filter(kind=AccountLedgerEntryKindChoices.PURCHASE)
+
+    def reinstatements(self) -> Self:
+        return self.filter(kind=AccountLedgerEntryKindChoices.REINSTATEMENT)
+
+    def reversals(self) -> Self:
+        return self.filter(kind=AccountLedgerEntryKindChoices.REVERSAL)
 
     def since(self, moment: datetime) -> Self:
         if moment.tzinfo is None:

@@ -1,5 +1,6 @@
 use crate::cancellation::{CancellationRegistry, is_cancelled};
 use crate::contract::StreamID;
+use crate::endpoints::storage::endpoint_is_builtin;
 use crate::endpoints::types::APIEndpoint;
 use crate::error::{AppError, AppResult};
 use crate::http::{
@@ -13,7 +14,7 @@ use crate::http::{
 };
 use crate::state::AppState;
 use crate::workspace::NOTES_BYTES_MAX;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt, stream};
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::LazyLock;
@@ -24,6 +25,10 @@ use tauri::{AppHandle, Emitter, Manager};
 const API_PATH_MODELS: &str = "/v1/models";
 const CONNECT_TIMEOUT_SECONDS: u64 = 15;
 pub(super) const EVENT_NOTES_CHUNK: &str = "notes_generate_chunk";
+const HEDGE_DELAY_STREAMED_BASE: Duration = Duration::from_secs(3);
+const HEDGE_DELAY_STREAMED_MAX: Duration = Duration::from_secs(30);
+const HEDGE_DELAY_STREAMED_PER_BYTE: Duration = Duration::from_micros(100);
+pub(super) const HEDGE_DELAY_STRUCTURED: Duration = Duration::from_secs(2);
 
 const HTTP_TIMEOUTS: ClientTimeouts = ClientTimeouts {
     connect: Duration::from_secs(CONNECT_TIMEOUT_SECONDS),
@@ -50,20 +55,23 @@ const _: () = assert!(SSE_EVENT_BYTES_MAX < NOTES_BYTES_MAX);
 const _: () = assert!(NOTES_BYTES_MAX < REASONING_BYTES_MAX);
 const _: () = assert!(CONNECT_TIMEOUT_SECONDS < READ_TIMEOUT_SECONDS);
 const _: () = assert!(READ_TIMEOUT_SECONDS < REQUEST_TIMEOUT_SECONDS);
+const _: () = assert!(HEDGE_DELAY_STREAMED_BASE.as_secs() < HEDGE_DELAY_STREAMED_MAX.as_secs());
+const _: () = assert!(HEDGE_DELAY_STREAMED_MAX.as_secs() < READ_TIMEOUT_SECONDS);
+const _: () = assert!(HEDGE_DELAY_STRUCTURED.as_secs() < HEDGE_DELAY_STREAMED_BASE.as_secs());
 
 static HTTP_CLIENT: ClientCell = LazyLock::new(|| client_build(&HTTP_TIMEOUTS));
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub(super) struct ChatChunk {
+    pub(super) done: bool,
     pub(super) stream_id: String,
     pub(super) text: String,
-    pub(super) done: bool,
 }
 
 #[derive(Debug, serde::Serialize)]
 struct ChatMessage<'prompt> {
-    role: &'static str,
     content: &'prompt str,
+    role: &'static str,
 }
 
 #[derive(Debug)]
@@ -80,20 +88,20 @@ pub(super) struct ChatPrompts<'prompt> {
 
 #[derive(Debug, serde::Serialize)]
 pub(super) struct ChatRequest<'prompt> {
-    model: &'prompt str,
+    chat_template_kwargs: ChatTemplateKwargs,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
     messages: [ChatMessage<'prompt>; 2],
+    model: &'prompt str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'prompt str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<Value>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<&'prompt str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    response_format: Option<Value>,
-    chat_template_kwargs: ChatTemplateKwargs,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -194,8 +202,13 @@ pub(super) async fn chat_completion_structured(
     reply: &ReplySchema<'_>,
 ) -> AppResult<Completion> {
     let (url, body, api_key) = build_request_structured(endpoint, prompts, reply);
+    let outgoing = ChatSend { api_key, body, url };
 
-    chat_completion_send(&ChatSend { api_key, body, url }).await
+    if endpoint_is_builtin(endpoint) {
+        return hedged(&HEDGE_DELAY_STRUCTURED, || chat_completion_send(&outgoing)).await;
+    }
+
+    chat_completion_send(&outgoing).await
 }
 
 pub(super) async fn chat_completion_streaming(
@@ -206,7 +219,10 @@ pub(super) async fn chat_completion_streaming(
 ) -> AppResult<String> {
     let (url, body, api_key) = build_request(endpoint, prompts, ReplyShape::Streamed);
     let outgoing = ChatSend { api_key, body, url };
-    let completion = chat_completion_stream_send(app, stream_id, &outgoing).await?;
+    let client = client_get(&HTTP_CLIENT)?;
+    let opened = chat_completion_stream_open(client, &outgoing).await?;
+    let mut pieces = std::pin::pin!(opened);
+    let completion = chat_completion_stream_receive(app, stream_id, &mut pieces).await?;
 
     Ok(completion.text)
 }
@@ -219,8 +235,17 @@ pub(super) async fn chat_completion_streaming_counted(
 ) -> AppResult<Completion> {
     let (url, body, api_key) = build_request_counted(endpoint, prompts);
     let outgoing = ChatSend { api_key, body, url };
+    let hedge = endpoint_is_builtin(endpoint).then(|| hedge_delay_streamed(prompts));
+    let client = client_get(&HTTP_CLIENT)?;
 
-    chat_completion_stream_send(app, stream_id, &outgoing).await
+    let opened = match hedge {
+        Some(delay) => hedged(&delay, || chat_completion_stream_open(client, &outgoing)).await,
+        None => chat_completion_stream_open(client, &outgoing).await,
+    };
+
+    let mut pieces = std::pin::pin!(opened?);
+
+    chat_completion_stream_receive(app, stream_id, &mut pieces).await
 }
 
 pub(super) async fn models_list(endpoint: &APIEndpoint) -> AppResult<Vec<String>> {
@@ -265,20 +290,20 @@ pub(super) fn build_request<'prompt>(
     assert!(url.ends_with(&path));
 
     let body = ChatRequest {
-        model: endpoint.model_resolved(),
-        messages: [
-            ChatMessage { role: "system", content: prompts.system },
-            ChatMessage { role: "user", content: prompts.user },
-        ],
-        stream: shape == ReplyShape::Streamed,
-        stream_options: None,
-        temperature: endpoint.temperature,
-        max_tokens: endpoint.output_tokens_max,
-        reasoning_effort: endpoint.reasoning_effort.as_deref(),
-        response_format: None,
         chat_template_kwargs: ChatTemplateKwargs {
             enable_thinking: endpoint.reasoning_effort.is_some(),
         },
+        max_tokens: endpoint.output_tokens_max,
+        messages: [
+            ChatMessage { content: prompts.system, role: "system" },
+            ChatMessage { content: prompts.user, role: "user" },
+        ],
+        model: endpoint.model_resolved(),
+        reasoning_effort: endpoint.reasoning_effort.as_deref(),
+        response_format: None,
+        stream: shape == ReplyShape::Streamed,
+        stream_options: None,
+        temperature: endpoint.temperature,
     };
 
     (url, body, endpoint.api_key_resolved())
@@ -310,44 +335,11 @@ async fn chat_completion_send(outgoing: &ChatSend<'_>) -> AppResult<Completion> 
         .and_then(|choice| choice.message)
         .and_then(|message| message.content)
         .map(|content| content.trim().to_owned())
-        .ok_or_else(|| AppError::Service("no content in chat response".into()))?;
+        .ok_or_else(|| {
+            AppError::Service("the notes service sent an empty reply; try again".into())
+        })?;
 
     Ok(Completion { text, tokens })
-}
-
-async fn chat_completion_stream_send(
-    app: AppHandle,
-    stream_id: StreamID,
-    outgoing: &ChatSend<'_>,
-) -> AppResult<Completion> {
-    let client = client_get(&HTTP_CLIENT)?;
-
-    let response = retry_run(|| async {
-        let mut request = client.post(&outgoing.url);
-
-        if !outgoing.api_key.is_empty() {
-            request = request.bearer_auth(outgoing.api_key);
-        }
-
-        let sent = request.json(&outgoing.body).send().await?;
-
-        response_ensure_ok(sent, LABEL_CHAT).await
-    })
-    .await?;
-
-    let state = app.state::<AppState>();
-    let cancellation = &state.cancellation;
-    let cancel_flag = cancellation.register(&stream_id);
-    let read = chat_completion_stream_read(&app, &stream_id, &cancel_flag, response).await;
-
-    chat_completion_stream_end(&app, cancellation, stream_id.into_string());
-
-    let streamed = read?;
-    let text = streamed.text.trim().to_owned();
-
-    assert!(text.len() <= usize_of!(NOTES_BYTES_MAX));
-
-    Ok(Completion { text, tokens: streamed.tokens })
 }
 
 pub(super) fn build_request_counted<'prompt>(
@@ -389,6 +381,29 @@ fn build_request_structured<'prompt>(
     (url, body, api_key)
 }
 
+async fn chat_completion_stream_connect(
+    client: &reqwest::Client,
+    outgoing: &ChatSend<'_>,
+) -> AppResult<impl Stream<Item = reqwest::Result<impl AsRef<[u8]>>>> {
+    let mut response = retry_run(|| async {
+        let mut request = client.post(&outgoing.url);
+
+        if !outgoing.api_key.is_empty() {
+            request = request.bearer_auth(outgoing.api_key);
+        }
+
+        let sent = request.json(&outgoing.body).send().await?;
+
+        response_ensure_ok(sent, LABEL_CHAT).await
+    })
+    .await?;
+
+    let first = response.chunk().await?.unwrap_or_default();
+    let pieces = stream::once(async { Ok(first) }).chain(response.bytes_stream());
+
+    Ok(pieces)
+}
+
 fn chat_completion_stream_drain(app: &AppHandle, stream_id: &str, state: &mut StreamState) {
     while let Some((position, separator_length)) = sse_event_end(&state.byte_buffer) {
         let event_end = usize_of!(position + separator_length);
@@ -427,7 +442,7 @@ fn chat_completion_stream_end(
     assert_ne!(stream_id, "");
 
     cancellation.clear(&stream_id);
-    chunk_emit(app, ChatChunk { stream_id, text: String::new(), done: true });
+    chunk_emit(app, ChatChunk { done: true, stream_id, text: String::new() });
 }
 
 fn chat_completion_stream_event_apply(
@@ -468,7 +483,7 @@ fn chat_completion_stream_event_apply(
 
         chunk_emit(
             app,
-            ChatChunk { stream_id: stream_id.to_owned(), text: text.to_owned(), done: false },
+            ChatChunk { done: false, stream_id: stream_id.to_owned(), text: text.to_owned() },
         );
     }
 
@@ -486,7 +501,7 @@ fn chat_completion_stream_limits(state: &StreamState) -> AppResult<()> {
     }
 
     if state.byte_buffer.len() > usize_of!(SSE_EVENT_BYTES_MAX) {
-        return Err(AppError::Service(format!(
+        return Err(AppError::Internal(format!(
             "the notes service sent more than {} MB without ending an event",
             SSE_EVENT_BYTES_MAX >> 20,
         )));
@@ -502,14 +517,26 @@ fn chat_completion_stream_limits(state: &StreamState) -> AppResult<()> {
     Ok(())
 }
 
-async fn chat_completion_stream_read(
+fn chat_completion_stream_open(
+    client: &reqwest::Client,
+    outgoing: &ChatSend<'_>,
+) -> impl Future<Output = AppResult<impl Stream<Item = reqwest::Result<impl AsRef<[u8]>>>>> {
+    assert_ne!(outgoing.url, "");
+    assert!(outgoing.body.stream);
+
+    chat_completion_stream_connect(client, outgoing)
+}
+
+async fn chat_completion_stream_read<Pieces, Piece>(
     app: &AppHandle,
     stream_id: &str,
     cancel_flag: &AtomicBool,
-    response: reqwest::Response,
-) -> AppResult<Completion> {
-    let mut stream = response.bytes_stream();
-
+    pieces: &mut Pieces,
+) -> AppResult<Completion>
+where
+    Pieces: Stream<Item = reqwest::Result<Piece>> + Unpin,
+    Piece: AsRef<[u8]>,
+{
     let mut state = StreamState {
         accumulated: String::new(),
         byte_buffer: Vec::new(),
@@ -518,7 +545,7 @@ async fn chat_completion_stream_read(
     };
 
     for _chunk_index in 0..STREAM_CHUNK_COUNT_MAX {
-        let Some(chunk) = stream.next().await else {
+        let Some(chunk) = pieces.next().await else {
             tracing::info!(
                 "notes stream {stream_id} finished: {} bytes of notes after {} bytes of model \
                  reasoning",
@@ -533,7 +560,7 @@ async fn chat_completion_stream_read(
             return Err(AppError::Service("Cancelled".into()));
         }
 
-        state.byte_buffer.extend_from_slice(&chunk?);
+        state.byte_buffer.extend_from_slice(chunk?.as_ref());
 
         chat_completion_stream_drain(app, stream_id, &mut state);
         chat_completion_stream_limits(&state)?;
@@ -542,6 +569,30 @@ async fn chat_completion_stream_read(
     Err(AppError::Service(format!(
         "the notes service sent more than {STREAM_CHUNK_COUNT_MAX} pieces without finishing",
     )))
+}
+
+async fn chat_completion_stream_receive<Pieces, Piece>(
+    app: AppHandle,
+    stream_id: StreamID,
+    pieces: &mut Pieces,
+) -> AppResult<Completion>
+where
+    Pieces: Stream<Item = reqwest::Result<Piece>> + Unpin,
+    Piece: AsRef<[u8]>,
+{
+    let state = app.state::<AppState>();
+    let cancellation = &state.cancellation;
+    let cancel_flag = cancellation.register(&stream_id);
+    let read = chat_completion_stream_read(&app, &stream_id, &cancel_flag, pieces).await;
+
+    chat_completion_stream_end(&app, cancellation, stream_id.into_string());
+
+    let streamed = read?;
+    let text = streamed.text.trim().to_owned();
+
+    assert!(text.len() <= usize_of!(NOTES_BYTES_MAX));
+
+    Ok(Completion { text, tokens: streamed.tokens })
 }
 
 fn chunk_emit(app: &AppHandle, chunk: ChatChunk) {
@@ -567,6 +618,69 @@ where
     position
 }
 
+fn hedge_delay_streamed(prompts: &ChatPrompts<'_>) -> Duration {
+    let length = prompts.system.len().saturating_add(prompts.user.len());
+    let bytes = u32::try_from(length).unwrap_or(u32::MAX);
+    let scaled = HEDGE_DELAY_STREAMED_PER_BYTE.saturating_mul(bytes);
+    let delay = HEDGE_DELAY_STREAMED_BASE.saturating_add(scaled).min(HEDGE_DELAY_STREAMED_MAX);
+
+    assert!(delay >= HEDGE_DELAY_STREAMED_BASE);
+    assert!(delay <= HEDGE_DELAY_STREAMED_MAX);
+
+    delay
+}
+
+fn hedged<Attempt, Pending, Reply>(
+    delay: &Duration,
+    attempt: Attempt,
+) -> impl Future<Output = AppResult<Reply>>
+where
+    Attempt: Fn() -> Pending,
+    Pending: Future<Output = AppResult<Reply>>,
+{
+    assert!(!delay.is_zero());
+    assert!(*delay <= HEDGE_DELAY_STREAMED_MAX);
+
+    hedged_race(delay, attempt)
+}
+
+async fn hedged_race<Attempt, Pending, Reply>(
+    delay: &Duration,
+    attempt: Attempt,
+) -> AppResult<Reply>
+where
+    Attempt: Fn() -> Pending,
+    Pending: Future<Output = AppResult<Reply>>,
+{
+    let primary = attempt();
+
+    tokio::pin!(primary);
+
+    if let Ok(outcome) = tokio::time::timeout(*delay, &mut primary).await {
+        return outcome;
+    }
+
+    tracing::info!("the notes service sent nothing for {delay:?}, so the request was sent again");
+
+    let secondary = attempt();
+
+    tokio::pin!(secondary);
+
+    let (outcome, other) = tokio::select! {
+        outcome = &mut primary => (outcome, secondary),
+        outcome = &mut secondary => (outcome, primary),
+    };
+
+    match outcome {
+        Ok(reply) => Ok(reply),
+        Err(error) => {
+            tracing::info!(%error, "one of the two requests failed, so the other one is awaited");
+
+            other.await
+        }
+    }
+}
+
 fn sse_event_end(buffer: &[u8]) -> Option<(u32, u32)> {
     [SSE_SEPARATOR, SSE_SEPARATOR_CRLF]
         .into_iter()
@@ -589,8 +703,15 @@ pub(super) fn stream_event_tokens(parsed: &Value) -> Option<u32> {
 mod tests {
     use super::*;
     use crate::endpoints::types::APIEndpointPurpose;
+    use crate::http::test_support::request_read;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
 
+    const EVENT_HELLO: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n";
+    const HEDGE_DELAY_TEST: Duration = Duration::from_millis(40);
     const PROMPTS: ChatPrompts<'static> = ChatPrompts { system: "sys", user: "user" };
+    const STREAM_HEAD: &str = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n";
 
     fn message_first(response: ChatResponse) -> Option<ReplyMessage> {
         assert!(response.choices.len() <= 2);
@@ -611,21 +732,59 @@ mod tests {
 
     fn endpoint_with(host: &str, reasoning_effort: Option<&str>) -> APIEndpoint {
         APIEndpoint {
-            id: "builtin-notes".to_owned(),
-            name: "Notes".to_owned(),
-            purpose: APIEndpointPurpose::Notes,
-            host: host.to_owned(),
             api_key: " secret ".to_owned(),
-            model: " stratus.thinking ".to_owned(),
-            temperature: Some(0.5),
-            output_tokens_max: Some(4096),
             api_path_chat: None,
             api_path_transcribe: None,
-            transcribe_verbose: None,
-            transcribe_chunk_seconds: None,
-            reasoning_effort: reasoning_effort.map(str::to_owned),
             has_api_key: true,
+            host: host.to_owned(),
+            id: "builtin-notes".to_owned(),
+            model: " stratus.thinking ".to_owned(),
+            name: "Notes".to_owned(),
+            output_tokens_max: Some(4096),
+            purpose: APIEndpointPurpose::Notes,
+            reasoning_effort: reasoning_effort.map(str::to_owned),
+            temperature: Some(0.5),
+            transcribe_chunk_seconds: None,
+            transcribe_verbose: None,
         }
+    }
+
+    async fn hedged_scripted(plans: [(u32, bool); 2]) -> (AppResult<u32>, u32) {
+        let count = AtomicU32::new(0);
+
+        assert!(
+            plans
+                .iter()
+                .all(|(delays, _replies)| HEDGE_DELAY_TEST * *delays < Duration::from_mins(1))
+        );
+
+        let outcome = hedged(&HEDGE_DELAY_TEST, || {
+            let number = count.fetch_add(1, Ordering::SeqCst) + 1;
+
+            assert!(usize_of!(number) <= plans.len());
+
+            async move {
+                let (delays, replies) = plans[usize_of!(number - 1)];
+
+                if delays > 0 {
+                    tokio::time::sleep(HEDGE_DELAY_TEST * delays).await;
+                }
+
+                if replies {
+                    return Ok(number);
+                }
+
+                Err(AppError::Service(format!("request {number} failed")))
+            }
+        })
+        .await;
+
+        let attempts = count.load(Ordering::SeqCst);
+
+        assert!(attempts >= 1);
+        assert!(attempts <= 2);
+
+        (outcome, attempts)
     }
 
     #[test]
@@ -844,5 +1003,97 @@ mod tests {
 
         chat_completion_stream_limits(&at_limit).unwrap();
         assert!(chat_completion_stream_limits(&past_limit).is_err());
+    }
+
+    #[test]
+    fn the_stream_delay_grows_with_the_prompt_from_its_base_to_its_ceiling() {
+        let typical_text = "a".repeat(60_000);
+        let huge_text = "a".repeat(1 << 20);
+        let empty = ChatPrompts { system: "", user: "" };
+        let typical = ChatPrompts { system: "", user: &typical_text };
+        let huge = ChatPrompts { system: "", user: &huge_text };
+
+        assert_eq!(hedge_delay_streamed(&empty), Duration::from_secs(3));
+        assert_eq!(hedge_delay_streamed(&PROMPTS), Duration::from_micros(3_000_700));
+        assert_eq!(hedge_delay_streamed(&typical), Duration::from_secs(9));
+        assert_eq!(hedge_delay_streamed(&huge), Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn a_reply_or_a_failure_inside_the_delay_is_final_and_nothing_is_sent_again() {
+        let (replied, replied_attempts) = hedged_scripted([(0, true), (0, true)]).await;
+        let (failed, failed_attempts) = hedged_scripted([(0, false), (0, true)]).await;
+
+        assert_eq!(replied.unwrap(), 1);
+        assert_eq!(replied_attempts, 1);
+        assert!(failed.unwrap_err().to_string().contains("request 1 failed"));
+        assert_eq!(failed_attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn a_request_silent_past_the_delay_is_sent_again_and_a_reply_beats_a_failure() {
+        let (stalled, stalled_attempts) = hedged_scripted([(1000, true), (0, true)]).await;
+
+        assert_eq!(stalled.unwrap(), 2);
+        assert_eq!(stalled_attempts, 2);
+
+        let (fallback_primary, fallback_primary_attempts) =
+            hedged_scripted([(3, true), (0, false)]).await;
+
+        assert_eq!(fallback_primary.unwrap(), 1);
+        assert_eq!(fallback_primary_attempts, 2);
+
+        let (fallback_secondary, fallback_secondary_attempts) =
+            hedged_scripted([(2, false), (3, true)]).await;
+
+        assert_eq!(fallback_secondary.unwrap(), 2);
+        assert_eq!(fallback_secondary_attempts, 2);
+
+        let (neither, neither_attempts) = hedged_scripted([(2, false), (0, false)]).await;
+
+        assert!(neither.unwrap_err().to_string().contains("failed"));
+        assert_eq!(neither_attempts, 2);
+    }
+
+    #[tokio::test]
+    async fn a_stream_answered_with_headers_alone_is_sent_again_on_a_new_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let serving = tokio::spawn(async move {
+            let (mut stalled, _stalled_peer) = listener.accept().await.unwrap();
+            let stalled_request = request_read(&mut stalled).await;
+            let head = format!("{STREAM_HEAD}Content-Length: 64\r\n\r\n");
+
+            stalled.write_all(head.as_bytes()).await.unwrap();
+
+            let (mut answering, _answering_peer) = listener.accept().await.unwrap();
+            let answering_request = request_read(&mut answering).await;
+            let length = EVENT_HELLO.len();
+            let reply = format!("{STREAM_HEAD}Content-Length: {length}\r\n\r\n{EVENT_HELLO}");
+
+            answering.write_all(reply.as_bytes()).await.unwrap();
+
+            (stalled, [stalled_request, answering_request])
+        });
+
+        let endpoint = endpoint_with(&format!("http://127.0.0.1:{port}"), Some("low"));
+        let (url, body, api_key) = build_request_counted(&endpoint, &PROMPTS);
+        let outgoing = ChatSend { api_key, body, url };
+        let client = client_build(&HTTP_TIMEOUTS).unwrap();
+        let opened = hedged(&HEDGE_DELAY_TEST, || chat_completion_stream_open(&client, &outgoing));
+        let mut pieces = std::pin::pin!(opened.await.unwrap());
+        let first = pieces.next().await.unwrap().unwrap();
+
+        assert_ne!(first.as_ref().len(), 0);
+        assert!(EVENT_HELLO.as_bytes().starts_with(first.as_ref()));
+
+        let (_stalled, requests) = serving.await.unwrap();
+
+        let bodies: Vec<&str> =
+            requests.iter().map(|request| request.split_once("\r\n\r\n").unwrap().1).collect();
+
+        assert_eq!(bodies[0], bodies[1]);
+        assert!(bodies[0].contains("\"stream\":true"));
     }
 }

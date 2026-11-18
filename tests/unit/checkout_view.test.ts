@@ -1,17 +1,18 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import CheckoutView from '../../src/components/checkout_view.vue'
 import { use_account } from '../../src/composables/use_account'
 import { assert } from '../../src/lib/assert'
 import { ipc } from '../../src/lib/ipc'
 import { log_warn } from '../../src/lib/log'
 import { checkout_preload, stripe_preload } from '../../src/lib/stripe'
-import { ATTACH_TO, TO_FAKE, deferred_new } from './fixtures'
+import { ATTACH_TO, TO_FAKE, deferred_new, mount_auto_unmount } from './fixtures'
 import type { VueWrapper } from '@vue/test-utils'
 import type { Mock } from 'vitest'
 import type * as stripe_module from '../../src/lib/stripe'
 import type { CheckoutForm, CheckoutPreloaded, TestCard } from '../../src/lib/stripe'
 import type { Account, CheckoutStarted } from '../../src/types'
+import type { Deferred } from './fixtures'
 
 
 vi.mock('../../src/lib/ipc')
@@ -55,7 +56,6 @@ const STARTED = Object.freeze<CheckoutStarted>({
 })
 
 const account_state = use_account()
-const mounted = new Set<VueWrapper>()
 
 
 function button(label: string): HTMLButtonElement {
@@ -76,14 +76,14 @@ function button_labels(selector: string): string[] {
 
     const buttons = document.body.querySelectorAll(`${selector} button`)
 
-    assert(mounted.size > 0)
+    assert(document.body.querySelector('.checkout-view') !== null)
     assert(buttons.length <= 4)
 
     return [...buttons].map((element) => element.textContent.trim())
 }
 
 function form_fake_install(): FormFake {
-    assert(mounted.size === 0)
+    assert(document.body.querySelector('.checkout-view') === null)
     assert(vi.isMockFunction(checkout_preload))
 
     const confirm = vi.fn<() => Promise<string | null>>().mockResolvedValue(null)
@@ -92,9 +92,9 @@ function form_fake_install(): FormFake {
     const form = { amount: 10, confirm, confirm_test: null, currency: 'cad', destroy }
     const open = vi.fn<(host: HTMLElement) => Promise<CheckoutForm>>().mockResolvedValue(form)
 
-    vi.mocked(checkout_preload).mockImplementation(async (key, starting) => {
-        return preloaded_fake(key, starting, open)
-    })
+    vi.mocked(checkout_preload).mockImplementation(
+        async (key, starting) => preloaded_fake(key, starting, open),
+    )
 
     return { confirm, confirm_test, destroy, form, open }
 }
@@ -117,7 +117,7 @@ function host_of_call(fake: FormFake, index: number): unknown {
 
 async function pack_choose(hours: number): Promise<void> {
     assert(Number.isSafeInteger(hours))
-    assert(mounted.size > 0)
+    assert(document.body.querySelector('.checkout-view') !== null)
 
     button(`Buy ${String(hours)} hours`).click()
     await flushPromises()
@@ -125,7 +125,7 @@ async function pack_choose(hours: number): Promise<void> {
 
 async function pack_consider(hours: number): Promise<void> {
     assert(Number.isSafeInteger(hours))
-    assert(mounted.size > 0)
+    assert(document.body.querySelector('.checkout-view') !== null)
 
     const focused = new FocusEvent('focusin', { bubbles: true })
 
@@ -138,11 +138,9 @@ async function pack_consider(hours: number): Promise<void> {
 
 async function page_mount(): Promise<VueWrapper> {
     assert(account_state.status.value.signed_in)
-    assert(mounted.size === 0)
+    assert(document.body.querySelector('.checkout-view') === null)
 
-    const wrapper = mount(CheckoutView, { [ATTACH_TO]: document.body })
-
-    mounted.add(wrapper)
+    const wrapper = mount_auto_unmount(CheckoutView, { [ATTACH_TO]: document.body })
 
     await flushPromises()
 
@@ -162,30 +160,47 @@ async function preloaded_fake(
     return { open, session_id: started.session_id }
 }
 
+async function restart_abandoned(): Promise<Deferred<Account | null>> {
+    assert(document.body.querySelector('.checkout-view') === null)
+    assert(vi.isMockFunction(ipc.account_get))
+
+    const reloaded = deferred_new<Account | null>()
+
+    vi.mocked(ipc.account_checkout_start).mockRejectedValueOnce(new Error('api error: refused'))
+    vi.mocked(ipc.account_get).mockReturnValueOnce(reloaded.promise)
+
+    await page_mount()
+    await pack_choose(50)
+
+    button('Try again').click()
+    await flushPromises()
+    button('All packs').click()
+    await flushPromises()
+
+    return reloaded
+}
+
 function text_of(selector: string): string {
     assert(selector.length > 0)
 
     const element = document.body.querySelector(selector)
 
-    assert(mounted.size > 0)
+    assert(document.body.querySelector('.checkout-view') !== null)
     assert(element !== null)
 
     return element.textContent
 }
 
 beforeEach(() => {
+    onTestFinished(() => {
+        vi.useRealTimers()
+    })
+
     vi.resetAllMocks()
     account_state.account.value = structuredClone(ACCOUNT)
     account_state.status.value = { billing: true, signed_in: true }
     vi.mocked(ipc.account_checkout_start).mockResolvedValue(STARTED)
     vi.mocked(ipc.account_get).mockResolvedValue(ACCOUNT)
-})
-
-afterEach(() => {
-    for (const wrapper of mounted) wrapper.unmount()
-
-    mounted.clear()
-    vi.useRealTimers()
 })
 
 describe('CheckoutView packs', () => {
@@ -605,6 +620,94 @@ describe('CheckoutView when something fails', () => {
     })
 })
 
+describe('CheckoutView when the account reload from Try again lands late', () => {
+    it('keeps the card form that is open', async () => {
+        const fake = form_fake_install()
+        const reloaded = await restart_abandoned()
+
+        await pack_choose(50)
+
+        expect(fake.open).toHaveBeenCalledTimes(1)
+
+        reloaded.resolve(ACCOUNT)
+        await flushPromises()
+
+        expect(fake.open).toHaveBeenCalledTimes(1)
+        expect(fake.destroy).not.toHaveBeenCalled()
+        expect(ipc.account_checkout_start).toHaveBeenCalledTimes(2)
+        expect(button('Pay $10.00').disabled).toBe(false)
+    })
+
+    it('lets a payment that is confirming finish', async () => {
+        const fake = form_fake_install()
+        const confirmed = deferred_new<string | null>()
+        const credited = { account: { ...ACCOUNT, balance_seconds: 185_400 }, paid: true }
+
+        fake.confirm.mockReturnValue(confirmed.promise)
+        vi.mocked(ipc.account_checkout_finish).mockResolvedValue(credited)
+
+        const reloaded = await restart_abandoned()
+
+        await pack_choose(50)
+
+        button('Pay $10.00').click()
+        await flushPromises()
+        reloaded.resolve(ACCOUNT)
+        await flushPromises()
+        confirmed.resolve(null)
+        await flushPromises()
+
+        expect(fake.open).toHaveBeenCalledTimes(1)
+        expect(ipc.account_checkout_start).toHaveBeenCalledTimes(2)
+        expect(text_of('.checkout-settled')).toContain('You now have 51.5 hours of transcription.')
+    })
+
+    it('stays on the receipt after a payment', async () => {
+        const fake = form_fake_install()
+        const credited = { account: { ...ACCOUNT, balance_seconds: 185_400 }, paid: true }
+
+        vi.mocked(ipc.account_checkout_finish).mockResolvedValue(credited)
+
+        const reloaded = await restart_abandoned()
+
+        await pack_choose(50)
+
+        expect(fake.open).toHaveBeenCalledTimes(1)
+
+        button('Pay $10.00').click()
+        await flushPromises()
+        reloaded.resolve(credited.account)
+        await flushPromises()
+
+        expect(text_of('.checkout-settled')).toContain('Payment received')
+        expect(fake.open).toHaveBeenCalledTimes(1)
+        expect(ipc.account_checkout_start).toHaveBeenCalledTimes(2)
+    })
+})
+
+describe('CheckoutView when the reload from Try again lands after the payment', () => {
+    it('keeps the credited balance rather than the account from before the payment', async () => {
+        const fake = form_fake_install()
+        const credited = { account: { ...ACCOUNT, balance_seconds: 185_400 }, paid: true }
+
+        vi.mocked(ipc.account_checkout_finish).mockResolvedValue(credited)
+
+        const reloaded = await restart_abandoned()
+
+        await pack_choose(50)
+
+        expect(fake.open).toHaveBeenCalledTimes(1)
+
+        button('Pay $10.00').click()
+        await flushPromises()
+        reloaded.resolve(ACCOUNT)
+        await flushPromises()
+
+        expect(text_of('.checkout-settled')).toContain('You now have 51.5 hours of transcription.')
+        expect(account_state.balance_text.value).toBe('51.5 hours')
+    })
+})
+
 describe('CheckoutView when the page closes', () => {
     it('destroys a card form that finishes loading after the page closed', async () => {
         const fake = form_fake_install()
@@ -617,7 +720,6 @@ describe('CheckoutView when the page closes', () => {
         await pack_choose(50)
 
         wrapper.unmount()
-        mounted.delete(wrapper)
         opened.resolve(fake.form)
         await flushPromises()
 
@@ -640,7 +742,6 @@ describe('CheckoutView when the page closes', () => {
         button('Pay $10.00').click()
         await flushPromises()
         wrapper.unmount()
-        mounted.delete(wrapper)
 
         expect(fake.destroy).not.toHaveBeenCalled()
 

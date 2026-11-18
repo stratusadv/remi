@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { person_label, person_name_full, use_people } from '../composables/use_people'
+import { assert } from '../lib/assert'
 import MonogramTile from './monogram_tile.vue'
 import PeoplePicker from './people_picker.vue'
 import type { Group, Person } from '../types'
 
 
-const props = defineProps<{
+const properties = defineProps<{
     group: Group | null
 }>()
 
@@ -19,8 +20,8 @@ const HINT_PICKER = 'Tick everyone who belongs to the group. Picking the group o
     + 'step adds all of them at once.'
 
 const { person_by_id } = use_people()
-const name = ref(props.group?.name ?? '')
-const person_ids = ref<string[]>([...(props.group?.person_ids ?? [])])
+const name = ref(properties.group?.name ?? '')
+const person_ids = ref<string[]>([...(properties.group?.person_ids ?? [])])
 const picker_open = ref(false)
 const can_save = computed(() => name.value.trim().length > 0)
 
@@ -29,17 +30,26 @@ const members = computed(() =>
 
 
 function member_remove(id: string): void {
+    assert(person_ids.value.includes(id))
+
     person_ids.value = person_ids.value.filter((selected) => selected !== id)
+
+    assert(!person_ids.value.includes(id))
 }
 
 function save_click(): void {
     if (!can_save.value) return
 
-    emit('save', {
-        id: props.group?.id ?? crypto.randomUUID(),
+    const group: Group = {
+        id: properties.group?.id ?? crypto.randomUUID(),
         name: name.value.trim(),
         person_ids: members.value.map((person) => person.id),
-    })
+    }
+
+    assert(group.id.length > 0)
+    assert(group.person_ids.length <= person_ids.value.length)
+
+    emit('save', group)
 }
 </script>
 

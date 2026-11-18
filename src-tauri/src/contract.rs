@@ -1,11 +1,3 @@
-use crate::cancellation::stream_id_validate;
-use crate::error::{AppError, AppResult};
-use crate::jobs::folders::folder_name_validate;
-use crate::notes::chats::chat_id_validate;
-use crate::workspace::job_id_validate;
-use serde::{Deserialize, Serialize};
-use std::ops::Deref;
-
 macro_rules! text_wrapper {
     ($name:ident) => {
         #[derive(Clone, Debug, Deserialize)]
@@ -22,7 +14,14 @@ macro_rules! text_wrapper {
     };
 }
 
-text_wrapper!(APIKey);
+use crate::cancellation::stream_id_validate;
+use crate::error::{AppError, AppResult};
+use crate::jobs::folders::folder_name_validate;
+use crate::notes::chats::chat_id_validate;
+use crate::workspace::job_id_validate;
+use serde::{Deserialize, Serialize};
+use std::ops::Deref;
+
 text_wrapper!(CheckoutSessionID);
 text_wrapper!(EndpointID);
 text_wrapper!(EngineID);

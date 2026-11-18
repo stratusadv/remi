@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, useTemplateRef, watch } from 'vue'
+import { use_modal_shown } from '../composables/use_modal'
+import { assert } from '../lib/assert'
 import MenuIcon from './menu_icon.vue'
 import type { MenuItem } from '../lib/menu'
 
 
-const props = defineProps<{
+const properties = defineProps<{
     label: string
-    items: MenuItem[]
+    items: readonly MenuItem[]
 }>()
 
 const emit = defineEmits<{
@@ -15,9 +17,10 @@ const emit = defineEmits<{
 
 const POPOVER_GAP_PX = 6
 
+const modal_shown = use_modal_shown()
 const open = ref(false)
-const root_ref = ref<HTMLElement | null>(null)
-const popover_ref = ref<HTMLElement | null>(null)
+const root_element = useTemplateRef<HTMLElement>('root_element')
+const popover_element = useTemplateRef<HTMLElement>('popover_element')
 const popover_top_px = ref(0)
 const popover_right_px = ref(0)
 
@@ -28,23 +31,39 @@ const popover_style = computed(() => ({
 
 
 function close_on_escape(event: KeyboardEvent): void {
+    assert(event.type === 'keydown')
+    assert(event.currentTarget === document)
+    assert(popover_element.value !== null)
+
     if (event.key === 'Escape') open.value = false
 }
 
 function close_on_outside(event: MouseEvent): void {
+    assert(event.type === 'mousedown')
+    assert(event.currentTarget === document)
+    assert(popover_element.value !== null)
+
     if (!(event.target instanceof Node)) return
 
-    const in_trigger = root_ref.value?.contains(event.target) ?? false
-    const in_popover = popover_ref.value?.contains(event.target) ?? false
+    const in_trigger = root_element.value?.contains(event.target) ?? false
+    const in_popover = popover_element.value.contains(event.target)
 
-    if (!in_trigger && !in_popover) open.value = false
+    if (in_trigger) return
+    if (in_popover) return
+
+    open.value = false
 }
 
 function close_on_scroll(): void {
+    assert(popover_element.value !== null)
+
     open.value = false
 }
 
 function listeners_attach(): void {
+    assert(open.value)
+    assert(popover_element.value === null)
+
     document.addEventListener('mousedown', close_on_outside, true)
     document.addEventListener('keydown', close_on_escape, true)
     document.addEventListener('scroll', close_on_scroll, true)
@@ -52,6 +71,8 @@ function listeners_attach(): void {
 }
 
 function listeners_detach(): void {
+    assert(root_element.value !== null)
+
     document.removeEventListener('mousedown', close_on_outside, true)
     document.removeEventListener('keydown', close_on_escape, true)
     document.removeEventListener('scroll', close_on_scroll, true)
@@ -59,18 +80,24 @@ function listeners_detach(): void {
 }
 
 function select(id: string): void {
+    assert(properties.items.some((item) => item.id === id))
+    assert(popover_element.value !== null)
+
     open.value = false
     emit('select', id)
 }
 
 function toggle(): void {
+    assert(properties.items.length > 0)
+    assert(open.value || popover_element.value === null)
+
     if (open.value) {
         open.value = false
 
         return
     }
 
-    const rect = root_ref.value?.getBoundingClientRect()
+    const rect = root_element.value?.getBoundingClientRect()
 
     if (rect === undefined) return
 
@@ -80,6 +107,8 @@ function toggle(): void {
 }
 
 watch(open, (is_open) => {
+    assert(is_open === (popover_element.value === null))
+
     if (is_open) {
         listeners_attach()
 
@@ -89,17 +118,27 @@ watch(open, (is_open) => {
     listeners_detach()
 })
 
+watch(
+    modal_shown,
+    (shown) => {
+        assert(shown === modal_shown.value)
+
+        if (shown) open.value = false
+    },
+    { flush: 'sync' },
+)
+
 onBeforeUnmount(listeners_detach)
 </script>
 
 <template>
-    <div ref="root_ref" class="menu shrink-0">
+    <div ref="root_element" class="menu shrink-0">
         <button
             type="button"
             class="menu-icon-btn"
             aria-haspopup="menu"
             :aria-expanded="open"
-            :aria-label="`Options for ${props.label}`"
+            :aria-label="`Options for ${properties.label}`"
             title="Options"
             @click.stop="toggle"
         >
@@ -112,15 +151,16 @@ onBeforeUnmount(listeners_detach)
         <Teleport to="body">
             <ul
                 v-if="open"
-                ref="popover_ref"
+                ref="popover_element"
                 class="menu-popover menu-popover-fixed"
                 role="menu"
                 :style="popover_style"
             >
-                <li v-for="item in props.items" :key="item.id">
+                <li v-for="item in properties.items" :key="item.id">
                     <button
                         type="button"
-                        :class="['menu-item', item.danger ? 'menu-item-danger' : '']"
+                        class="menu-item"
+                        :class="item.danger ? 'menu-item-danger' : ''"
                         role="menuitem"
                         @click.stop="select(item.id)"
                     >

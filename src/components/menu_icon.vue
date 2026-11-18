@@ -3,7 +3,7 @@ import { MENU_ICON_PATHS } from '../lib/menu'
 import type { MenuIconName } from '../lib/menu'
 
 
-const props = defineProps<{ name: MenuIconName }>()
+const properties = defineProps<{ name: MenuIconName }>()
 </script>
 
 <template>
@@ -18,7 +18,7 @@ const props = defineProps<{ name: MenuIconName }>()
         aria-hidden="true"
     >
         <path
-            v-for="(path_data, index) in MENU_ICON_PATHS[props.name]"
+            v-for="(path_data, index) in MENU_ICON_PATHS[properties.name]"
             :key="index"
             :d="path_data"
         />

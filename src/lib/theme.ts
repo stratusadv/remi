@@ -2,33 +2,17 @@ import { assert } from './assert'
 import type { PaletteChoice, ThemeChoice } from '../types'
 
 
-export type ThemeEffective = 'light' | 'dark'
+export type ModeEffective = 'light' | 'dark'
 
-export const PALETTE_DEFAULT: PaletteChoice = 'cubist'
+export const MODE_STORAGE_KEY = 'remi.mode'
+export const PALETTE_STORAGE_KEY = 'remi.palette'
+const STORAGE_KEY_PREFIX = 'remi.'
 const SYSTEM_MEDIA_QUERY = '(prefers-color-scheme: light)'
+export const THEME_DEFAULT: ThemeChoice = 'cubism'
 export const THEME_STORAGE_KEY = 'remi.theme'
 
 
-export function palette_apply_to_html(palette: PaletteChoice): void {
-    assert(typeof palette === 'string')
-    assert(PALETTE_DEFAULT.length > 0)
-
-    if (typeof document === 'undefined') return
-
-    document.documentElement.dataset['palette'] = palette
-}
-
-export function system_media_query(): MediaQueryList | null {
-    if (typeof window === 'undefined') return null
-    if (typeof window.matchMedia !== 'function') return null
-
-    assert(SYSTEM_MEDIA_QUERY.length > 0)
-    assert(SYSTEM_MEDIA_QUERY.startsWith('('))
-
-    return window.matchMedia(SYSTEM_MEDIA_QUERY)
-}
-
-export function theme_apply_to_html(effective: ThemeEffective): void {
+export function mode_apply_to_html(effective: ModeEffective): void {
     assert(['dark', 'light'].includes(effective))
     assert(effective.length > 0)
 
@@ -36,12 +20,12 @@ export function theme_apply_to_html(effective: ThemeEffective): void {
 
     const root = document.documentElement
 
-    root.classList.toggle('theme-light', effective === 'light')
-    root.classList.toggle('theme-dark', effective === 'dark')
+    root.classList.toggle('mode-light', effective === 'light')
+    root.classList.toggle('mode-dark', effective === 'dark')
     root.style.colorScheme = effective
 }
 
-export function theme_resolve(choice: ThemeChoice | null): ThemeEffective {
+export function mode_resolve(choice: string | null): ModeEffective {
     assert(choice === null || typeof choice === 'string')
 
     if (choice === 'light') return 'light'
@@ -56,36 +40,54 @@ export function theme_resolve(choice: ThemeChoice | null): ThemeEffective {
     return query.matches ? 'light' : 'dark'
 }
 
-export function theme_storage_read(): ThemeChoice | null {
-    assert(THEME_STORAGE_KEY.length > 0)
+export function palette_apply_to_html(palette: PaletteChoice): void {
+    assert(typeof palette === 'string')
+    assert(palette.length > 0)
+
+    if (typeof document === 'undefined') return
+
+    document.documentElement.dataset['palette'] = palette
+}
+
+export function storage_read(key: string): string | null {
+    assert(key.startsWith(STORAGE_KEY_PREFIX))
+    assert(key.length > STORAGE_KEY_PREFIX.length)
 
     if (typeof localStorage === 'undefined') return null
 
-    const stored = localStorage.getItem(THEME_STORAGE_KEY)
-
-    assert(stored === null || typeof stored === 'string')
-
-    if (stored === 'light') return 'light'
-    if (stored === 'dark') return 'dark'
-
-    return null
+    return localStorage.getItem(key)
 }
 
-export function theme_storage_write(choice: ThemeChoice | null): void {
-    assert(choice === null || typeof choice === 'string')
-    assert(THEME_STORAGE_KEY.length > 0)
+export function storage_write(key: string, value: string | null): void {
+    assert(key.startsWith(STORAGE_KEY_PREFIX))
+    assert(value === null || typeof value === 'string')
 
     if (typeof localStorage === 'undefined') return
 
-    switch (choice) {
-        case 'light':
-        case 'dark':
-            localStorage.setItem(THEME_STORAGE_KEY, choice)
+    if (value === null) {
+        localStorage.removeItem(key)
 
-            return
-        case 'system':
-        case null:
-        default:
-            localStorage.removeItem(THEME_STORAGE_KEY)
+        return
     }
+
+    localStorage.setItem(key, value)
+}
+
+export function system_media_query(): MediaQueryList | null {
+    if (typeof window === 'undefined') return null
+    if (typeof window.matchMedia !== 'function') return null
+
+    assert(SYSTEM_MEDIA_QUERY.length > 0)
+    assert(SYSTEM_MEDIA_QUERY.startsWith('('))
+
+    return window.matchMedia(SYSTEM_MEDIA_QUERY)
+}
+
+export function theme_apply_to_html(theme: ThemeChoice): void {
+    assert(typeof theme === 'string')
+    assert(theme.length > 0)
+
+    if (typeof document === 'undefined') return
+
+    document.documentElement.dataset['theme'] = theme
 }

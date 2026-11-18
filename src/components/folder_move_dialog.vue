@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
 import { use_folders } from '../composables/use_folders'
+import { use_modal } from '../composables/use_modal'
 import { assert } from '../lib/assert'
 import { error_dialog_show } from '../lib/errors'
 import { folder_key } from '../lib/folders'
 import { job_title } from '../lib/job_status'
+import { transition_leave_inert } from '../lib/transition'
 import SidebarIcon from './sidebar_icon.vue'
 import type { FolderName, JobMeta } from '../types'
 
@@ -13,17 +15,23 @@ const job = defineModel<JobMeta | null>('job', { required: true })
 
 const { folder_create, folder_move, folders } = use_folders()
 const busy = ref(false)
-const list_ref = ref<HTMLElement | null>(null)
+const list_element = useTemplateRef<HTMLElement>('list_element')
 const key_current = computed(() => folder_key(job.value?.project ?? ''))
+const covered = use_modal('dialog', () => job.value !== null)
 
 
 watch(job, (shown) => {
+    assert(shown === null || shown.id.length > 0)
+
     if (shown === null) return
 
     void nextTick(option_focus)
 })
 
 async function choose(name: FolderName | null): Promise<void> {
+    assert(name === null || name.length > 0)
+    assert(name === null || name.trim() === name)
+
     const target = job.value
 
     if (target === null) return
@@ -37,7 +45,7 @@ async function choose(name: FolderName | null): Promise<void> {
 
     busy.value = true
 
-    await move_persist(target, name).finally(() => {
+    return move_persist(target, name).finally(() => {
         busy.value = false
     })
 }
@@ -56,58 +64,66 @@ async function create(): Promise<void> {
     if (target === null) return
     if (busy.value) return
 
+    assert(target.id.length > 0)
+
     job.value = null
 
-    try {
-        const created = await folder_create()
+    return folder_create()
+        .then(async (created) => {
+            if (created === null) return
 
-        if (created === null) return
-
-        await folder_move(target, created)
-    } catch (error) {
-        await error_dialog_show(error)
-    }
+            await folder_move(target, created)
+        })
+        .catch(error_dialog_show)
 }
 
 function current(name: FolderName | null): boolean {
     assert(name === null || name.length > 0)
+    assert(name === null || folders.value.includes(name))
 
     return folder_key(name ?? '') === key_current.value
 }
 
 async function move_persist(target: JobMeta, name: FolderName | null): Promise<void> {
     assert(target.id.length > 0)
+    assert(name === null || name.length > 0)
+    assert(busy.value)
+    assert(folder_key(name ?? '') !== key_current.value)
 
-    try {
-        await folder_move(target, name)
-
-        job.value = null
-    } catch (error) {
-        await error_dialog_show(error)
-    }
+    return folder_move(target, name)
+        .then(() => {
+            job.value = null
+        })
+        .catch(error_dialog_show)
 }
 
 function option_focus(): void {
-    const list = list_ref.value
+    assert(job.value !== null)
+
+    const list = list_element.value
 
     if (list === null) return
 
     const chosen = list.querySelector<HTMLElement>('[aria-current="true"]')
     const target = chosen ?? list.querySelector<HTMLElement>('button')
 
-    target?.focus()
+    assert(target !== null)
+
+    target.focus()
 }
 </script>
 
 <template>
     <Teleport to="body">
-        <Transition name="app-dialog">
+        <Transition name="app-dialog" @before-leave="transition_leave_inert">
             <div
                 v-if="job"
                 class="app-dialog-backdrop"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="folder-move-title"
+                tabindex="-1"
+                :inert="covered"
                 @mousedown.left.self.prevent="close"
                 @keydown.esc="close"
             >
@@ -134,7 +150,7 @@ function option_focus(): void {
                     <h3 id="folder-move-title" class="app-dialog-title">Move to folder</h3>
                     <p class="folder-move-subject">{{ job_title(job) }}</p>
 
-                    <ul ref="list_ref" class="folder-move-list" aria-label="Folders">
+                    <ul ref="list_element" class="folder-move-list" aria-label="Folders">
                         <li>
                             <button
                                 type="button"
@@ -212,6 +228,10 @@ function option_focus(): void {
 </template>
 
 <style scoped>
+.app-dialog-backdrop:focus {
+    outline: none;
+}
+
 .folder-move-subject {
     margin: 0;
     overflow: hidden;
@@ -223,6 +243,7 @@ function option_focus(): void {
 
 .folder-move-list {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.125rem;
     max-height: 18rem;
     margin: 1rem 0 0;

@@ -23,7 +23,7 @@ from app.funnel import mail
 from app.funnel.choices import CampaignChoices
 from app.funnel.constants import (
     FUNNEL_PAGE_ORIGIN,
-    FUNNEL_PAGE_URL_GENERAL,
+    FUNNEL_PAGE_URL_GENERAL_DOWNLOAD,
     FUNNEL_PAGE_URL_WIB_DOWNLOAD,
 )
 from app.funnel.promo import FUNNEL_OFFER_UNSET_MESSAGE
@@ -56,6 +56,7 @@ CODE_GROUP = '[23456789ABCDEFGHJKMNPQRSTVWXYZ]{4}'
 CODE_PATTERN = re.compile(f'WIB-{CODE_GROUP}-{CODE_GROUP}')
 LOGGER_MAIL = 'app.funnel.mail'
 LOGGER_PROMO = 'app.funnel.promo'
+SENDGRID_ERROR_KINDS = ('refused', 'timed_out', 'unreachable')
 URL_PATTERN = re.compile(r'https://\S+')
 WIB_HOURS = 50
 
@@ -66,6 +67,8 @@ def wib_offer() -> PromoCode:
 
 
 def _code_in(request: SendgridRequest) -> str:
+    assert 'content' in request.payload
+
     found = CODE_PATTERN.search(_content(request, 'text/plain'))
 
     if found is None:
@@ -76,6 +79,9 @@ def _code_in(request: SendgridRequest) -> str:
 
 
 def _content(request: SendgridRequest, kind: str) -> str:
+    assert 'content' in request.payload
+    assert kind in ('text/html', 'text/plain')
+
     content = request.payload['content']
 
     if not isinstance(content, list):
@@ -92,16 +98,23 @@ def _content(request: SendgridRequest, kind: str) -> str:
 
 
 def _download_url(code: str) -> str:
-    query = {'code': code, 'utm_source': 'email'}
+    assert CODE_PATTERN.fullmatch(code)
 
+    query = {'code': code, 'utm_source': 'email'}
     return f'{FUNNEL_PAGE_URL_WIB_DOWNLOAD}?{urlencode(query)}'
 
 
 def _email_request(client: Client, fields: dict[str, str]) -> _MonkeyPatchedWSGIResponse:
+    assert fields.keys() <= {'campaign', 'email', 'name_first', 'name_last'}
+
     return client.post(FUNNEL_EMAIL_PATH, data=urlencode(fields), content_type=BEACON_CONTENT_TYPE)
 
 
 def _sendgrid_error(kind: str) -> OSError:
+    if kind not in SENDGRID_ERROR_KINDS:
+        message = f'no SendGrid error is named {kind!r}'
+        raise ValueError(message)
+
     if kind == 'refused':
         body = io.BytesIO(b'{"errors": [{"message": "The provided authorization is invalid"}]}')
         return urllib.error.HTTPError(SENDGRID_URL, 401, 'Unauthorized', HTTPMessage(), body)
@@ -109,12 +122,8 @@ def _sendgrid_error(kind: str) -> OSError:
     if kind == 'timed_out':
         return TimeoutError('timed out')
 
-    if kind == 'unreachable':
-        reason = ConnectionRefusedError(111, 'Connection refused')
-        return urllib.error.URLError(reason)
-
-    message = f'no SendGrid error is named {kind!r}'
-    raise ValueError(message)
+    reason = ConnectionRefusedError(111, 'Connection refused')
+    return urllib.error.URLError(reason)
 
 
 def test_email_carries_a_personal_code_and_the_download_page_to_sendgrid_within_its_timeout(
@@ -165,14 +174,15 @@ def test_email_for_each_campaign_links_its_own_page_on_the_landing_page_origin(
 ) -> None:
     for campaign in CampaignChoices.values:
         fields = {'campaign': campaign, 'email': f'{campaign}@example.com'}
+        response = _email_request(client, fields)
 
-        assert _email_request(client, fields).status_code == 204, campaign
+        assert response.status_code == 204, campaign
 
     bodies = [_content(request, 'text/plain') for request in sendgrid_fake.requests]
     pages = [_content(request, 'text/html') for request in sendgrid_fake.requests]
     links = [URL_PATTERN.findall(body) for body in bodies]
     personal = PromoCode.objects.issued().get()
-    general = f'{FUNNEL_PAGE_URL_GENERAL}?utm_source=email'
+    general = f'{FUNNEL_PAGE_URL_GENERAL_DOWNLOAD}?utm_source=email'
     wib = _download_url(personal.code)
 
     assert sendgrid_fake.recipients() == ['general@example.com', 'wib@example.com']
@@ -193,23 +203,71 @@ def test_email_sends_one_code_per_address_that_redeems_once_for_the_shared_hours
 ) -> None:
     fields_first = {'campaign': 'wib', 'email': ADDRESS}
     fields_again = {'campaign': 'wib', 'email': ' AVERY@example.com'}
+    sent_first = _email_request(client, fields_first)
 
-    assert _email_request(client, fields_first).status_code == 204
+    assert sent_first.status_code == 204
 
     cache.clear()
 
-    assert _email_request(client, fields_again).status_code == 204
+    sent_again = _email_request(client, fields_again)
+
+    assert sent_again.status_code == 204
 
     codes = [_code_in(request) for request in sendgrid_fake.requests]
     token = account_create(client, email='work@example.com', promo_code=codes[0].lower())
-    body_reused = {'email': 'morgan@example.com', 'name': 'Morgan', 'promo_code': codes[0]}
+
+    body_reused = {
+        'email': 'morgan@example.com',
+        'name': 'Morgan',
+        'promo_code': codes[0],
+        'region': 'CA-AB',
+    }
+
     reused = api_post(client, ACCOUNT_PATH, body=body_reused)
+    balance_seconds = account_get(client, token)['balance_seconds']
 
     assert codes == [codes[0], codes[0]]
     assert PromoCode.objects.issued().count() == 1
-    assert account_get(client, token)['balance_seconds'] == WIB_HOURS * SECONDS_PER_HOUR
+    assert balance_seconds == WIB_HOURS * SECONDS_PER_HOUR
     assert reused.status_code == 400
     assert 'fully redeemed' in reused.json()['error']['message']
+
+
+def test_email_keeps_the_names_on_the_code_and_states_the_hours_the_code_carries(
+    client: Client,
+    sendgrid_fake: SendgridFake,
+    wib_offer: PromoCode,
+) -> None:
+    wib_offer.services.processor.early_save(early_codes_max=1, early_hours=75)
+
+    fields_early = {
+        'campaign': 'wib',
+        'email': ADDRESS,
+        'name_first': '  Avery ',
+        'name_last': 'Lee  ',
+    }
+
+    fields_later = {'campaign': 'wib', 'email': 'morgan@example.com'}
+    fields_long = {'campaign': 'wib', 'email': 'riley@example.com', 'name_last': 'N' * 201}
+    early = _email_request(client, fields_early)
+    later = _email_request(client, fields_later)
+    refused = _email_request(client, fields_long)
+
+    assert early.status_code == 204
+    assert later.status_code == 204
+    assert refused.status_code == 400
+    assert sendgrid_fake.recipients() == [ADDRESS, 'morgan@example.com']
+
+    codes = [_code_in(request) for request in sendgrid_fake.requests]
+    bodies = [_content(request, 'text/plain') for request in sendgrid_fake.requests]
+    promos = [PromoCode.objects.get(code=code) for code in codes]
+    names = [(promo.name_first, promo.name_last) for promo in promos]
+
+    assert [promo.hours for promo in promos] == [75, WIB_HOURS]
+    assert names == [('Avery', 'Lee'), ('', '')]
+
+    for promo, body in zip(promos, bodies, strict=True):
+        assert f'It covers {promo.hours} hours of free meeting notes.' in body
 
 
 def test_email_without_the_shared_offer_is_unavailable_and_the_address_can_retry(
@@ -268,13 +326,15 @@ def test_email_refuses_a_malformed_address_or_an_undeclared_campaign(
     assert PromoCode.objects.issued().get().email == address_longest
 
 
-@pytest.mark.parametrize('kind', ['refused', 'timed_out', 'unreachable'])
+@pytest.mark.parametrize('kind', SENDGRID_ERROR_KINDS)
 def test_email_sendgrid_does_not_confirm_is_unavailable_and_the_address_can_retry(
     caplog: pytest.LogCaptureFixture,
     client: Client,
     kind: str,
     sendgrid_fake: SendgridFake,
 ) -> None:
+    assert kind in SENDGRID_ERROR_KINDS
+
     caplog.set_level(logging.ERROR, logger=LOGGER_MAIL)
 
     fields = {'campaign': 'wib', 'email': ADDRESS}
@@ -308,8 +368,9 @@ def test_email_rate_counts_apart_from_beacons_and_stops_at_its_own_limit(
 
     for index in range(rate_email):
         fields = {'campaign': 'wib', 'email': f'person{index}@example.com'}
+        response = _email_request(client, fields)
 
-        assert _email_request(client, fields).status_code == 204, index
+        assert response.status_code == 204, index
 
     fields_over = {'campaign': 'wib', 'email': 'over@example.com'}
     throttled = _email_request(client, fields_over)
@@ -330,8 +391,9 @@ def test_email_stops_at_the_daily_maximum_and_resumes_the_next_day(
 
     for address in ('first@example.com', 'second@example.com'):
         fields = {'campaign': 'wib', 'email': address}
+        response = _email_request(client, fields)
 
-        assert _email_request(client, fields).status_code == 204, address
+        assert response.status_code == 204, address
 
     fields_third = {'campaign': 'wib', 'email': 'third@example.com'}
     refused = _email_request(client, fields_third)
@@ -354,8 +416,9 @@ def test_email_to_an_address_already_sent_this_hour_sends_nothing_more(
 ) -> None:
     for address in (ADDRESS, ' AVERY@example.com', 'morgan@example.com', ADDRESS):
         fields = {'campaign': 'wib', 'email': address}
+        response = _email_request(client, fields)
 
-        assert _email_request(client, fields).status_code == 204, address
+        assert response.status_code == 204, address
 
     assert sendgrid_fake.recipients() == [ADDRESS, 'morgan@example.com']
     assert PromoCode.objects.issued().count() == 2
@@ -386,7 +449,7 @@ def test_funnel_answers_carry_the_landing_page_origin_and_other_answers_do_not(
     fields_failed = {'campaign': 'wib', 'email': 'morgan@example.com'}
     fields_visit = {'campaign': 'wib', 'source': 'qr'}
     body_visit = urlencode(fields_visit)
-    body_account = {'email': ADDRESS, 'name': 'Avery', 'promo_code': ''}
+    body_account = {'email': ADDRESS, 'name': 'Avery', 'promo_code': '', 'region': 'CA-AB'}
 
     sent = _email_request(client, fields_sent)
     invalid = _email_request(client, fields_invalid)

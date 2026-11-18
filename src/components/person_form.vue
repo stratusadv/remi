@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { assert } from '../lib/assert'
 import type { Person } from '../types'
 
 
-const props = defineProps<{
+const properties = defineProps<{
     person: Person | null
 }>()
 
@@ -15,23 +16,28 @@ const emit = defineEmits<{
 const PLACEHOLDER_DESCRIPTION = 'Say what the AI should know: what they look after, how they '
     + 'relate to the project, and how they usually come up in meetings.'
 
-const name_first = ref(props.person?.name_first ?? '')
-const name_last = ref(props.person?.name_last ?? '')
-const role = ref(props.person?.role ?? '')
-const description = ref(props.person?.description ?? '')
+const name_first = ref(properties.person?.name_first ?? '')
+const name_last = ref(properties.person?.name_last ?? '')
+const role = ref(properties.person?.role ?? '')
+const description = ref(properties.person?.description ?? '')
 const can_save = computed(() => name_first.value.trim().length > 0)
 
 
 function save_click(): void {
     if (!can_save.value) return
 
-    emit('save', {
-        id: props.person?.id ?? crypto.randomUUID(),
+    const person: Person = {
+        id: properties.person?.id ?? crypto.randomUUID(),
         name_first: name_first.value.trim(),
         name_last: name_last.value.trim(),
         role: role.value.trim(),
         description: description.value.trim(),
-    })
+    }
+
+    assert(person.id.length > 0)
+    assert(person.name_first.length > 0)
+
+    emit('save', person)
 }
 </script>
 

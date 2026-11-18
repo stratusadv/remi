@@ -2,7 +2,6 @@ import { computed, ref, shallowRef } from 'vue'
 import { getVersion } from '@tauri-apps/api/app'
 import { check } from '@tauri-apps/plugin-updater'
 import { assert, unreachable } from '../lib/assert'
-import { error_text_extract } from '../lib/errors'
 import { ipc } from '../lib/ipc'
 import { log_warn } from '../lib/log'
 import { use_dialog } from './use_dialog'
@@ -55,7 +54,7 @@ const status_text = computed(() => {
 
 
 export function use_update(): typeof api {
-    assert(Object.isFrozen(api))
+    assert(phase.value !== 'error' || error_message.value !== null)
 
     download_state_assert()
 
@@ -145,10 +144,10 @@ async function update_check(): Promise<boolean> {
 }
 
 function update_check_failed(error: unknown): boolean {
+    log_warn('[update] the update check failed', error)
     phase_set('error')
 
-    error_message.value = 'The update check failed. Check your internet connection '
-        + `and try again. (${error_text_extract(error)})`
+    error_message.value = 'The update check failed. Check your internet connection and try again.'
 
     assert(error_message.value.length > 0)
     assert(phase.value === 'error')
@@ -235,10 +234,11 @@ async function update_install(): Promise<void> {
 async function update_install_failed(error: unknown): Promise<void> {
     const { message: dialog_message } = use_dialog()
 
+    log_warn('[update] the update did not install', error)
     phase_set('error')
 
-    const failure = 'The update could not be installed. remi keeps working as '
-        + `it is; try again later from Settings. (${error_text_extract(error)})`
+    const failure = 'The update could not be installed. remi keeps working as it is; try again '
+        + 'later from Settings.'
 
     error_message.value = failure
 

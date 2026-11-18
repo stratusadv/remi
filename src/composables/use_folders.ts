@@ -1,6 +1,13 @@
 import { computed, ref, watch } from 'vue'
 import { assert } from '../lib/assert'
-import { FOLDERS_LISTED_MAX, folder_key, folder_name_problem, folders_merge } from '../lib/folders'
+import { error_shown } from '../lib/errors'
+import {
+    FOLDERS_LISTED_MAX,
+    FOLDERS_SAVED_MAX,
+    folder_key,
+    folder_name_problem,
+    folders_merge,
+} from '../lib/folders'
 import { ipc } from '../lib/ipc'
 import { MENU_ITEM_ASK_FOLDER, MENU_ITEM_DELETE, MENU_ITEM_RENAME } from '../lib/menu'
 import { use_ask } from './use_ask'
@@ -42,7 +49,7 @@ const api = Object.freeze({
 watch(folders, folder_current_check)
 
 export function use_folders(): typeof api {
-    assert(Object.isFrozen(api))
+    assert(folders_saved.value.length <= FOLDERS_SAVED_MAX)
     assert(folders_saved.value.every((folder) => folder.length > 0))
 
     return api
@@ -97,7 +104,14 @@ async function folder_create(): Promise<FolderName | null> {
     }
 
     await ipc.folder_create(name)
-    await refresh()
+
+    error_message.value = null
+
+    await folders_load().catch((error: unknown) => {
+        error_message.value = error_shown(error)
+
+        throw error
+    })
 
     assert(name.length > 0)
     assert(folders.value.some((folder) => folder_key(folder) === folder_key(name)))
@@ -240,17 +254,21 @@ async function folder_rename(name: FolderName): Promise<void> {
     })
 }
 
-async function refresh(): Promise<void> {
-    error_message.value = null
-
-    try {
-        const listed = await ipc.folders_list()
-
+async function folders_load(): Promise<void> {
+    return ipc.folders_list().then((listed) => {
+        assert(Array.isArray(listed))
+        assert(listed.length <= FOLDERS_SAVED_MAX)
         assert(listed.every((folder) => folder.length > 0))
         assert(listed.every((folder) => folder.trim() === folder))
 
         folders_saved.value = listed
-    } catch (error) {
-        error_message.value = String(error)
-    }
+    })
+}
+
+async function refresh(): Promise<void> {
+    error_message.value = null
+
+    return folders_load().catch((error: unknown) => {
+        error_message.value = error_shown(error)
+    })
 }

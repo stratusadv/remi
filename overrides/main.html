@@ -25,7 +25,10 @@
             for (const input of document.querySelectorAll("[data-md-color-media]")) {
                 if (matchMedia(input.getAttribute("data-md-color-media")).matches) {
                     for (const key of ["media", "scheme", "primary", "accent"]) {
-                        document.body.setAttribute(`data-md-color-${key}`, input.getAttribute(`data-md-color-${key}`));
+                        document.body.setAttribute(
+                            `data-md-color-${key}`,
+                            input.getAttribute(`data-md-color-${key}`),
+                        );
                     }
 
                     break;
@@ -37,61 +40,95 @@
 
 {% block scripts %}
     <script>
-        if (location.hash && history.state === null) {
+        if (location.hash) {
+            if (history.state === null) {
+                anchor_watch(location.href);
+            }
+        }
+
+        if (!CSS.supports("timeline-scope: --footer")) {
+            sidebar_watch(document.querySelector(".md-footer"));
+        }
+
+        if (document.documentElement.classList.contains("loading")) {
+            document.documentElement.getBoundingClientRect();
+
+            const faces = [...document.fonts].filter((face) => face.status === "loading");
+
+            Promise.allSettled(faces.map((face) => face.loaded)).then(
+                () => document.documentElement.classList.remove("loading"),
+            );
+
+            setTimeout(() => document.documentElement.classList.remove("loading"), 100);
+        }
+
+        function anchor_restore(controller, href) {
+            assert(controller instanceof AbortController, "the anchor restore needs a controller");
+            assert(href.length > 0, "the anchor restore needs the address it restores");
+
+            if (controller.signal.aborted) return;
+            if (location.href !== href) return;
+
+            scrollTo(scrollX, 0);
+            void location.replace(href);
+        }
+
+        function anchor_watch(href) {
+            assert(href.length > 0, "the anchor watch needs the address it restores");
+            assert(location.hash.length > 0, "the anchor watch needs an address with a fragment");
+
             const controller = new AbortController();
-            const href = location.href;
-
-            const anchor = () => {
-                if (!controller.signal.aborted && location.href === href) {
-                    scrollTo(scrollX, 0);
-                    location.replace(href);
-                }
-            };
-
-            const observer = new ResizeObserver(anchor);
+            const observer = new ResizeObserver(() => anchor_restore(controller, href));
 
             for (const type of ["keydown", "load", "pointerdown", "wheel"]) {
                 addEventListener(type, () => controller.abort(), {signal: controller.signal});
             }
 
-            anchor();
+            anchor_restore(controller, href);
             observer.observe(document.body);
             controller.signal.addEventListener("abort", () => observer.disconnect());
         }
 
-        if (!CSS.supports("timeline-scope: --footer")) {
+        function assert(condition, message) {
+            console.assert(typeof condition === "boolean", "assert expects a boolean condition");
+            console.assert(typeof message === "string", "assert expects a message");
+
+            if (condition) return;
+
+            throw new Error(message);
+        }
+
+        function sidebar_track(footer) {
+            assert(footer instanceof HTMLElement, "the sidebar track needs the footer");
+
+            const footer_top = footer.getBoundingClientRect().top;
+            const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+
+            assert(rem > 0, "the root font size is positive");
+
+            for (const sidebar of document.querySelectorAll(".md-sidebar")) {
+                sidebar.style.setProperty("--sidebar-lift", `${Math.min(scrollY, 1.5 * rem)}px`);
+                sidebar.style.setProperty(
+                    "--sidebar-shift",
+                    `${Math.max(0, innerHeight - footer_top)}px`,
+                );
+            }
+        }
+
+        function sidebar_watch(footer) {
+            assert(footer instanceof HTMLElement, "the sidebar watch needs the footer");
+            assert(document.body instanceof HTMLElement, "the sidebar watch needs the body");
+
             const controller = new AbortController();
+            const observer = new ResizeObserver(() => sidebar_track(footer));
 
-            const track = () => {
-                const footer = document.querySelector(".md-footer").getBoundingClientRect();
-                const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
-
-                for (const sidebar of document.querySelectorAll(".md-sidebar")) {
-                    sidebar.style.setProperty("--sidebar-lift", `${Math.min(scrollY, 1.5 * rem)}px`);
-                    sidebar.style.setProperty("--sidebar-shift", `${Math.max(0, innerHeight - footer.top)}px`);
-                }
-            };
-
-            const observer = new ResizeObserver(track);
-
-            track();
+            sidebar_track(footer);
             observer.observe(document.body);
-            observer.observe(document.querySelector(".md-footer"));
+            observer.observe(footer);
             controller.signal.addEventListener("abort", () => observer.disconnect());
             addEventListener("DOMContentLoaded", () => controller.abort(), {once: true});
-            addEventListener("resize", track, {signal: controller.signal});
-            addEventListener("scroll", track, {signal: controller.signal});
-        }
-
-        if (document.documentElement.classList.contains("loading")) {
-            const reveal = () => document.documentElement.classList.remove("loading");
-
-            document.documentElement.getBoundingClientRect();
-
-            const faces = [...document.fonts].filter((face) => face.status === "loading");
-
-            Promise.allSettled(faces.map((face) => face.loaded)).then(reveal);
-            setTimeout(reveal, 100);
+            addEventListener("resize", () => sidebar_track(footer), {signal: controller.signal});
+            addEventListener("scroll", () => sidebar_track(footer), {signal: controller.signal});
         }
     </script>
     {{ super() }}

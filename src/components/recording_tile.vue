@@ -12,7 +12,7 @@ import type { MenuItem } from '../lib/menu'
 import type { JobListing, Waveform } from '../types'
 
 
-const props = defineProps<{
+const properties = defineProps<{
     job: JobListing
     title: string
     when: string
@@ -48,8 +48,8 @@ const GLYPH_WORD_WIDTH_MAX = 22
 const UINT32_SPAN = 4294967296
 
 interface GlyphWord {
-    x: number
-    y: number
+    left: number
+    top: number
     width: number
 }
 
@@ -62,16 +62,20 @@ const { waveform_load } = use_jobs()
 const waveform = ref<Waveform | null>(null)
 const audio_missing = ref(false)
 
-const art_seed = computed(() => hash_fnv(props.job.id))
+const art_seed = computed(() => hash_fnv(properties.job.id))
 const art_hue = computed(() => art_seed.value % ART_HUE_COUNT)
 const art_layout = computed(() => Math.floor(art_seed.value / ART_HUE_COUNT) % ART_LAYOUT_COUNT)
 const wave_bars = computed(() => wave_bars_build(waveform.value?.peaks ?? []))
-const glyph_words = computed(() => glyph_words_build(hash_fnv(props.job.id)))
-const duration_text = computed(() => job_duration_text(props.job))
-const askable = computed(() => job_askable(props.job))
+const glyph_words = computed(() => glyph_words_build(hash_fnv(properties.job.id)))
+const duration_text = computed(() => job_duration_text(properties.job))
+const askable = computed(() => job_askable(properties.job))
 
 
 function glyph_words_build(seed: number): GlyphWord[] {
+    assert(Number.isInteger(seed))
+    assert(seed >= 0)
+    assert(seed < UINT32_SPAN)
+
     const random = random_from(seed)
     const words: GlyphWord[] = []
 
@@ -88,27 +92,39 @@ function glyph_words_build(seed: number): GlyphWord[] {
 
             if (width < GLYPH_WORD_WIDTH_MIN / 2) break
 
-            words.push({ x: left, y: top, width })
+            words.push({ left, top, width })
 
             left += width + GLYPH_WORD_GAP
         }
     }
 
+    assert(words.length >= GLYPH_LINE_COUNT)
+
     return words
 }
 
 function random_from(seed: number): () => number {
+    assert(Number.isInteger(seed))
+    assert(seed >= 0)
+
     let state = seed === 0 ? 1 : seed
 
-    return function random(): number {
+    function random(): number {
         state ^= state << 13
         state >>>= 0
         state ^= state >>> 17
         state ^= state << 5
         state >>>= 0
 
-        return state / UINT32_SPAN
+        const value = state / UINT32_SPAN
+
+        assert(value > 0)
+        assert(value < 1)
+
+        return value
     }
+
+    return random
 }
 
 function wave_bars_build(peaks: readonly number[]): WaveBar[] {
@@ -134,10 +150,10 @@ function wave_bars_build(peaks: readonly number[]): WaveBar[] {
 
 onMounted(async () => {
     try {
-        waveform.value = await waveform_load(props.job.id)
+        waveform.value = await waveform_load(properties.job.id)
         audio_missing.value = waveform.value === null
     } catch (error) {
-        log_warn('[recordings] waveform unavailable', props.job.id, error)
+        log_warn('[recordings] waveform unavailable', properties.job.id, error)
     }
 })
 </script>
@@ -167,9 +183,9 @@ onMounted(async () => {
             >
                 <rect
                     v-for="word in glyph_words"
-                    :key="`${word.x}-${word.y}`"
-                    :x="word.x"
-                    :y="word.y"
+                    :key="`${word.left}-${word.top}`"
+                    :x="word.left"
+                    :y="word.top"
                     :width="word.width"
                     :height="GLYPH_LINE_HEIGHT"
                     rx="2"
@@ -185,16 +201,16 @@ onMounted(async () => {
             <div class="recording-tile-tools" @click.stop @keydown.enter.stop>
                 <span class="recording-tile-tools-start">
                     <StarButton
-                        :favourite="props.job.favourite"
-                        :title="props.title"
+                        :favourite="properties.job.favourite"
+                        :title="properties.title"
                         @toggle="emit('favourite')"
                     />
-                    <AskButton v-if="askable" :title="props.title" @ask="emit('ask')" />
+                    <AskButton v-if="askable" :title="properties.title" @ask="emit('ask')" />
                 </span>
                 <span class="recording-tile-menu">
                     <RowMenu
-                        :label="props.title"
-                        :items="props.menu_items"
+                        :label="properties.title"
+                        :items="properties.menu_items"
                         @select="emit('menu', $event)"
                     />
                 </span>
@@ -203,12 +219,12 @@ onMounted(async () => {
         </div>
 
         <div class="recording-tile-body">
-            <h3 class="recording-tile-title">{{ props.title }}</h3>
+            <h3 class="recording-tile-title">{{ properties.title }}</h3>
             <div class="recording-tile-people meta">
-                {{ props.snippet ?? props.people ?? 'No participants' }}
+                {{ properties.snippet ?? properties.people ?? 'No participants' }}
             </div>
             <div class="recording-tile-foot meta">
-                <span class="recording-tile-when">{{ props.when }}</span>
+                <span class="recording-tile-when">{{ properties.when }}</span>
             </div>
         </div>
     </article>

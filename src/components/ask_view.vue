@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { use_ask } from '../composables/use_ask'
 import { use_folders } from '../composables/use_folders'
 import { use_jobs } from '../composables/use_jobs'
 import { use_network } from '../composables/use_network'
-import { use_service } from '../composables/use_service'
 import { assert } from '../lib/assert'
 import { folder_key } from '../lib/folders'
 import { ipc } from '../lib/ipc'
@@ -14,6 +13,7 @@ import AskComposer from './ask_composer.vue'
 import AskExchange from './ask_exchange.vue'
 import AskHistory from './ask_history.vue'
 import InfoHint from './info_hint.vue'
+import MenuIcon from './menu_icon.vue'
 import type { AskScope, AskScopeChip, FolderName } from '../types'
 
 
@@ -43,16 +43,15 @@ const SUGGESTIONS_MEETING = Object.freeze([
     'What action items came up?',
 ])
 
-const { exchanges, busy, scope, ask, clear, retry, stop } = use_ask()
+const { exchanges, busy, chat_id, scope, thread_scroll, ask, clear, retry, stop } = use_ask()
 const { folders } = use_folders()
 const { jobs, refresh: jobs_refresh } = use_jobs()
 const { online } = use_network()
-const { notes_ready } = use_service()
-const composer_ref = ref<InstanceType<typeof AskComposer> | null>(null)
-const scroller_ref = ref<HTMLElement | null>(null)
+const composer_component = useTemplateRef<InstanceType<typeof AskComposer>>('composer_component')
+const scroller_element = useTemplateRef<HTMLElement>('scroller_element')
 const pinned = ref(true)
 const empty = computed(() => exchanges.value.length === 0)
-const ready = computed(() => online.value && notes_ready.value && !busy.value)
+const ready = computed(() => online.value && !busy.value)
 const scope_chip = computed<AskScopeChip | null>(() => scope_chip_of(scope.value))
 
 const suggestions = computed<string[]>(() => {
@@ -79,17 +78,23 @@ watch(thread_signature, () => {
 
 onMounted(() => {
     void jobs_refresh()
-    void nextTick(scroll_bottom)
+    void nextTick(scroll_restore)
     connections_warm()
 })
 
+onBeforeUnmount(scroll_save)
+
 async function chat_new(): Promise<void> {
-    await clear()
+    assert(!empty.value)
+    assert(composer_component.value !== null)
 
-    pinned.value = true
+    return clear().then(async () => {
+        pinned.value = true
 
-    await nextTick()
-    composer_ref.value?.focus()
+        await nextTick()
+
+        composer_component.value?.focus()
+    })
 }
 
 function connections_warm(): void {
@@ -103,7 +108,11 @@ async function history_opened(): Promise<void> {
 
     await nextTick()
     scroll_bottom()
-    composer_ref.value?.focus()
+
+    assert(pinned.value)
+    assert(chat_id.value.length > 0)
+
+    composer_component.value?.focus()
 }
 
 function folder_named(name: FolderName): FolderName | null {
@@ -129,6 +138,8 @@ function meeting_named(job_id: string): string | null {
 }
 
 function scope_check(): void {
+    assert(scope_chip.value === null || scope.value.kind !== 'all')
+
     const chosen = scope.value
 
     if (chosen.kind === 'all') return
@@ -140,6 +151,9 @@ function scope_check(): void {
 }
 
 function scope_chip_of(chosen: AskScope): AskScopeChip | null {
+    assert(chosen.kind !== 'project' || chosen.project.length > 0)
+    assert(chosen.kind !== 'meeting' || chosen.job_id.length > 0)
+
     if (chosen.kind === 'all') return null
 
     const label = scope_target(chosen)
@@ -153,70 +167,130 @@ function scope_chip_of(chosen: AskScope): AskScopeChip | null {
 
 function scope_clear(): void {
     assert(scope.value.kind !== 'all')
+    assert(scope_chip.value !== null)
+    assert(composer_component.value !== null)
 
     scope.value = SCOPE_ALL
-    composer_ref.value?.focus()
+    composer_component.value.focus()
 }
 
 function scope_target(chosen: ScopeNarrowed): string | null {
+    assert(chosen.kind !== 'project' || chosen.project.length > 0)
+    assert(chosen.kind !== 'meeting' || chosen.job_id.length > 0)
+
     if (chosen.kind === 'project') return folder_named(chosen.project)
 
     return meeting_named(chosen.job_id)
 }
 
 function scroll_bottom(): void {
-    const scroller = scroller_ref.value
+    const scroller = scroller_element.value
 
     if (scroller === null) return
 
     scroller.scrollTop = scroller.scrollHeight
     pinned.value = true
+
+    assert(scroller.scrollTop >= 0)
+    assert(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= PINNED_SLACK_PX)
 }
 
 function scroll_follow(): void {
     if (!pinned.value) return
 
     scroll_bottom()
+
+    assert(pinned.value)
 }
 
 function scroll_jump(): void {
-    const scroller = scroller_ref.value
+    assert(!pinned.value)
+    assert(!empty.value)
+    assert(composer_component.value !== null)
+
+    const scroller = scroller_element.value
 
     if (scroller === null) return
 
     const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
     scroller.scrollTo({ top: scroller.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
-    composer_ref.value?.focus()
+    composer_component.value.focus()
+}
+
+function scroll_restore(): void {
+    const scroller = scroller_element.value
+    const saved = thread_scroll.value
+
+    assert(saved === null || saved.top_px >= 0)
+    assert(chat_id.value.length > 0)
+
+    thread_scroll.value = null
+
+    if (scroller === null) return
+
+    if (saved?.chat_id !== chat_id.value) {
+        scroll_bottom()
+
+        return
+    }
+
+    scroller.scrollTop = saved.top_px
+    scroll_track()
+}
+
+function scroll_save(): void {
+    const scroller = scroller_element.value
+
+    if (scroller === null) return
+    if (pinned.value) return
+
+    assert(chat_id.value.length > 0)
+
+    thread_scroll.value = { chat_id: chat_id.value, top_px: Math.max(0, scroller.scrollTop) }
+
+    assert(thread_scroll.value.top_px >= 0)
 }
 
 function scroll_track(): void {
-    const scroller = scroller_ref.value
+    const scroller = scroller_element.value
 
     if (scroller === null) return
 
     const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+
+    assert(Number.isFinite(distance))
 
     pinned.value = distance <= PINNED_SLACK_PX
 }
 
 async function send(question: string): Promise<void> {
     assert(question.trim().length > 0)
+    assert(scope.value.kind === 'all' || scope_chip.value !== null)
 
     if (!ready.value) return
 
     pinned.value = true
 
     const asked = ask(question, scope.value)
+    const exchange = exchanges.value.at(-1)
 
-    await nextTick()
-    scroll_bottom()
-    await asked
+    assert(exchange?.question === question.trim())
+    assert(exchange.state === 'searching' || exchange.state === 'failed')
+
+    return nextTick().then(async () => {
+        scroll_bottom()
+
+        await asked
+    })
 }
 
 function stop_click(): void {
+    assert(busy.value)
+    assert(composer_component.value !== null)
+
     void stop()
-    composer_ref.value?.focus()
+    composer_component.value.focus()
 }
 </script>
 
@@ -259,16 +333,6 @@ function stop_click(): void {
                     </p>
                 </div>
 
-                <AskComposer
-                    ref="composer_ref"
-                    :busy="busy"
-                    :scope="scope_chip"
-                    @scope_clear="scope_clear"
-                    @send="send"
-                    @stop="stop_click"
-                    @typing="connections_warm"
-                />
-
                 <ul class="ask-suggestions" aria-label="Suggested questions">
                     <li v-for="suggestion in suggestions" :key="suggestion">
                         <button
@@ -277,15 +341,26 @@ function stop_click(): void {
                             :disabled="!ready"
                             @click="send(suggestion)"
                         >
+                            <MenuIcon name="sparkles" />
                             {{ suggestion }}
                         </button>
                     </li>
                 </ul>
+
+                <AskComposer
+                    ref="composer_component"
+                    :busy="busy"
+                    :scope="scope_chip"
+                    @scope_clear="scope_clear"
+                    @send="send"
+                    @stop="stop_click"
+                    @typing="connections_warm"
+                />
             </div>
         </div>
 
         <template v-else>
-            <div ref="scroller_ref" class="ask-scroll" @scroll.passive="scroll_track">
+            <div ref="scroller_element" class="ask-scroll" @scroll.passive="scroll_track">
                 <ol class="ask-thread ask-column" aria-label="Conversation">
                     <AskExchange
                         v-for="(exchange, index) in exchanges"
@@ -320,7 +395,7 @@ function stop_click(): void {
                 </button>
 
                 <AskComposer
-                    ref="composer_ref"
+                    ref="composer_component"
                     :busy="busy"
                     :scope="scope_chip"
                     @scope_clear="scope_clear"
@@ -392,17 +467,20 @@ function stop_click(): void {
     flex-wrap: wrap;
     justify-content: center;
     gap: 0.5rem;
-    margin: 1.25rem 0 0;
+    margin: 0 0 1.25rem;
     padding: 0;
     list-style: none;
 }
 
 .ask-suggestion {
-    padding: 0.4375rem 0.875rem;
-    border: 1px solid var(--color-border-strong);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4375rem;
+    padding: 0.4375rem 0.875rem 0.4375rem 0.6875rem;
+    border: 1px solid color-mix(in oklab, var(--color-accent) 45%, transparent);
     border-radius: 999px;
-    background: var(--color-panel);
-    color: var(--color-content);
+    background: var(--color-accent-soft);
+    color: var(--color-content-strong);
     font-size: 0.8125rem;
     transition:
         background-color 120ms ease,
@@ -411,9 +489,13 @@ function stop_click(): void {
         transform 160ms ease;
 }
 
+.ask-suggestion .menu-item-icon {
+    color: var(--color-accent-strong);
+}
+
 .ask-suggestion:hover:not(:disabled) {
-    border-color: var(--color-content-muted);
-    background: var(--color-row-hover);
+    border-color: var(--color-accent);
+    background: color-mix(in oklab, var(--color-accent) 32%, transparent);
     box-shadow: 3px 3px 0 var(--color-plane);
     transform: translate(-1px, -1px);
 }

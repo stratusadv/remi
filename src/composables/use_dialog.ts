@@ -46,7 +46,7 @@ const api = Object.freeze({ current, input, confirm, message, prompt, close })
 
 
 export function use_dialog(): typeof api {
-    assert(Object.isFrozen(api))
+    assert(current.value?.input_shown !== true || current.value.cancel_label !== null)
     assert(current.value === null || current.value.id.length > 0)
 
     return api

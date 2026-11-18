@@ -1,0 +1,54 @@
+from __future__ import annotations
+
+import os
+
+from django.core.exceptions import ImproperlyConfigured
+
+from harness.world.constants import (
+    WORLD_DATABASE_NAME,
+    WORLD_FAKES_PORT_DEFAULT,
+    WORLD_GATEWAY_KEY_NOTES,
+    WORLD_GATEWAY_KEY_TRANSCRIPTION,
+    WORLD_PORTAL_PORT_DEFAULT,
+    WORLD_SECRET_KEY,
+    WORLD_SENDGRID_API_KEY,
+    WORLD_STRIPE_PUBLISHABLE_KEY,
+    WORLD_STRIPE_SECRET_KEY,
+    WORLD_STRIPE_WEBHOOK_SECRET,
+)
+from system.base_settings import *
+
+
+WORLD_FAKES_PORT = int(os.environ.get('REMI_WORLD_FAKES_PORT', str(WORLD_FAKES_PORT_DEFAULT)))
+WORLD_PORTAL_PORT = int(os.environ.get('REMI_WORLD_PORTAL_PORT', str(WORLD_PORTAL_PORT_DEFAULT)))
+
+ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
+DEBUG = False
+DJANGO_SPIRE_REMOTE_API_KEY = os.environ.get('REMI_WORLD_PORTAL_API_KEY', '')
+DJANGO_SPIRE_REMOTE_API_URL = f'http://127.0.0.1:{WORLD_PORTAL_PORT}/ds'
+REMI_API_HOST = f'http://127.0.0.1:{WORLD_FAKES_PORT}'
+REMI_API_KEY_NOTES = WORLD_GATEWAY_KEY_NOTES
+REMI_API_KEY_TRANSCRIPTION = WORLD_GATEWAY_KEY_TRANSCRIPTION
+SECRET_KEY = WORLD_SECRET_KEY
+SENDGRID_API_KEY = WORLD_SENDGRID_API_KEY
+SENDGRID_HOST_URL = f'http://127.0.0.1:{WORLD_FAKES_PORT}'
+STRIPE_API_BASE = f'http://127.0.0.1:{WORLD_FAKES_PORT}'
+STRIPE_PUBLISHABLE_KEY = WORLD_STRIPE_PUBLISHABLE_KEY
+STRIPE_SECRET_KEY = WORLD_STRIPE_SECRET_KEY
+STRIPE_WEBHOOK_SECRET = WORLD_STRIPE_WEBHOOK_SECRET
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'HOST': '127.0.0.1',
+        'NAME': os.environ.get('REMI_WORLD_DATABASE_NAME', WORLD_DATABASE_NAME),
+        'OPTIONS': DATABASE_OPTIONS,
+        'PASSWORD': 'remi',
+        'PORT': '55432',
+        'USER': 'remi',
+    },
+}
+
+if DJANGO_SPIRE_REMOTE_API_KEY == '':
+    message = 'REMI_WORLD_PORTAL_API_KEY must name the key the world portal accepts'
+    raise ImproperlyConfigured(message)

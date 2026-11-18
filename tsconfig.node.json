@@ -11,13 +11,19 @@
         "strict": true,
         "allowUnreachableCode": false,
         "allowUnusedLabels": false,
+        "erasableSyntaxOnly": true,
         "exactOptionalPropertyTypes": true,
+        "forceConsistentCasingInFileNames": true,
+        "isolatedModules": true,
+        "noFallthroughCasesInSwitch": true,
         "noImplicitOverride": true,
         "noImplicitReturns": true,
         "noPropertyAccessFromIndexSignature": true,
         "noUncheckedIndexedAccess": true,
+        "noUncheckedSideEffectImports": true,
         "noUnusedLocals": true,
-        "noUnusedParameters": true
+        "noUnusedParameters": true,
+        "useUnknownInCatchVariables": true
     },
-    "include": ["eslint.config.ts", "playwright.config.ts", "vite.config.ts"]
+    "include": ["eslint.config.ts", "playwright.config.ts", "playwright.world.config.ts", "vite.config.ts"]
 }

@@ -7,6 +7,7 @@ import threading
 
 import pytest
 
+from functools import partial, partialmethod
 from typing_extensions import TYPE_CHECKING
 
 from django.db import connection, transaction
@@ -27,6 +28,8 @@ from app.promo_code.tests.factories import create_test_promo_code
 from harness.api import ACCOUNT_CHARGE_PATH, account_create, account_get, api_post
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pytest_django.fixtures import DjangoCaptureOnCommitCallbacks
 
     from django.test import Client
@@ -48,7 +51,32 @@ BALANCE_MESSAGE_PATTERN = re.compile(
 )
 
 
+def _balance_seconds_pausing(
+    queryset: AccountLedgerEntryQuerySet,
+    *,
+    done_second: threading.Event,
+    read_first: threading.Event,
+    balance_seconds: Callable[[AccountLedgerEntryQuerySet], int],
+) -> int:
+    assert queryset.model is AccountLedgerEntry
+    assert read_first.is_set() or not done_second.is_set()
+
+    balance = balance_seconds(queryset)
+
+    if threading.current_thread().name == 'first':
+        if not read_first.is_set():
+            read_first.set()
+            waited = done_second.wait(timeout=LOCK_HOLD_SECONDS)
+
+            assert not waited
+
+    return balance
+
+
 def _charge_refusal(*, held: int, needed: int, email: str) -> str:
+    assert 0 <= held < needed <= CHARGE_SECONDS_MAX
+    assert '@' in email
+
     account = create_test_account(email=email, seconds=held)
 
     with pytest.raises(BalanceInsufficientError) as caught:
@@ -59,21 +87,81 @@ def _charge_refusal(*, held: int, needed: int, email: str) -> str:
     return str(caught.value)
 
 
+def _charge_thread(
+    account: Account,
+    job_id: str,
+    *,
+    done_second: threading.Event,
+    outcomes: dict[str, str],
+) -> None:
+    name = threading.current_thread().name
+
+    assert len(job_id) == len(JOB_ID_FIRST)
+    assert not done_second.is_set()
+    assert name not in outcomes
+
+    try:
+        account.services.processor.charge(job_id=job_id, seconds=SECONDS_PER_HOUR)
+    except BalanceInsufficientError:
+        outcomes[name] = 'insufficient'
+    else:
+        outcomes[name] = 'charged'
+    finally:
+        if name == 'second':
+            done_second.set()
+
+        connection.close()
+
+
 def _duration_seconds(*, amount: str, unit: str) -> int:
+    assert amount.replace('.', '', 1).isdecimal()
+    assert unit in ('hour', 'hours', 'minute', 'minutes')
+
     if unit.startswith('minute'):
-        return int(amount) * SECONDS_PER_MINUTE
+        seconds = int(amount) * SECONDS_PER_MINUTE
+
+        assert seconds <= SECONDS_PER_HOUR
+
+        return seconds
 
     whole, _, tenth = amount.partition('.')
     tenths = int(whole) * 10 + int(tenth or '0')
+    seconds = tenths * SECONDS_PER_HOUR_TENTH
 
-    return tenths * SECONDS_PER_HOUR_TENTH
+    assert seconds >= SECONDS_PER_HOUR
+
+    return seconds
 
 
 def _duration_step(seconds: int) -> int:
+    assert seconds >= 0
+
     if seconds < SECONDS_PER_HOUR:
         return SECONDS_PER_MINUTE
 
     return SECONDS_PER_HOUR_TENTH
+
+
+def _topup_thread(
+    account: Account,
+    reference: str,
+    *,
+    done_second: threading.Event,
+    granted: dict[str, int],
+) -> None:
+    name = threading.current_thread().name
+
+    assert reference.startswith('topup:')
+    assert not done_second.is_set()
+    assert name not in granted
+
+    try:
+        granted[name] = account.services.processor.balance_topup(reference=reference)
+    finally:
+        if name == 'second':
+            done_second.set()
+
+        connection.close()
 
 
 def test_balance_topup_after_a_charge_grants_back_exactly_the_charge() -> None:
@@ -103,8 +191,8 @@ def test_balance_topup_grants_the_shortfall_and_nothing_once_the_target_is_held(
 
 
 def test_balance_topup_records_no_metric_and_counts_as_no_purchase_or_promo(
-    django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
     metric_dispatched: MetricExecutorFake,
+    django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
 ) -> None:
     account = create_test_account(email='topup@example.com')
 
@@ -123,11 +211,12 @@ def test_charge_beyond_the_balance_is_refused_without_a_ledger_entry(client: Cli
     token = account_create(client, promo_code='ONE')
     body = {'job_id': JOB_ID_FIRST, 'seconds': SECONDS_PER_HOUR + 1}
     response = api_post(client, ACCOUNT_CHARGE_PATH, body=body, token=token)
+    balance_seconds = account_get(client, token)['balance_seconds']
 
     assert response.status_code == 402
     assert response.json()['error']['code'] == 'balance_insufficient'
     assert AccountLedgerEntry.objects.charges().count() == 0
-    assert account_get(client, token)['balance_seconds'] == SECONDS_PER_HOUR
+    assert balance_seconds == SECONDS_PER_HOUR
 
 
 def test_charge_on_an_unsaved_account_is_a_programming_error() -> None:
@@ -229,7 +318,9 @@ def test_charge_with_a_bad_job_id_or_duration_is_refused(client: Client) -> None
         assert response.status_code == 400, body
         assert response.json()['error']['code'] == 'request_invalid', body
 
-    assert account_get(client, token)['balance_seconds'] == SECONDS_PER_HOUR
+    balance_seconds = account_get(client, token)['balance_seconds']
+
+    assert balance_seconds == SECONDS_PER_HOUR
 
 
 def test_code_issued_from_a_stale_copy_keeps_a_campaign_set_meanwhile() -> None:
@@ -256,30 +347,14 @@ def test_lock_makes_a_second_charge_wait_for_the_first(monkeypatch: pytest.Monke
     outcomes = {}
     balance_seconds_original = AccountLedgerEntryQuerySet.balance_seconds
 
-    def balance_seconds_pausing(queryset: AccountLedgerEntryQuerySet) -> int:
-        balance = balance_seconds_original(queryset)
+    balance_seconds_pausing = partialmethod(
+        _balance_seconds_pausing,
+        done_second=done_second,
+        read_first=read_first,
+        balance_seconds=balance_seconds_original,
+    )
 
-        if threading.current_thread().name == 'first':
-            if not read_first.is_set():
-                read_first.set()
-                done_second.wait(timeout=LOCK_HOLD_SECONDS)
-
-        return balance
-
-    def charge(job_id: str) -> None:
-        name = threading.current_thread().name
-
-        try:
-            account.services.processor.charge(job_id=job_id, seconds=SECONDS_PER_HOUR)
-        except BalanceInsufficientError:
-            outcomes[name] = 'insufficient'
-        else:
-            outcomes[name] = 'charged'
-        finally:
-            if name == 'second':
-                done_second.set()
-
-            connection.close()
+    charge = partial(_charge_thread, account, done_second=done_second, outcomes=outcomes)
 
     monkeypatch.setattr(AccountLedgerEntryQuerySet, 'balance_seconds', balance_seconds_pausing)
 
@@ -288,7 +363,9 @@ def test_lock_makes_a_second_charge_wait_for_the_first(monkeypatch: pytest.Monke
 
     first.start()
 
-    assert read_first.wait(timeout=THREAD_WAIT_SECONDS)
+    waited = read_first.wait(timeout=THREAD_WAIT_SECONDS)
+
+    assert waited
 
     second.start()
     first.join(timeout=THREAD_WAIT_SECONDS)
@@ -307,26 +384,14 @@ def test_lock_makes_a_second_topup_grant_nothing(monkeypatch: pytest.MonkeyPatch
     granted = {}
     balance_seconds_original = AccountLedgerEntryQuerySet.balance_seconds
 
-    def balance_seconds_pausing(queryset: AccountLedgerEntryQuerySet) -> int:
-        balance = balance_seconds_original(queryset)
+    balance_seconds_pausing = partialmethod(
+        _balance_seconds_pausing,
+        done_second=done_second,
+        read_first=read_first,
+        balance_seconds=balance_seconds_original,
+    )
 
-        if threading.current_thread().name == 'first':
-            if not read_first.is_set():
-                read_first.set()
-                done_second.wait(timeout=LOCK_HOLD_SECONDS)
-
-        return balance
-
-    def topup(reference: str) -> None:
-        name = threading.current_thread().name
-
-        try:
-            granted[name] = account.services.processor.balance_topup(reference=reference)
-        finally:
-            if name == 'second':
-                done_second.set()
-
-            connection.close()
+    topup = partial(_topup_thread, account, done_second=done_second, granted=granted)
 
     monkeypatch.setattr(AccountLedgerEntryQuerySet, 'balance_seconds', balance_seconds_pausing)
 
@@ -335,7 +400,9 @@ def test_lock_makes_a_second_topup_grant_nothing(monkeypatch: pytest.MonkeyPatch
 
     first.start()
 
-    assert read_first.wait(timeout=THREAD_WAIT_SECONDS)
+    waited = read_first.wait(timeout=THREAD_WAIT_SECONDS)
+
+    assert waited
 
     second.start()
     first.join(timeout=THREAD_WAIT_SECONDS)

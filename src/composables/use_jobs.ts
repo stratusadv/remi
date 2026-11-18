@@ -1,5 +1,7 @@
 import { ref } from 'vue'
 import { assert } from '../lib/assert'
+import { error_shown } from '../lib/errors'
+import { JOBS_MAX } from '../lib/folders'
 import { ipc } from '../lib/ipc'
 import type { JobID, JobListing, Waveform } from '../types'
 
@@ -20,7 +22,7 @@ const api = Object.freeze({
 
 
 export function use_jobs(): typeof api {
-    assert(Object.isFrozen(api))
+    assert(jobs.value.length <= JOBS_MAX)
     assert(Array.isArray(jobs.value))
 
     return api
@@ -35,7 +37,7 @@ async function favourite_set(job_id: JobID, favourite: boolean): Promise<void> {
     return ipc.job_meta_update(job_id, { favourite })
         .then(refresh)
         .catch((error: unknown) => {
-            error_message.value = String(error)
+            error_message.value = error_shown(error)
         })
 }
 
@@ -51,7 +53,7 @@ async function refresh(): Promise<void> {
 
         assert(jobs.value.length === fetched.length)
     } catch (error) {
-        error_message.value = String(error)
+        error_message.value = error_shown(error)
     }
 }
 
@@ -68,7 +70,7 @@ async function remove(job_id: JobID): Promise<void> {
             await refresh()
         })
         .catch((error: unknown) => {
-            error_message.value = String(error)
+            error_message.value = error_shown(error)
         })
 }
 

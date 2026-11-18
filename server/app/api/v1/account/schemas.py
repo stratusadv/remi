@@ -44,6 +44,7 @@ class AccountCreateSchema(RequestBodySchema):
     email: str
     name: str
     promo_code: str
+    region: str
 
 
 class AccountOfferSchema(Schema):

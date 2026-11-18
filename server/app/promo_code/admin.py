@@ -4,7 +4,6 @@ from typing_extensions import TYPE_CHECKING
 
 from django.contrib import admin, messages
 
-from app.account.ledger.models import AccountLedgerEntry
 from app.promo_code.models import PromoCode
 from app.promo_code.querysets import PromoCodeQuerySet
 
@@ -61,14 +60,25 @@ class PromoCodeFollowUpFilter(admin.SimpleListFilter):
 @admin.register(PromoCode)
 class PromoCodeAdmin(admin.ModelAdmin):
     actions = ['promo_activate', 'promo_deactivate']
-    fields = ['code', 'campaign', 'hours', 'redemptions_max']
     list_filter = ['campaign', 'is_active', PromoCodeFollowUpFilter]
     ordering = ['code']
-    search_fields = ['code', 'email']
+    search_fields = ['code', 'email', 'name_first', 'name_last']
+
+    fields = [
+        'code',
+        'campaign',
+        'hours',
+        'redemptions_max',
+        'early_codes_max',
+        'early_hours',
+        'early_codes_issued',
+    ]
 
     list_display = [
         'code',
         'campaign',
+        'name_first',
+        'name_last',
         'email',
         'hours',
         'redemptions',
@@ -96,6 +106,11 @@ class PromoCodeAdmin(admin.ModelAdmin):
         for promo in promos:
             promo.services.processor.active_set(is_active=is_active)
 
+    def get_queryset(self, request: HttpRequest) -> QuerySet[PromoCode]:
+        _ = request
+
+        return PromoCode.objects.with_redemption_count()
+
     def get_readonly_fields(
         self,
         request: HttpRequest,
@@ -104,9 +119,12 @@ class PromoCodeAdmin(admin.ModelAdmin):
         _ = request
 
         if obj is None:
-            return []
+            return ['early_codes_issued']
 
-        return ['code']
+        if obj.email != '':
+            return ['code', 'early_codes_issued', 'early_codes_max', 'early_hours']
+
+        return ['code', 'early_codes_issued']
 
     @admin.action(description='Activate the selected promo codes', permissions=['change'])
     def promo_activate(self, request: HttpRequest, queryset: QuerySet[PromoCode]) -> None:
@@ -116,9 +134,9 @@ class PromoCodeAdmin(admin.ModelAdmin):
     def promo_deactivate(self, request: HttpRequest, queryset: QuerySet[PromoCode]) -> None:
         self._promo_active_set(request, queryset, is_active=False)
 
-    @admin.display(description='Redemptions')
+    @admin.display(description='Redemptions', ordering='redemption_count')
     def redemptions(self, promo: PromoCode) -> int:
-        return AccountLedgerEntry.objects.promos().by_reference(promo.code).count()
+        return promo.redemption_count
 
     def save_model(
         self,
@@ -144,3 +162,9 @@ class PromoCodeAdmin(admin.ModelAdmin):
             hours=obj.hours,
             redemptions_max=obj.redemptions_max,
         )
+
+        if obj.email == '':
+            obj.services.processor.early_save(
+                early_codes_max=obj.early_codes_max,
+                early_hours=obj.early_hours,
+            )

@@ -1,11 +1,34 @@
 allow-dbg-in-tests = true
+allow-exact-repetitions = false
+allow-expect-in-consts = false
 allow-expect-in-tests = true
 allow-indexing-slicing-in-tests = true
+allow-large-stack-frames-in-tests = false
 allow-panic-in-tests = true
 allow-print-in-tests = true
+allow-unwrap-in-consts = false
 allow-unwrap-in-tests = true
 allowed-idents-below-min-chars = []
 avoid-breaking-exported-api = false
+check-grouped-late-init = true
+check-incompatible-msrv-in-tests = true
+check-inconsistent-struct-field-initializers = true
+enable-raw-pointer-heuristic-for-send = false
+lint-commented-code = true
 max-fn-params-bools = 0
+min-ident-chars-lint-trait-impl = true
+module-item-order-groupings = [
+    ["macros", ["macro"]],
+    ["modules", ["extern_crate", "mod", "foreign_mod"]],
+    ["use", ["use"]],
+    ["global_asm", ["global_asm"]],
+    ["UPPER_SNAKE_CASE", ["static", "const"]],
+    ["PascalCase", ["ty_alias", "enum", "struct", "union", "trait", "trait_alias", "impl"]],
+    ["lower_snake_case", ["fn", "test_binder_constraints"]],
+]
+pub-underscore-fields-behavior = "AllPubFields"
+recursive-self-in-type-definitions = true
 too-many-arguments-threshold = 7
 too-many-lines-threshold = 70
+warn-on-all-wildcard-imports = true
+warn-unsafe-macro-metavars-in-private-macros = true

@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { assert } from '../../src/lib/assert'
-import { text_history_listen, text_history_mark } from '../../src/composables/use_text_history'
+import { text_history_listen } from '../../src/composables/use_text_history'
 
 
 const EVENT_CTRL = 'ctrlKey'
@@ -128,10 +128,11 @@ describe('text_history_listen', () => {
 
     it('undoes a value the app set as one step and tells v-model about it', () => {
         fields_show('<textarea id="draft">Fixed it</textarea>')
-        text_history_mark(element_of('draft'))
 
         const draft = control_of('draft')
         const changes: string[] = []
+
+        draft.focus()
 
         draft.addEventListener('input', () => {
             changes.push(draft.value)

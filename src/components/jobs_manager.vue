@@ -1,20 +1,38 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import {
+    computed,
+    nextTick,
+    onMounted,
+    onUnmounted,
+    ref,
+    shallowRef,
+    useTemplateRef,
+    watch,
+} from 'vue'
 import { use_ask } from '../composables/use_ask'
 import { use_context_menu } from '../composables/use_context_menu'
 import { use_dialog } from '../composables/use_dialog'
 import { use_folders } from '../composables/use_folders'
 import { use_job_drag } from '../composables/use_job_drag'
 import { use_jobs } from '../composables/use_jobs'
+import { use_modal } from '../composables/use_modal'
 import { person_name_full, use_people } from '../composables/use_people'
 import { use_pipeline } from '../composables/use_pipeline'
 import { use_settings } from '../composables/use_settings'
 import { assert } from '../lib/assert'
 import { seconds_to_clock_hours } from '../lib/duration'
-import { error_dialog_show } from '../lib/errors'
+import { error_dialog_show, error_shown } from '../lib/errors'
+import { folder_key } from '../lib/folders'
 import { ipc } from '../lib/ipc'
 import { job_askable, job_duration_text, job_title } from '../lib/job_status'
-import { MENU_ITEM_ASK, MENU_ITEM_DELETE, MENU_ITEM_MOVE, MENU_ITEM_RENAME } from '../lib/menu'
+import {
+    MENU_ITEM_ASK,
+    MENU_ITEM_DELETE,
+    MENU_ITEM_FOLDER_LEAVE,
+    MENU_ITEM_MOVE,
+    MENU_ITEM_RENAME,
+} from '../lib/menu'
+import { transition_leave_inert } from '../lib/transition'
 import AskButton from './ask_button.vue'
 import FolderMoveDialog from './folder_move_dialog.vue'
 import JobDragGhost from './job_drag_ghost.vue'
@@ -46,14 +64,19 @@ const SEARCH_QUERY_LENGTH_MIN = 2
 const MILLISECONDS_PER_SECOND = 1000
 const MILLISECONDS_PER_DAY = 24 * 3600 * MILLISECONDS_PER_SECOND
 
-const ROW_MENU_ITEMS: MenuItem[] = [MENU_ITEM_RENAME, MENU_ITEM_MOVE, MENU_ITEM_DELETE]
+const ROW_MENU_ITEMS = Object.freeze<MenuItem[]>([
+    MENU_ITEM_RENAME,
+    MENU_ITEM_MOVE,
+    MENU_ITEM_FOLDER_LEAVE,
+    MENU_ITEM_DELETE,
+])
 
-const SORT_COLUMNS: SortColumn[] = [
+const SORT_COLUMNS = Object.freeze<SortColumn[]>([
     { key: 'title', label: 'Title', descending_first: false },
     { key: 'people', label: 'Participants', descending_first: false },
     { key: 'date', label: 'Date', descending_first: true },
     { key: 'duration', label: 'Duration', descending_first: true },
-]
+])
 
 const { folder_ask, meeting_ask } = use_ask()
 const { open: context_menu_open } = use_context_menu()
@@ -69,12 +92,16 @@ const {
     folder_jobs,
     folder_menu_items,
     folder_menu_select,
+    folder_move,
 } = use_folders()
 
 const { settings, update: settings_update } = use_settings()
 const jobs_view = computed<JobsViewChoice>(() => settings.value.jobs_view ?? 'grid')
 
 function date_format(unix: number): string {
+    assert(Number.isSafeInteger(unix))
+    assert(unix >= 0)
+
     const date = new Date(unix * MILLISECONDS_PER_SECOND)
     const now = new Date()
     const yesterday = new Date(now.getTime() - MILLISECONDS_PER_DAY)
@@ -96,18 +123,16 @@ function date_format(unix: number): string {
 }
 
 async function delete_click(job: JobMeta): Promise<void> {
-    const ok = await dialog_confirm(
-        `Delete "${job_title(job)}"? ${MESSAGE_DELETE}`,
-        { title: 'Delete recording', kind: 'warning' },
-    )
+    assert(job.id.length > 0)
 
-    if (!ok) return
+    const question = `Delete "${job_title(job)}"? ${MESSAGE_DELETE}`
 
-    try {
-        await remove(job.id)
-    } catch (error) {
-        await error_dialog_show(error)
-    }
+    return dialog_confirm(question, { title: 'Delete recording', kind: 'warning' })
+        .then(async (ok) => {
+            if (!ok) return
+
+            await remove(job.id).catch(error_dialog_show)
+        })
 }
 
 const search_query = ref<string>('')
@@ -116,10 +141,11 @@ const sort_descending = ref<boolean>(false)
 const search_hits = ref<Map<string, JobSearchHit>>(new Map())
 const rename_target = ref<JobMeta | null>(null)
 const rename_input_value = ref<string>('')
-const rename_input_ref = ref<HTMLInputElement | null>(null)
+const rename_input_element = useTemplateRef<HTMLInputElement>('rename_input_element')
 const rename_busy = ref<boolean>(false)
 const rename_error = ref<string | null>(null)
 const move_target = ref<JobMeta | null>(null)
+const rename_covered = use_modal('dialog', () => rename_target.value !== null)
 
 const jobs_shown = computed<JobListing[]>(() => {
     const folder = folder_current.value
@@ -127,76 +153,89 @@ const jobs_shown = computed<JobListing[]>(() => {
     return folder === null ? jobs.value : folder_jobs(folder)
 })
 
-let search_timer_id: ReturnType<typeof setTimeout> | null = null
-let search_request_token = 0
+const search_timer_id = shallowRef<ReturnType<typeof setTimeout> | null>(null)
+const search_request_token = shallowRef(0)
 
 
 onMounted(refresh)
 
 onUnmounted(() => {
-    if (search_timer_id !== null) {
-        clearTimeout(search_timer_id)
-        search_timer_id = null
+    if (search_timer_id.value !== null) {
+        clearTimeout(search_timer_id.value)
+        search_timer_id.value = null
     }
 })
 
 watch(search_query, (query) => {
-    if (search_timer_id !== null) clearTimeout(search_timer_id)
+    assert(query === search_query.value)
 
-    search_request_token += 1
+    if (search_timer_id.value !== null) clearTimeout(search_timer_id.value)
+
+    search_request_token.value += 1
 
     if (query.trim().length < SEARCH_QUERY_LENGTH_MIN) {
         search_hits.value = new Map()
-        search_timer_id = null
+        search_timer_id.value = null
 
         return
     }
 
-    const token = search_request_token
+    const fire = search_fire.bind(undefined, query.trim(), search_request_token.value)
 
-    search_timer_id = setTimeout(() => {
-        search_timer_id = null
-
-        void search_run(query.trim(), token)
-    }, SEARCH_DEBOUNCE_MS)
+    search_timer_id.value = setTimeout(fire, SEARCH_DEBOUNCE_MS)
 })
 
 async function favourite_toggle(job: JobMeta): Promise<void> {
-    await favourite_set(job.id, !job.favourite)
+    assert(job.id.length > 0)
+    assert(jobs_filtered.value.some((shown) => shown.id === job.id))
+
+    return favourite_set(job.id, !job.favourite)
 }
 
 async function folder_action(id: string): Promise<void> {
+    assert(id.length > 0)
+
     const folder = folder_current.value
 
     if (folder === null) return
 
-    assert(id.length > 0)
+    assert(folder_menu_items(folder).some((item) => item.id === id))
 
-    try {
-        await folder_menu_select(folder, id)
-    } catch (error) {
-        await error_dialog_show(error)
-    }
+    return folder_menu_select(folder, id).catch(error_dialog_show)
 }
 
 function folder_context_menu(event: MouseEvent): void {
+    assert(event.type === 'contextmenu')
+
     const folder = folder_current.value
 
     if (folder === null) return
 
-    assert(event.type === 'contextmenu')
-
     context_menu_open(event, folder_menu_items(folder), folder_menu_select.bind(undefined, folder))
+}
+
+async function folder_leave(job: JobMeta): Promise<void> {
+    assert(job.id.length > 0)
+    assert(folder_key(job.project ?? '').length > 0)
+
+    return folder_move(job, null).catch(error_dialog_show)
 }
 
 function home_open(): void {
     assert(folder_current.value !== null)
 
     folder_close()
+
+    assert(jobs_shown.value === jobs.value)
+
     view_reopen('jobs')
 }
 
 function job_matches(job: JobListing, needle: string): boolean {
+    assert(job.id.length > 0)
+    assert(needle.length > 0)
+    assert(needle === search_query.value.trim().toLowerCase())
+
     if (search_hits.value.has(job.id)) return true
 
     const fields = [
@@ -228,24 +267,34 @@ const jobs_filtered = computed<JobListing[]>(() => {
 })
 
 function jobs_view_set(view: JobsViewChoice): void {
+    assert(view.length > 0)
+    assert(jobs_shown.value.length > 0)
+
     void settings_update({ jobs_view: view })
 }
 
 async function open(meta: JobMeta): Promise<void> {
+    assert(meta.id.length > 0)
+
     const hit = search_hits.value.get(meta.id)
 
-    try {
-        await (hit === undefined ? job_open(meta, null) : job_open_at(meta, hit))
-    } catch (error) {
-        await error_dialog_show(error)
-    }
+    assert(hit === undefined || hit.job_id === meta.id)
+    assert(hit === undefined || search_query.value.trim().length >= SEARCH_QUERY_LENGTH_MIN)
+
+    const opening = hit === undefined ? job_open(meta, null) : job_open_at(meta, hit)
+
+    return opening.catch(error_dialog_show)
 }
 
 function people_cell_for(job: JobListing): string {
+    assert(job.id.length > 0)
+
     return search_snippet_for(job) ?? people_text_for(job) ?? 'No participants'
 }
 
 function people_text_for(job: JobMeta): string | null {
+    assert(job.id.length > 0)
+
     const names = person_names_of(job.person_ids)
     const listed = names.length > 0 ? names : job.attendees
 
@@ -258,13 +307,21 @@ function people_text_for(job: JobMeta): string | null {
 }
 
 function person_names_of(ids: string[]): string[] {
-    return ids
+    assert(ids.every((id) => id.length > 0))
+
+    const names = ids
         .map((id) => person_by_id(id))
         .filter((person): person is NonNullable<typeof person> => person !== null)
         .map(person_name_full)
+
+    assert(names.length <= ids.length)
+
+    return names
 }
 
 function rename_close(): void {
+    assert(!rename_busy.value || rename_target.value !== null)
+
     if (rename_busy.value) return
 
     rename_target.value = null
@@ -273,34 +330,44 @@ function rename_close(): void {
 }
 
 function rename_open(job: JobMeta): void {
+    assert(job.id.length > 0)
+
     rename_target.value = job
     rename_input_value.value = job_title(job)
     rename_error.value = null
 
     void nextTick(() => {
-        rename_input_ref.value?.focus()
-        rename_input_ref.value?.select()
+        rename_input_element.value?.focus()
+        rename_input_element.value?.select()
     })
 }
 
 async function rename_persist(target: JobMeta, title: string): Promise<void> {
-    try {
-        await ipc.job_meta_update(target.id, { title })
-        await refresh()
+    assert(target.id.length > 0)
+    assert(title.length > 0)
+    assert(title === title.trim())
+    assert(rename_busy.value)
 
-        rename_target.value = null
-        rename_input_value.value = ''
-    } catch (error) {
-        rename_error.value = String(error)
+    return ipc.job_meta_update(target.id, { title })
+        .then(refresh)
+        .then(() => {
+            rename_target.value = null
+            rename_input_value.value = ''
+        })
+        .catch(async (error: unknown) => {
+            rename_error.value = error_shown(error)
 
-        await error_dialog_show(error)
-    }
+            await error_dialog_show(error)
+        })
 }
 
 async function rename_save(): Promise<void> {
     const target = rename_target.value
 
-    if (target === null || rename_busy.value) return
+    if (target === null) return
+    if (rename_busy.value) return
+
+    assert(target.id.length > 0)
 
     const next = rename_input_value.value.trim()
 
@@ -319,7 +386,7 @@ async function rename_save(): Promise<void> {
     rename_busy.value = true
     rename_error.value = null
 
-    await rename_persist(target, next).finally(() => {
+    return rename_persist(target, next).finally(() => {
         rename_busy.value = false
     })
 }
@@ -335,11 +402,18 @@ function row_menu_items(job: JobListing): MenuItem[] {
     assert(job.id.length > 0)
     assert(ROW_MENU_ITEMS.every((item) => item.id !== MENU_ITEM_ASK.id))
 
-    return job_askable(job) ? [MENU_ITEM_ASK, ...ROW_MENU_ITEMS] : ROW_MENU_ITEMS
+    const filed = folder_key(job.project ?? '').length > 0
+    const items = ROW_MENU_ITEMS.filter((item) => filed || item.id !== MENU_ITEM_FOLDER_LEAVE.id)
+
+    return job_askable(job) ? [MENU_ITEM_ASK, ...items] : items
 }
 
 async function row_menu_select(job: JobMeta, id: string): Promise<void> {
+    assert(job.id.length > 0)
+    assert(id === MENU_ITEM_ASK.id || ROW_MENU_ITEMS.some((item) => item.id === id))
+
     if (id === MENU_ITEM_ASK.id) return meeting_ask(job.id)
+    if (id === MENU_ITEM_FOLDER_LEAVE.id) return folder_leave(job)
 
     if (id === MENU_ITEM_RENAME.id) {
         rename_open(job)
@@ -358,24 +432,43 @@ async function row_menu_select(job: JobMeta, id: string): Promise<void> {
     return delete_click(job)
 }
 
+function search_fire(query: string, token: number): void {
+    assert(query.length >= SEARCH_QUERY_LENGTH_MIN)
+    assert(token === search_request_token.value)
+
+    search_timer_id.value = null
+
+    void search_run(query, token)
+}
+
 async function search_run(query: string, token: number): Promise<void> {
-    try {
-        const hits = await ipc.jobs_search(query)
+    assert(query.length >= SEARCH_QUERY_LENGTH_MIN)
+    assert(query === query.trim())
+    assert(token <= search_request_token.value)
 
-        if (token !== search_request_token) return
+    return ipc.jobs_search(query)
+        .then((hits) => {
+            if (token !== search_request_token.value) return
 
-        search_hits.value = new Map(hits.map((hit) => [hit.job_id, hit]))
-    } catch (error) {
-        if (token !== search_request_token) return
+            search_hits.value = new Map(hits.map((hit) => [hit.job_id, hit]))
+        })
+        .catch((error: unknown) => {
+            if (token !== search_request_token.value) return
 
-        error_message.value = String(error)
-    }
+            error_message.value = error_shown(error)
+        })
 }
 
 function search_snippet_for(job: JobMeta): string | null {
+    assert(job.id.length > 0)
+
     const hit = search_hits.value.get(job.id)
 
     if (hit === undefined) return null
+
+    assert(hit.job_id === job.id)
+    assert(search_query.value.trim().length >= SEARCH_QUERY_LENGTH_MIN)
+
     if (hit.source === 'notes') return `In notes: ${hit.snippet}`
     if (hit.start_seconds === null) return `In transcript: ${hit.snippet}`
 
@@ -383,19 +476,26 @@ function search_snippet_for(job: JobMeta): string | null {
 }
 
 function sort_aria(column: SortColumn): 'ascending' | 'descending' | 'none' {
+    assert(SORT_COLUMNS.includes(column))
+
     if (sort_key.value !== column.key) return 'none'
 
     return sort_descending.value ? 'descending' : 'ascending'
 }
 
 function sort_compare(left: JobListing, right: JobListing): number {
+    assert(Number.isSafeInteger(left.created_at_unix))
+    assert(Number.isSafeInteger(right.created_at_unix))
+
     const key = sort_key.value
     const by_newest = right.created_at_unix - left.created_at_unix
+
+    assert(Number.isSafeInteger(by_newest))
 
     if (key === null) {
         const by_favourite = Number(right.favourite) - Number(left.favourite)
 
-        return by_favourite !== 0 ? by_favourite : by_newest
+        return by_favourite === 0 ? by_newest : by_favourite
     }
 
     const value_left = sort_value_of(left, key)
@@ -405,18 +505,24 @@ function sort_compare(left: JobListing, right: JobListing): number {
         ? value_left - value_right
         : String(value_left).localeCompare(String(value_right))
 
+    assert(Number.isFinite(order))
+
     if (order === 0) return by_newest
 
     return sort_descending.value ? -order : order
 }
 
 function sort_mark(key: SortKey): string {
+    assert(SORT_COLUMNS.some((column) => column.key === key))
+
     if (sort_key.value !== key) return ''
 
     return sort_descending.value ? '↓' : '↑'
 }
 
 function sort_set(column: SortColumn): void {
+    assert(SORT_COLUMNS.includes(column))
+
     if (sort_key.value === column.key) {
         sort_descending.value = !sort_descending.value
 
@@ -425,9 +531,14 @@ function sort_set(column: SortColumn): void {
 
     sort_key.value = column.key
     sort_descending.value = column.descending_first
+
+    assert(sort_aria(column) !== 'none')
 }
 
 function sort_value_of(job: JobListing, key: SortKey): number | string {
+    assert(job.duration_seconds === null || job.duration_seconds >= 0)
+    assert(key === sort_key.value)
+
     switch (key) {
         case 'date': return job.created_at_unix
         case 'duration': return job.duration_seconds ?? -1
@@ -444,8 +555,9 @@ function sort_value_of(job: JobListing, key: SortKey): number | string {
                 <p class="eyebrow page-eyebrow">
                     {{ folder_current === null ? 'Your meetings' : 'Folder' }}
                 </p>
+                <h2 v-if="folder_current === null" class="!mb-1">Home</h2>
                 <div
-                    v-if="folder_current !== null"
+                    v-else
                     class="folder-heading"
                     @contextmenu="folder_context_menu"
                 >
@@ -470,7 +582,6 @@ function sort_value_of(job: JobListing, key: SortKey): number | string {
                         @select="folder_action"
                     />
                 </div>
-                <h2 v-else class="!mb-1">Home</h2>
             </div>
             <div v-if="jobs_shown.length > 0" class="flex items-center gap-4">
                 <button
@@ -684,12 +795,14 @@ function sort_value_of(job: JobListing, key: SortKey): number | string {
         </div>
 
         <Teleport to="body">
-            <Transition name="app-dialog">
+            <Transition name="app-dialog" @before-leave="transition_leave_inert">
                 <div
                     v-if="rename_target"
                     class="app-dialog-backdrop"
                     role="dialog"
                     aria-modal="true"
+                    tabindex="-1"
+                    :inert="rename_covered"
                     @mousedown.left.self.prevent="rename_close"
                     @keydown.esc="rename_close"
                 >
@@ -716,7 +829,7 @@ function sort_value_of(job: JobListing, key: SortKey): number | string {
                         <h3 class="app-dialog-title">Rename recording</h3>
                         <label class="label">Title</label>
                         <input
-                            ref="rename_input_ref"
+                            ref="rename_input_element"
                             v-model="rename_input_value"
                             type="search"
                             class="input"
@@ -724,11 +837,16 @@ function sort_value_of(job: JobListing, key: SortKey): number | string {
                             @keydown.enter.prevent="rename_save"
                             @keydown.esc.prevent="rename_close"
                         >
-                        <p v-if="rename_error" class="error text-sm mt-3">
+                        <NoticeBanner
+                            v-if="rename_error"
+                            class="mt-3"
+                            @dismiss="rename_error = null"
+                        >
                             {{ rename_error }}
-                        </p>
+                        </NoticeBanner>
                         <div class="app-dialog-actions">
                             <button
+                                type="button"
                                 class="btn-default"
                                 :disabled="rename_busy"
                                 @click="rename_close"
@@ -736,6 +854,7 @@ function sort_value_of(job: JobListing, key: SortKey): number | string {
                                 Cancel
                             </button>
                             <button
+                                type="button"
                                 class="btn-primary"
                                 :disabled="rename_busy"
                                 @click="rename_save"
@@ -754,6 +873,10 @@ function sort_value_of(job: JobListing, key: SortKey): number | string {
 </template>
 
 <style scoped>
+.app-dialog-backdrop:focus {
+    outline: none;
+}
+
 .folder-heading {
     display: flex;
     align-items: center;

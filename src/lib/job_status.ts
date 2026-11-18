@@ -4,6 +4,9 @@ import { path_file_stem } from './paths'
 import type { JobListing, JobMeta } from '../types'
 
 
+const TITLE_UNTITLED = 'Untitled recording'
+
+
 export function job_askable(job: JobListing): boolean {
     assert(job.id.length > 0)
     assert(typeof job.has_notes === 'boolean')
@@ -31,5 +34,7 @@ export function job_title(job: JobMeta): string {
     if (title.length > 0) return title
     if (label.length > 0) return label
 
-    return path_file_stem(job.source_path)
+    const stem = path_file_stem(job.source_path)
+
+    return stem.length > 0 ? stem : TITLE_UNTITLED
 }

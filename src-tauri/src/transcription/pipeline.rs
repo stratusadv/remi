@@ -1,5 +1,5 @@
-use super::audio::{PreparePaths, prepare_for_whisper};
-use super::remote::transcribe_audio_file;
+use super::audio::prepare_for_whisper;
+use super::remote::{AudioSource, transcribe_audio_file};
 use super::types::{TranscribeProgress, Transcript, TranscriptSegment};
 use crate::account::{ChargeJob, charge_apply};
 use crate::contract::TranscriptReuse;
@@ -26,9 +26,9 @@ pub(crate) struct TranscriptImport<'text> {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct TranscriptionResult {
+    pub(crate) cached: bool,
     pub(crate) job_id: String,
     pub(crate) transcript: Transcript,
-    pub(crate) cached: bool,
 }
 
 pub(crate) fn audio_prepare_blocking(source_path: &Path) -> AppResult<(String, PathBuf)> {
@@ -41,22 +41,21 @@ pub(crate) fn audio_prepare_blocking(source_path: &Path) -> AppResult<(String, P
 
     let job_id = workspace::job_id_from_source_content(source_path)?;
     let source_metadata = std::fs::metadata(source_path)?;
-    let existing = workspace::meta_load(&job_id)?;
 
     assert_ne!(job_id, "");
 
     let label = source_path.file_name().map(|name| name.to_string_lossy().into_owned());
 
-    let meta = audio_prepare_meta(&job_id, source_path, &source_metadata, label, existing);
+    let meta = workspace::meta_upsert(&job_id, |existing| {
+        audio_prepare_meta(&job_id, source_path, &source_metadata, label, existing)
+    })?;
 
     assert_eq!(meta.id, job_id);
-
-    workspace::meta_save(&meta)?;
 
     let audio_path = workspace::job_audio_path(&job_id)?;
 
     if !workspace::audio_wav_is_prepared(&audio_path) {
-        prepare_for_whisper(&PreparePaths { prepared: &audio_path, source: source_path })?;
+        prepare_for_whisper(&job_id, source_path)?;
     }
 
     Ok((job_id, audio_path))
@@ -90,19 +89,20 @@ pub(crate) async fn transcribe_remote_async(
     if let Some(cached) = reusable {
         stage_emit(progress.as_ref(), "done");
 
-        return Ok(TranscriptionResult { job_id, transcript: cached, cached: true });
+        return Ok(TranscriptionResult { cached: true, job_id, transcript: cached });
     }
 
-    let charge = ChargeJob { audio_path: &audio_path, endpoint_id, job_id: &job_id };
+    let charge = ChargeJob { audio_path: &audio_path, job_id: &job_id };
 
     charge_apply(&charge).await?;
 
     stage_emit(progress.as_ref(), "transcribing");
 
     let spelling_hint = transcribe_remote_spelling_hint();
+    let source = AudioSource::new(&job_id, &audio_path);
 
     let transcript =
-        transcribe_audio_file(&audio_path, &endpoint, &spelling_hint, progress.as_ref()).await?;
+        transcribe_audio_file(&source, &endpoint, &spelling_hint, progress.as_ref()).await?;
 
     transcript_store(&slot, &transcript)?;
 
@@ -110,7 +110,7 @@ pub(crate) async fn transcribe_remote_async(
 
     stage_emit(progress.as_ref(), "done");
 
-    Ok(TranscriptionResult { job_id, transcript, cached: false })
+    Ok(TranscriptionResult { cached: false, job_id, transcript })
 }
 
 pub(crate) fn transcript_import_blocking(
@@ -136,16 +136,16 @@ pub(crate) fn transcript_import_blocking(
     let title_trimmed = title.trim();
     let title_clean = if title_trimmed.is_empty() { None } else { Some(title_trimmed.to_owned()) };
     let source_size_bytes = u64::try_from(trimmed.len()).unwrap_or(u64::MAX);
-    let existing = workspace::meta_load(&job_id)?;
-    let meta = transcript_import_meta(&job_id, source_size_bytes, title_clean, existing);
+
+    let meta = workspace::meta_upsert(&job_id, |existing| {
+        transcript_import_meta(&job_id, source_size_bytes, title_clean, existing)
+    })?;
 
     assert_eq!(meta.id, job_id);
     assert_eq!(meta.source_size_bytes, source_size_bytes);
 
-    workspace::meta_save(&meta)?;
-
     let transcript =
-        Transcript { text: trimmed.to_owned(), segments: transcript_import_segments(trimmed) };
+        Transcript { segments: transcript_import_segments(trimmed), text: trimmed.to_owned() };
 
     assert_ne!(transcript.segments.len(), 0);
 
@@ -153,7 +153,7 @@ pub(crate) fn transcript_import_blocking(
 
     workspace::transcript_save(&slot, &transcript)?;
 
-    Ok(TranscriptionResult { job_id, transcript, cached: false })
+    Ok(TranscriptionResult { cached: false, job_id, transcript })
 }
 
 fn audio_prepare_meta(
@@ -169,34 +169,34 @@ fn audio_prepare_meta(
 
     let meta = match existing {
         None => JobMeta {
-            id: job_id.to_owned(),
-            source_path: source_path_text,
-            source_size_bytes,
-            created_at_unix: chrono::Utc::now().timestamp(),
-            recorded_at_unix,
-            label,
-            title: None,
             attendees: Vec::new(),
+            created_at_unix: workspace::created_at_unix_now(),
+            favourite: false,
+            id: job_id.to_owned(),
+            label,
             person_ids: Vec::new(),
             person_ids_mentioned: Vec::new(),
             project: None,
-            tags: Vec::new(),
-            favourite: false,
-        },
-        Some(previous) => JobMeta {
-            id: job_id.to_owned(),
+            recorded_at_unix,
             source_path: source_path_text,
             source_size_bytes,
-            created_at_unix: previous.created_at_unix,
-            recorded_at_unix,
-            label: previous.label.or(label),
-            title: previous.title,
+            tags: Vec::new(),
+            title: None,
+        },
+        Some(previous) => JobMeta {
             attendees: previous.attendees,
+            created_at_unix: previous.created_at_unix,
+            favourite: previous.favourite,
+            id: job_id.to_owned(),
+            label: previous.label.or(label),
             person_ids: previous.person_ids,
             person_ids_mentioned: previous.person_ids_mentioned,
             project: previous.project,
+            recorded_at_unix,
+            source_path: source_path_text,
+            source_size_bytes,
             tags: previous.tags,
-            favourite: previous.favourite,
+            title: previous.title,
         },
     };
 
@@ -310,23 +310,13 @@ async fn transcribe_remote_title_apply(job_id: &str, transcript: &Transcript) {
 
     assert_ne!(title, "");
 
-    let mut latest = match workspace::meta_load(job_id) {
-        Ok(Some(reloaded)) => reloaded,
-        Ok(None) => return,
-        Err(error) => {
-            tracing::warn!("meta for job {job_id} unreadable after titling: {error}");
-
-            return;
+    let titled = workspace::meta_update(job_id, |latest| {
+        if latest.title.as_deref().is_none_or(|existing| existing.trim().is_empty()) {
+            latest.title = Some(title);
         }
-    };
+    });
 
-    if latest.title.as_deref().is_some_and(|existing| !existing.trim().is_empty()) {
-        return;
-    }
-
-    latest.title = Some(title);
-
-    if let Err(error) = workspace::meta_save(&latest) {
+    if let Err(error) = titled {
         tracing::warn!("title for job {job_id} could not be saved: {error}");
     }
 }
@@ -343,34 +333,34 @@ fn transcript_import_meta(
 
     let meta = match existing {
         None => JobMeta {
-            id: job_id.to_owned(),
-            source_path: SOURCE_PATH_IMPORTED.to_owned(),
-            source_size_bytes,
-            created_at_unix: chrono::Utc::now().timestamp(),
-            recorded_at_unix: None,
-            label,
-            title: title_clean,
             attendees: Vec::new(),
+            created_at_unix: workspace::created_at_unix_now(),
+            favourite: false,
+            id: job_id.to_owned(),
+            label,
             person_ids: Vec::new(),
             person_ids_mentioned: Vec::new(),
             project: None,
+            recorded_at_unix: None,
+            source_path: SOURCE_PATH_IMPORTED.to_owned(),
+            source_size_bytes,
             tags: Vec::new(),
-            favourite: false,
+            title: title_clean,
         },
         Some(previous) => JobMeta {
-            id: job_id.to_owned(),
-            source_path: previous.source_path,
-            source_size_bytes,
-            created_at_unix: previous.created_at_unix,
-            recorded_at_unix: previous.recorded_at_unix,
-            label: previous.label.or(label),
-            title: previous.title.or(title_clean),
             attendees: previous.attendees,
+            created_at_unix: previous.created_at_unix,
+            favourite: previous.favourite,
+            id: job_id.to_owned(),
+            label: previous.label.or(label),
             person_ids: previous.person_ids,
             person_ids_mentioned: previous.person_ids_mentioned,
             project: previous.project,
+            recorded_at_unix: previous.recorded_at_unix,
+            source_path: previous.source_path,
+            source_size_bytes,
             tags: previous.tags,
-            favourite: previous.favourite,
+            title: previous.title.or(title_clean),
         },
     };
 
@@ -388,17 +378,17 @@ fn transcript_import_segments(trimmed: &str) -> Vec<TranscriptSegment> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(|line| TranscriptSegment {
-            text: line.to_owned(),
-            start_seconds: 0.0,
             end_seconds: 0.0,
+            start_seconds: 0.0,
+            text: line.to_owned(),
         })
         .collect();
 
     if segments.is_empty() {
         return vec![TranscriptSegment {
-            text: trimmed.to_owned(),
-            start_seconds: 0.0,
             end_seconds: 0.0,
+            start_seconds: 0.0,
+            text: trimmed.to_owned(),
         }];
     }
 
@@ -421,7 +411,13 @@ fn transcript_store(slot: &TranscriptSlot<'_>, transcript: &Transcript) -> AppRe
 mod tests {
     use super::*;
     use crate::transcription::audio::SAMPLE_RATE_WHISPER;
-    use crate::workspace::test_support::{meta_with, root_scoped};
+    use crate::workspace::test_support::{
+        jobs_filled,
+        meta_with,
+        root_adopt,
+        root_override,
+        root_scoped,
+    };
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
 
@@ -435,11 +431,11 @@ mod tests {
         let [name_first, name_last] = *names;
 
         Person {
+            description: String::new(),
             id: name_first.to_owned(),
             name_first: name_first.to_owned(),
             name_last: name_last.to_owned(),
             role: String::new(),
-            description: String::new(),
         }
     }
 
@@ -489,6 +485,21 @@ mod tests {
 
         assert_ne!(import_of(&["", &oversized]).unwrap_err().to_string(), "");
         assert_ne!(import_of(&["", "   \n  "]).unwrap_err().to_string(), "");
+    }
+
+    #[test]
+    fn an_import_past_the_job_limit_is_refused_and_leaves_no_folder_behind() {
+        let _root = root_scoped();
+        let ids = jobs_filled(workspace::JOB_COUNT_MAX);
+        let id = workspace::job_id_from_text("one job too many");
+        let refused = import_of(&["", "one job too many"]).unwrap_err().to_string();
+
+        assert!(refused.contains("4096"), "{refused}");
+        assert!(!workspace::jobs_directory().unwrap().join(&id).exists());
+
+        workspace::job_delete(&ids[0]).unwrap();
+
+        assert_eq!(import_of(&["", "one job too many"]).unwrap().job_id, id);
     }
 
     #[test]
@@ -643,7 +654,7 @@ mod tests {
         let _root = root_scoped();
         let id = workspace::job_id_from_text("silence");
         let slot = TranscriptSlot { engine_id: "remote-a", job_id: &id };
-        let blank = Transcript { text: " ".to_owned(), segments: Vec::new() };
+        let blank = Transcript { segments: Vec::new(), text: " ".to_owned() };
 
         assert_ne!(transcript_store(&slot, &blank).unwrap_err().to_string(), "");
         assert!(workspace::transcript_load::<Transcript>(&slot).unwrap().is_none());
@@ -664,6 +675,67 @@ mod tests {
 
         assert_eq!(job_id_again, job_id);
         assert_eq!(audio_path_again, audio_path);
+    }
+
+    #[test]
+    fn a_deleted_recording_imports_again_without_what_was_saved_after_its_deletion() {
+        let _root = root_scoped();
+        let source = root_path().join("meeting.wav");
+
+        workspace::audio_wav_save(&vec![0.25_f32; 8000], 8000, &source).unwrap();
+
+        let (job_id, _audio_path) = audio_prepare_blocking(&source).unwrap();
+        let slot = TranscriptSlot { engine_id: "remote-late", job_id: &job_id };
+        let late =
+            Transcript { segments: Vec::new(), text: "finished after the delete".to_owned() };
+
+        workspace::job_delete(&job_id).unwrap();
+
+        let refused = transcript_store(&slot, &late).unwrap_err().to_string();
+
+        assert!(refused.contains(&format!("recording {job_id} was deleted")), "{refused}");
+        assert!(!workspace::jobs_directory().unwrap().join(&job_id).exists());
+
+        let (job_id_again, audio_path_again) = audio_prepare_blocking(&source).unwrap();
+
+        assert_eq!(job_id_again, job_id);
+        assert!(workspace::audio_wav_is_prepared(&audio_path_again));
+        assert_eq!(workspace::engines_for_job(&job_id).unwrap().len(), 0);
+        assert_eq!(workspace::jobs_list_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_reimport_racing_a_delete_never_brings_back_the_deleted_details() {
+        let _root = root_scoped();
+        let root_inherited = root_override();
+        let id = workspace::job_id_from_text("the same words");
+
+        for round in 0_u32..48 {
+            drop(import_of(&["Old title", "the same words"]).unwrap());
+
+            std::thread::scope(|scope| {
+                let root_importer = root_inherited.clone();
+                let root_deleter = root_inherited.clone();
+
+                let _importer = scope.spawn(|| {
+                    root_adopt(root_importer);
+
+                    if let Err(error) = import_of(&["", "the same words"]) {
+                        assert!(error.to_string().contains(&format!("recording {id} was deleted")));
+                    }
+                });
+
+                let _deleter = scope.spawn(|| {
+                    root_adopt(root_deleter);
+                    workspace::job_delete(&id).unwrap();
+                });
+            });
+
+            let titles: Vec<Option<String>> =
+                workspace::jobs_list_all().unwrap().into_iter().map(|job| job.title).collect();
+
+            assert!(titles.iter().all(Option::is_none), "round {round}: {titles:?}");
+        }
     }
 
     fn root_path() -> PathBuf {

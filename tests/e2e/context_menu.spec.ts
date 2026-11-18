@@ -132,6 +132,7 @@ test('right-clicking a recording asks about it in a chat of its own', async ({ p
         ITEM_ASK,
         'Rename',
         'Move to folder',
+        'Remove from folder',
         'Delete',
     ])
 
@@ -232,9 +233,12 @@ test(TITLE_SIDEBAR, async ({ page }) => {
     await group.getByRole('button', { name: 'Close' }).click()
     await expect(group).toHaveCount(0)
     await aside.getByRole('button', { name: 'Settings', exact: true }).click({ button: 'right' })
-    await context_menu(page).getByRole('menuitem', { name: 'AI', exact: true }).click()
 
-    await expect(page.getByRole('tab', { name: 'AI', exact: true })).toHaveAttribute(
+    await expect(context_menu(page).getByRole('menuitem')).toHaveText(['General'])
+
+    await context_menu(page).getByRole('menuitem', { name: 'General', exact: true }).click()
+
+    await expect(page.getByRole('tab', { name: 'General', exact: true })).toHaveAttribute(
         'aria-selected',
         'true',
     )
@@ -259,7 +263,8 @@ test(TITLE_ANSWER, async ({ page }) => {
 
     await context_menu(page).getByRole('menuitem', { name: 'Open meeting' }).click()
 
-    await expect(step_current(page)).toHaveText('Notes')
+    await expect(step_current(page)).toHaveText('Transcript')
+    await expect(page.locator('.transcript-pane-row[data-highlighted="true"]')).toHaveCount(1)
 })
 
 test(TITLE_HISTORY, async ({ page }) => {
@@ -286,7 +291,7 @@ test(TITLE_HISTORY, async ({ page }) => {
     await expect(history).toBeVisible()
 
     await page.mouse.up()
-    await dialog(page, 'Delete chat').getByRole('button', { name: 'Delete' }).click()
+    await history.getByRole('button', { name: 'Delete', exact: true }).click()
 
     await expect(main.locator('.ask-exchange')).toHaveCount(0)
 })

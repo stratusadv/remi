@@ -20,6 +20,37 @@ jobs:
             - name: Build
               run: uv run --locked --only-group docs zensical build --strict
 
+            - name: Point the funnel at the account server
+              if: github.event_name == 'push'
+              env:
+                  REMI_ACCOUNT_HOST: ${{ vars.REMI_ACCOUNT_HOST }}
+              run: |
+                  origin="$(printf '%s' "$REMI_ACCOUNT_HOST" | sed -E 's#^\s+|[[:space:]/]+$##g')"
+                  pattern='^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~-]+)*$'
+
+                  if [[ -z "$origin" ]]; then
+                      echo "::warning::REMI_ACCOUNT_HOST is not set," \
+                          "so the site offers the mail app link instead of the email form."
+                      exit 0
+                  fi
+
+                  if [[ ! "$origin" =~ $pattern ]]; then
+                      echo "::error::REMI_ACCOUNT_HOST must be an https address," \
+                          "such as https://api.example.com."
+                      exit 1
+                  fi
+
+                  declaration="const funnel_origin = '${origin}';"
+
+                  sed -i "s#^const funnel_origin = '';\$#${declaration}#" site/assets/funnel.js
+
+                  if ! grep -qxF "$declaration" site/assets/funnel.js; then
+                      echo "::error::docs/assets/funnel.js no longer declares" \
+                          "const funnel_origin = ''; on a line of its own," \
+                          "so the origin was not set."
+                      exit 1
+                  fi
+
             - if: github.event_name == 'push'
               uses: actions/upload-pages-artifact@v5
               with:

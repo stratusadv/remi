@@ -5,9 +5,9 @@ import {
     RECORDING_TITLED,
     STREAM_TIMEOUT_MS,
     app_open,
-    dialog,
     folder_item,
     nav_to,
+    recording_open,
     step_current,
 } from './helpers'
 import type { Locator, Page } from '@playwright/test'
@@ -26,11 +26,14 @@ const NOTICE_PACED = 'You have asked a lot this month, so remi answers one quest
 const QUESTION = 'What did we agree to ship?'
 const QUESTION_BANNER = 'Who is drafting the banner copy?'
 const QUESTION_FOLLOW_UP = 'When is it due?'
+const SPOKEN_RETRY = 'The retry work is close'
 const SUGGESTION_SUMMARY = 'Summarize my last meeting'
+const TITLE_BACK = 'Back to answer returns from a source to the same place in the chat'
 const TITLE_CITED = 'a question streams an answer with numbered citations and opens the meeting'
 const TITLE_COPY = 'Copy puts the answer and its numbered sources on the clipboard'
 const TITLE_FOLLOW_UP = 'a follow-up question is answered with the conversation before it'
 const TITLE_HISTORY = 'History lists past chats by day, and opening one continues it'
+const TITLE_HISTORY_BULK = 'History deletes several chats after one confirmation inside it'
 const TITLE_HISTORY_DELETE = 'deleting the open chat from History asks first and starts a new one'
 const TITLE_JUMP = 'scrolling up offers a jump back to the latest answer'
 const TITLE_MOMENT = 'a transcript citation opens the transcript at the moment it cites'
@@ -55,6 +58,29 @@ async function background_opaque(target: Locator): Promise<boolean> {
     const color = await target.evaluate((element) => getComputedStyle(element).backgroundColor)
 
     return color.startsWith('rgb(')
+}
+
+async function citation_steps_walk(page: Page, source: Locator): Promise<void> {
+    assert(!page.isClosed())
+    assert(source.page() === page)
+
+    const citation = page.locator('main').locator('.step-citation')
+
+    await source.click()
+
+    await expect(step_current(page)).toHaveText('Transcript')
+    await expect(citation.locator('.ask-source-number')).toHaveText('1')
+    await expect(citation).toContainText(`Cited in your chat ${QUESTION_BANNER}`)
+
+    await page.getByRole('button', { name: 'Meeting' }).click()
+
+    await expect(step_current(page)).toHaveText('Meeting')
+    await expect(citation).toContainText(QUESTION_BANNER)
+
+    await page.getByRole('button', { name: 'Notes', exact: true }).click()
+
+    await expect(step_current(page)).toHaveText('Notes')
+    await expect(citation).toContainText(QUESTION_BANNER)
 }
 
 function exchanges(page: Page): Locator {
@@ -124,7 +150,7 @@ test(TITLE_CITED, async ({ page }) => {
     await expect(main.locator('.ask-question')).toHaveText(QUESTION)
     await expect(main.locator('.ask-answer')).toContainText(ANSWER, { timeout: STREAM_TIMEOUT_MS })
     await expect(main.locator('.ask-cite')).toHaveText('1')
-    await expect(main.locator('.ask-cite')).toHaveAccessibleName(/^Source 1: Weekly platform sync/)
+    await expect(main.locator('.ask-cite')).toHaveAccessibleName(/^Source 1: Weekly platform sync/u)
 
     await main.locator('.ask-cite').hover()
     await expect(page.locator('.ask-preview')).toContainText(RECORDING_TITLED)
@@ -140,9 +166,19 @@ test(TITLE_CITED, async ({ page }) => {
 
     await expect(source).toHaveCount(1)
     await expect(source.locator('.ask-source-number')).toHaveText('1')
+
+    await source.hover()
+
+    await expect(main.locator('.ask-cite')).toHaveAttribute('data-hovered', 'true')
+
     await source.click()
 
-    await expect(step_current(page)).toHaveText('Notes')
+    const focused = page.locator('.transcript-pane-row[data-highlighted="true"]')
+
+    await expect(step_current(page)).toHaveText('Transcript')
+    await expect(focused).toHaveCount(1)
+    await expect(focused).toContainText(SPOKEN_RETRY)
+    await expect(focused).toBeInViewport()
 })
 
 test(TITLE_COPY, async ({ page }) => {
@@ -374,24 +410,106 @@ test(TITLE_HISTORY, async ({ page }) => {
 test(TITLE_HISTORY_DELETE, async ({ page }) => {
     const main = page.locator('main')
     const history = main.getByRole('button', { name: 'History' })
-    const remove = history_panel(page).getByRole('button', { name: `Delete chat: ${QUESTION}` })
+    const panel = history_panel(page)
+    const remove = panel.getByRole('button', { name: `Delete chat: ${QUESTION}` })
 
     await question_send(page, QUESTION)
     await settled(exchanges(page).first())
     await history.click()
     await remove.click()
-    await dialog(page, 'Delete chat').getByRole('button', { name: 'Cancel' }).click()
 
+    const confirm = panel.getByRole('button', { name: 'Delete', exact: true })
+
+    await expect(panel).toContainText(`Delete "${QUESTION}"? This cannot be undone.`)
+    await expect(confirm).toBeFocused()
+    await expect(page.getByRole('dialog')).toHaveCount(1)
+
+    await panel.getByRole('button', { name: 'Cancel' }).click()
+
+    await expect(confirm).toHaveCount(0)
+
+    await page.keyboard.press('Escape')
+
+    await expect(panel).toHaveCount(0)
     await expect(exchanges(page)).toHaveCount(1)
 
     await history.click()
     await remove.click()
-    await dialog(page, 'Delete chat').getByRole('button', { name: 'Delete' }).click()
+    await confirm.click()
 
+    await expect(panel).toContainText(HISTORY_EMPTY)
     await expect(exchanges(page)).toHaveCount(0)
     await expect(main.getByRole('heading', { name: 'What do you want to know?' })).toBeVisible()
 
-    await history.click()
+    await page.keyboard.press('Escape')
 
-    await expect(history_panel(page)).toContainText(HISTORY_EMPTY)
+    await expect(panel).toHaveCount(0)
+})
+
+test(TITLE_HISTORY_BULK, async ({ page }) => {
+    const main = page.locator('main')
+
+    await question_send(page, QUESTION_BANNER)
+    await settled(exchanges(page).first())
+    await main.getByRole('button', { name: 'New chat' }).click()
+    await question_send(page, QUESTION)
+    await settled(exchanges(page).first())
+    await main.getByRole('button', { name: 'History' }).click()
+
+    const panel = history_panel(page)
+    const selected = panel.getByRole('button', { name: 'Delete selected' })
+
+    await expect(selected).toBeDisabled()
+
+    await panel.getByRole('checkbox', { name: 'Select all' }).check()
+
+    await expect(panel.getByRole('checkbox', { name: `Select chat: ${QUESTION}` })).toBeChecked()
+
+    await expect(
+        panel.getByRole('checkbox', { name: `Select chat: ${QUESTION_BANNER}` }),
+    ).toBeChecked()
+
+    await selected.click()
+
+    await expect(panel).toContainText('Delete 2 chats? This cannot be undone.')
+    await expect(page.getByRole('dialog')).toHaveCount(1)
+
+    await panel.getByRole('button', { name: 'Delete', exact: true }).click()
+
+    await expect(panel).toContainText(HISTORY_EMPTY)
+    await expect(exchanges(page)).toHaveCount(0)
+})
+
+test(TITLE_BACK, async ({ page }) => {
+    await question_send(page, QUESTION_BANNER)
+    await settled(exchanges(page).first())
+    await question_send(page, QUESTION)
+    await settled(exchanges(page).nth(1))
+    await question_send(page, QUESTION_FOLLOW_UP)
+    await settled(exchanges(page).nth(2))
+
+    const source = (await sources_open(exchanges(page).first())).first()
+
+    await source.scrollIntoViewIfNeeded()
+
+    const main = page.locator('main')
+
+    await expect(main.getByRole('button', { name: 'Jump to latest' })).toBeVisible()
+
+    const scroller = main.locator('.ask-scroll')
+    const top = await scroller.evaluate((element) => element.scrollTop)
+    const back = main.getByRole('button', { name: 'Back to answer' })
+
+    await citation_steps_walk(page, source)
+    await back.click()
+
+    await expect(exchanges(page)).toHaveCount(3)
+    await expect(source).toBeVisible()
+    await expect.poll(async () => scroller.evaluate((element) => element.scrollTop)).toBe(top)
+    await expect(back).toHaveCount(0)
+
+    await nav_to(page, 'Home')
+    await recording_open(page, RECORDING_TITLED)
+
+    await expect(main.locator('.step-citation')).toHaveCount(0)
 })

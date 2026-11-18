@@ -80,14 +80,14 @@ pub(crate) async fn notes_print(app: AppHandle, job_id: JobID) -> AppResult<()> 
     let page_path = blocking::run(move || notes_print_page_write_blocking(&job_id)).await?;
 
     let url = tauri::Url::parse(&asset_url(&page_path))
-        .map_err(|error| AppError::Export(format!("print page url: {error}")))?;
+        .map_err(|error| AppError::Internal(format!("print page url: {error}")))?;
 
     assert_ne!(url.scheme(), "");
 
     if let Some(existing) = app.get_webview_window(PRINT_WINDOW_LABEL) {
-        existing
-            .close()
-            .map_err(|error| AppError::Export(format!("could not close print window: {error}")))?;
+        existing.close().map_err(|error| {
+            AppError::Internal(format!("could not close print window: {error}"))
+        })?;
     }
 
     let _window = WebviewWindowBuilder::new(&app, PRINT_WINDOW_LABEL, WebviewUrl::External(url))
@@ -103,7 +103,11 @@ pub(crate) async fn notes_print(app: AppHandle, job_id: JobID) -> AppResult<()> 
             }
         })
         .build()
-        .map_err(|error| AppError::Export(format!("could not open print window: {error}")))?;
+        .map_err(|error| {
+            tracing::warn!("the print window could not be opened: {error}");
+
+            AppError::Export("the print window could not be opened".into())
+        })?;
 
     Ok(())
 }
@@ -149,7 +153,7 @@ pub(crate) fn export_last_lock(
     slot: &Mutex<Option<PathBuf>>,
 ) -> AppResult<MutexGuard<'_, Option<PathBuf>>> {
     slot.lock()
-        .map_err(|_poisoned| AppError::Export("the export state was poisoned by a crash".into()))
+        .map_err(|_poisoned| AppError::Internal("the export state was poisoned by a crash".into()))
 }
 
 fn notes_export_write_blocking(job_id: &str, target_path: &Path) -> AppResult<()> {
@@ -164,7 +168,7 @@ fn notes_export_write_blocking(job_id: &str, target_path: &Path) -> AppResult<()
         EXPORT_EXTENSION_MARKDOWN => markdown.into_bytes(),
         _ => {
             return Err(AppError::Export(format!(
-                "target path must end with .{EXPORT_EXTENSION_DOCX} or .{EXPORT_EXTENSION_MARKDOWN}"
+                "the file name must end in .{EXPORT_EXTENSION_DOCX} or .{EXPORT_EXTENSION_MARKDOWN}"
             )));
         }
     };
@@ -184,7 +188,7 @@ fn notes_markdown_load(job_id: &str) -> AppResult<String> {
     assert_ne!(job_id, "");
 
     let markdown = workspace::notes_load(job_id)?
-        .ok_or_else(|| AppError::Export(format!("no notes found for job {job_id}")))?;
+        .ok_or_else(|| AppError::Export("this recording has no notes yet".into()))?;
 
     if markdown.trim().is_empty() {
         return Err(AppError::Export("notes are empty".into()));
@@ -215,7 +219,7 @@ fn notes_print_page_write_blocking(job_id: &str) -> AppResult<PathBuf> {
 
     assert!(page.starts_with("<!doctype html>"));
 
-    workspace::atomic_write(&path, page.as_bytes())?;
+    workspace::job_file_write(job_id, &path, page.as_bytes())?;
 
     assert!(path.ends_with(PRINT_FILE_NAME));
 
@@ -551,6 +555,7 @@ mod tests {
 
         assert!(notes_export_write_blocking(&id, &target.join("notes.md")).is_err());
 
+        workspace::meta_save(&meta_with(&id, 1)).unwrap();
         workspace::notes_save(&id, b"Budget approved [1:23].\n").unwrap();
         notes_export_write_blocking(&id, &target.join("notes.md")).unwrap();
         notes_export_write_blocking(&id, &target.join("notes.DOCX")).unwrap();
@@ -571,6 +576,7 @@ mod tests {
         let id = workspace::job_id_from_text("timestamp-only");
         let target = workspace::root().unwrap().join("out").join("notes.md");
 
+        workspace::meta_save(&meta_with(&id, 1)).unwrap();
         workspace::notes_save(&id, b"[1:23]").unwrap();
 
         assert!(notes_export_write_blocking(&id, &target).is_err());
@@ -584,6 +590,7 @@ mod tests {
 
         assert_ne!(notes_print_page_write_blocking(&id).unwrap_err().to_string(), "");
 
+        workspace::meta_save(&meta_with(&id, 1)).unwrap();
         workspace::notes_save(&id, b"# Agenda\n\nHello [0:01].\n").unwrap();
 
         let path = notes_print_page_write_blocking(&id).unwrap();

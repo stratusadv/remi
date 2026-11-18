@@ -2,7 +2,7 @@
 import { MENU_ICON_PATHS } from '../lib/menu'
 
 
-const props = defineProps<{
+const properties = defineProps<{
     title: string
 }>()
 
@@ -15,7 +15,7 @@ const emit = defineEmits<{
     <button
         type="button"
         class="recording-tile-ask"
-        :aria-label="`Ask about ${props.title}`"
+        :aria-label="`Ask about ${properties.title}`"
         title="Ask about this meeting"
         @click="emit('ask')"
     >

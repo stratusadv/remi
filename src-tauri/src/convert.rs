@@ -22,7 +22,7 @@ pub(crate) fn markdown_to_docx(markdown: &str) -> AppResult<Vec<u8>> {
     conversion_run(markdown, |conversion| {
         let Conversion { document, output, workspace } = conversion;
         let length = docx::write(document, workspace, output).map_err(convert_error)?;
-        let end = usize::try_from(length).map_err(|error| AppError::Export(error.to_string()))?;
+        let end = usize::try_from(length).map_err(|error| AppError::Internal(error.to_string()))?;
         let written = output.get(..end).ok_or_else(output_overflow)?;
 
         assert_eq!(written.len(), end);
@@ -37,7 +37,7 @@ pub(crate) fn markdown_to_html(markdown: &str) -> AppResult<String> {
         let length = html::write(&conversion.document, HTMLRaw::Escape, &mut conversion.output)
             .map_err(convert_error)?;
 
-        let end = usize::try_from(length).map_err(|error| AppError::Export(error.to_string()))?;
+        let end = usize::try_from(length).map_err(|error| AppError::Internal(error.to_string()))?;
         let written = conversion.output.get(..end).ok_or_else(output_overflow)?.to_vec();
 
         assert_eq!(written.len(), end);
@@ -94,22 +94,23 @@ where
         thread::Builder::new().name(CONVERTER_THREAD_NAME.to_owned()).stack_size(stack_bytes);
 
     thread::scope(|scope| {
-        let converter = builder
-            .spawn_scoped(scope, || work(&mut conversion_begin(markdown)?))
-            .map_err(|error| AppError::Export(format!("could not start the converter: {error}")))?;
+        let converter =
+            builder.spawn_scoped(scope, || work(&mut conversion_begin(markdown)?)).map_err(
+                |error| AppError::Internal(format!("could not start the converter: {error}")),
+            )?;
 
         converter
             .join()
-            .map_err(|_panic| AppError::Export("the converter stopped unexpectedly".into()))?
+            .map_err(|_panic| AppError::Internal("the converter stopped unexpectedly".into()))?
     })
 }
 
 fn convert_error(error: docmux::Error) -> AppError {
-    AppError::Export(error.to_string())
+    AppError::Internal(error.to_string())
 }
 
 fn output_overflow() -> AppError {
-    AppError::Export("converter reported a length past the output buffer".into())
+    AppError::Internal("converter reported a length past the output buffer".into())
 }
 
 fn output_string(output: Vec<u8>) -> AppResult<String> {
@@ -117,8 +118,9 @@ fn output_string(output: Vec<u8>) -> AppResult<String> {
 
     let length = output.len();
 
-    let text = String::from_utf8(output)
-        .map_err(|error| AppError::Export(format!("converter produced invalid UTF-8: {error}")))?;
+    let text = String::from_utf8(output).map_err(|error| {
+        AppError::Internal(format!("converter produced invalid UTF-8: {error}"))
+    })?;
 
     assert_eq!(text.len(), length);
 

@@ -1,10 +1,11 @@
 use crate::blocking;
 use crate::contract::{CheckoutSessionID, PromoCode, SignInCode, TextRaw};
-use crate::endpoints::storage::{ENDPOINT_ID_TRANSCRIPTION, api_key_builtin_used};
 use crate::error::{AppError, AppResult};
 use crate::http::{
     ClientCell,
     ClientTimeouts,
+    ReplyFailed,
+    body_error_absent_message,
     body_error_message,
     client_build,
     client_get,
@@ -55,11 +56,12 @@ const MESSAGE_CODE_INVALID: &str = "That sign-in code is not valid.";
 const MESSAGE_KEY_MALFORMED: &str =
     "the account server sent a Stripe key that is not a publishable key";
 const MESSAGE_QUESTION_MALFORMED: &str = "the account server sent a question turn remi cannot read";
-const MESSAGE_SIGNED_OUT: &str = "This copy of remi is not signed in to an account.";
+pub(crate) const MESSAGE_SIGNED_OUT: &str = "This copy of remi is not signed in to an account.";
 const PATH_ACCOUNT: &str = "/api/v1/account/";
 const PATH_CHARGE: &str = "/api/v1/account/charge/";
 const PATH_CHECKOUT: &str = "/api/v1/account/checkout/";
 const PATH_CHECKOUT_FINISH: &str = "/api/v1/account/checkout/finish/";
+const PATH_GATEWAY: &str = "/api/v1/ai";
 const PATH_PROMO: &str = "/api/v1/account/promo/";
 const PATH_QUESTION: &str = "/api/v1/account/question/";
 const PATH_QUESTION_FINISH: &str = "/api/v1/account/question/finish/";
@@ -72,6 +74,9 @@ const TOKEN_FILE: &str = "account_token.bin";
 
 const _: () = assert!(AUDIO_SECONDS_MAX <= CHARGE_SECONDS_MAX);
 const _: () = assert!(CONNECT_TIMEOUT_SECONDS < REQUEST_TIMEOUT_SECONDS);
+
+static GATEWAY_HOST_BUILTIN: LazyLock<Option<String>> =
+    LazyLock::new(|| host_builtin().map(|host| format!("{host}{PATH_GATEWAY}")));
 
 static HTTP_CLIENT: ClientCell = LazyLock::new(|| client_build(&HTTP_TIMEOUTS));
 
@@ -96,6 +101,7 @@ pub(crate) struct AccountSignUp {
     email: String,
     name: String,
     promo_code: String,
+    region: String,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -115,7 +121,6 @@ struct Call<'call> {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChargeJob<'job> {
     pub(crate) audio_path: &'job Path,
-    pub(crate) endpoint_id: &'job str,
     pub(crate) job_id: &'job str,
 }
 
@@ -199,6 +204,42 @@ struct TokenStored {
     token: String,
 }
 
+impl QuestionAccount<'_> {
+    fn session(&self) -> Session<'_> {
+        assert!(token_is_valid(&self.token));
+
+        Session { host: self.host, token: &self.token }
+    }
+}
+
+impl QuestionFinish {
+    pub(crate) fn new(question_id: u64, tokens: u32) -> Self {
+        assert!(question_id > 0);
+        assert!(tokens > 0);
+        assert!(tokens <= QUESTION_TOKENS_MAX);
+
+        Self { question_id, tokens }
+    }
+}
+
+impl TryFrom<TextRaw> for PublishableKey {
+    type Error = AppError;
+
+    fn try_from(raw: TextRaw) -> AppResult<Self> {
+        if raw.is_empty() {
+            return Ok(Self(String::new()));
+        }
+
+        if !checkout_key_is_valid(&raw) {
+            return Err(AppError::Internal(MESSAGE_KEY_MALFORMED.into()));
+        }
+
+        assert!(raw.starts_with("pk_"));
+
+        Ok(Self(str::to_owned(&raw)))
+    }
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub(crate) async fn account_checkout_finish(
     session_id: CheckoutSessionID,
@@ -270,7 +311,7 @@ pub(crate) async fn account_create(sign_up: AccountSignUp) -> AppResult<Account>
     let created: AccountCreated = call_post(&call, &sign_up).await?;
 
     if !token_is_valid(&created.token) {
-        return Err(AppError::Service(format!(
+        return Err(AppError::Internal(format!(
             "the account server sent a malformed token of {} characters",
             created.token.len(),
         )));
@@ -332,9 +373,7 @@ pub(crate) async fn account_status() -> AppResult<AccountStatus> {
 }
 
 pub(crate) async fn charge_apply(job: &ChargeJob<'_>) -> AppResult<()> {
-    let endpoint_id = job.endpoint_id.to_owned();
-
-    let Some(host) = blocking::run(move || billing_host(&endpoint_id)).await? else {
+    let Some(host) = host_builtin() else {
         return Ok(());
     };
 
@@ -349,12 +388,35 @@ pub(crate) async fn charge_apply(job: &ChargeJob<'_>) -> AppResult<()> {
     charge_send(&Session { host, token: &token }, &request).await
 }
 
-pub(crate) async fn question_account(
-    endpoint_id: &str,
-) -> AppResult<Option<QuestionAccount<'static>>> {
-    let endpoint_id_owned = endpoint_id.to_owned();
+pub(crate) fn connection_warm() -> impl Future<Output = ()> {
+    connection_warm_account()
+}
 
-    let Some(host) = blocking::run(move || billing_host(&endpoint_id_owned)).await? else {
+pub(crate) fn gateway_host_builtin() -> Option<&'static str> {
+    let gateway = GATEWAY_HOST_BUILTIN.as_deref();
+
+    if let Some(host) = gateway {
+        assert!(host.ends_with(PATH_GATEWAY));
+        assert!(host_builtin().is_some_and(|account_host| host.starts_with(account_host)));
+    }
+
+    gateway
+}
+
+pub(crate) fn gateway_token_load() -> AppResult<Option<String>> {
+    let Some(host) = host_builtin() else {
+        return Ok(None);
+    };
+
+    let token = token_load(host)?;
+
+    assert!(token.as_deref().is_none_or(token_is_valid));
+
+    Ok(token)
+}
+
+pub(crate) async fn question_account() -> AppResult<Option<QuestionAccount<'static>>> {
+    let Some(host) = host_builtin() else {
         return Ok(None);
     };
 
@@ -379,7 +441,7 @@ pub(crate) async fn question_finish(
     let finished: QuestionFinished = retry_run(|| call_post(&call, finish)).await?;
 
     if finished.question_id != finish.question_id {
-        return Err(AppError::Service(format!(
+        return Err(AppError::Internal(format!(
             "the account server finished question {} instead of {}",
             finished.question_id, finish.question_id,
         )));
@@ -424,21 +486,6 @@ async fn account_fetch(session: &Session<'_>) -> AppResult<Option<Account>> {
     let response = reply_ensure_ok(sent, call.label).await?;
 
     Ok(Some(response_json_bounded(response).await?))
-}
-
-fn billing_host(endpoint_id: &str) -> AppResult<Option<&'static str>> {
-    let Some(host) = host_builtin() else {
-        return Ok(None);
-    };
-
-    if !api_key_builtin_used(endpoint_id)? {
-        return Ok(None);
-    }
-
-    assert_ne!(host, "");
-    assert!(!host.ends_with('/'));
-
-    Ok(Some(host))
 }
 
 async fn call_post<Body, Reply>(call: &Call<'_>, body: &Body) -> AppResult<Reply>
@@ -546,6 +593,32 @@ fn checkout_started_is_valid(started: &CheckoutStarted) -> bool {
     !secret.is_empty() && secret.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
+async fn connection_warm_account() {
+    let account = match question_account().await {
+        Ok(Some(account)) => account,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::debug!(
+                target: "remi_lib::account",
+                %error,
+                "the account server has no session to warm",
+            );
+
+            return;
+        }
+    };
+
+    let session = account.session();
+
+    if let Err(error) = account_fetch(&session).await {
+        tracing::debug!(
+            target: "remi_lib::account",
+            %error,
+            "the account server connection was not warmed",
+        );
+    }
+}
+
 fn host_builtin() -> Option<&'static str> {
     host_clean(ACCOUNT_HOST_BUILTIN)
 }
@@ -591,15 +664,17 @@ async fn reply_ensure_ok(response: reqwest::Response, label: &str) -> AppResult<
     }
 
     let body = response.text().await.unwrap_or_default();
+    let reply = ReplyFailed { body: &body, label, status };
 
-    let message =
-        body_error_message(&body).unwrap_or_else(|| format!("{} {label}: {body}", status.as_u16()));
+    let message = body_error_message(&body).unwrap_or_else(|| {
+        format!("{} {label}: {}", status.as_u16(), body_error_absent_message(&reply))
+    });
 
     Err(AppError::Service(message))
 }
 
 fn status_load() -> AppResult<AccountStatus> {
-    let Some(host) = billing_host(ENDPOINT_ID_TRANSCRIPTION)? else {
+    let Some(host) = host_builtin() else {
         return Ok(AccountStatus { billing: false, signed_in: false });
     };
 
@@ -663,34 +738,6 @@ fn token_save(session: &Session<'_>) -> AppResult<()> {
     protected_write(&path, &payload)
 }
 
-impl QuestionFinish {
-    pub(crate) fn new(question_id: u64, tokens: u32) -> Self {
-        assert!(question_id > 0);
-        assert!(tokens > 0);
-        assert!(tokens <= QUESTION_TOKENS_MAX);
-
-        Self { question_id, tokens }
-    }
-}
-
-impl TryFrom<TextRaw> for PublishableKey {
-    type Error = AppError;
-
-    fn try_from(raw: TextRaw) -> AppResult<Self> {
-        if raw.is_empty() {
-            return Ok(Self(String::new()));
-        }
-
-        if !checkout_key_is_valid(&raw) {
-            return Err(AppError::Service(MESSAGE_KEY_MALFORMED.into()));
-        }
-
-        assert!(raw.starts_with("pk_"));
-
-        Ok(Self(str::to_owned(&raw)))
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::{QuestionAccount, token_is_valid};
@@ -709,9 +756,10 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::question_account_at;
     use super::*;
+    use crate::http::test_support::request_read;
     use crate::workspace::test_support::root_scoped;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::{TcpListener, TcpStream};
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
 
     const ACCOUNT_REPLY: &str = concat!(
@@ -759,7 +807,6 @@ mod tests {
         r#"to an account.", "type": "billing_error"}}"#,
     );
 
-    const REQUEST_READS_MAX: u32 = 64;
     const SESSION: Session<'static> = Session { host: HOST, token: TOKEN };
     const TOKEN: &str = "_5l7Sfe4jlqihWxQ9KAatIUrtHzIF7uQ_90oRpUP2MY";
 
@@ -774,42 +821,6 @@ mod tests {
             client_secret: CHECKOUT_SECRET.to_owned(),
             session_id: CHECKOUT_SESSION.to_owned(),
         }
-    }
-
-    fn request_complete(received: &[u8]) -> bool {
-        let text = String::from_utf8_lossy(received);
-
-        let Some((head, body)) = text.split_once("\r\n\r\n") else {
-            return false;
-        };
-
-        let length = head
-            .lines()
-            .find_map(|line| {
-                line.to_ascii_lowercase().strip_prefix("content-length:").map(str::to_owned)
-            })
-            .map_or(0, |value| value.trim().parse::<usize>().unwrap());
-
-        body.len() >= length
-    }
-
-    async fn request_read(stream: &mut TcpStream) -> String {
-        let mut received: Vec<u8> = Vec::new();
-        let mut block = [0_u8; 4096];
-
-        for _read_index in 0..REQUEST_READS_MAX {
-            let read = stream.read(&mut block).await.unwrap();
-
-            assert_ne!(read, 0);
-
-            received.extend_from_slice(&block[..read]);
-
-            if request_complete(&received) {
-                return String::from_utf8(received).unwrap();
-            }
-        }
-
-        panic!("the request did not end within {REQUEST_READS_MAX} reads");
     }
 
     fn request_parts(request: &str) -> (&str, serde_json::Value) {
@@ -1061,6 +1072,7 @@ mod tests {
             email: "avery@example.com".to_owned(),
             name: "Avery".to_owned(),
             promo_code: "wib2026".to_owned(),
+            region: "CA-AB".to_owned(),
         };
 
         let call = Call { host: &host, label: LABEL_SIGN_UP, path: PATH_ACCOUNT, token: None };
@@ -1075,6 +1087,7 @@ mod tests {
         assert_eq!(sent["email"], "avery@example.com");
         assert_eq!(sent["name"], "Avery");
         assert_eq!(sent["promo_code"], "wib2026");
+        assert_eq!(sent["region"], "CA-AB");
     }
 
     #[tokio::test]
@@ -1094,15 +1107,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refusal_without_the_error_envelope_keeps_its_status_and_body() {
+    async fn a_refusal_without_the_error_envelope_keeps_its_status_and_never_its_body() {
         let (host, serving) = service_replying(vec![(413, "request too large".to_owned())]).await;
         let request = ChargeRequest { job_id: JOB_ID, seconds: 61 };
         let session = Session { host: &host, token: TOKEN };
         let error = charge_send(&session, &request).await.unwrap_err().to_string();
         let requests = serving.await.unwrap();
 
-        assert_eq!(error, "api error: 413 transcription charge: request too large");
+        assert_eq!(
+            error,
+            "api error: 413 transcription charge: The server refused the request \
+                (payload too large).",
+        );
         assert_eq!(requests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failure_body_that_is_not_an_error_envelope_never_reaches_the_error() {
+        let traceback = "Traceback (most recent call last):\n  File \"query.py\", line 1145\n\
+            psycopg.errors.UndefinedColumn: column account.is_complimentary does not exist\n";
+
+        let replies = vec![
+            (500, traceback.to_owned()),
+            (409, "<html><body><h1>Conflict</h1></body></html>".to_owned()),
+        ];
+
+        let (host, serving) = service_replying(replies).await;
+        let client = client_build(&HTTP_TIMEOUTS).unwrap();
+        let crashed = client.get(format!("{host}/crashed")).send().await.unwrap();
+        let crashed_error = response_ensure_ok(crashed, LABEL_CHARGE).await.unwrap_err();
+        let refused = client.get(format!("{host}/refused")).send().await.unwrap();
+        let refused_error = reply_ensure_ok(refused, LABEL_CHARGE).await.unwrap_err();
+        let requests = serving.await.unwrap();
+
+        assert_eq!(requests.len(), 2);
+
+        assert_eq!(
+            crashed_error.to_string(),
+            "api error: 500 transcription charge: The server ran into a problem \
+                (internal server error). Try again in a few minutes.",
+        );
+
+        assert_eq!(
+            refused_error.to_string(),
+            "api error: 409 transcription charge: The server refused the request (conflict).",
+        );
     }
 
     #[tokio::test]
@@ -1222,5 +1271,392 @@ mod tests {
     #[should_panic(expected = "question_id > 0")]
     fn a_question_finish_without_a_question_is_a_bug() {
         let _finish = QuestionFinish::new(0, 5);
+    }
+}
+
+#[cfg(test)]
+mod live {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::task::JoinHandle;
+
+    const CHARGE_SECONDS: u64 = 1800;
+    const ENVIRONMENT_FAKES_URL: &str = "REMI_WORLD_FAKES_URL";
+    const ENVIRONMENT_REMI_URL: &str = "REMI_WORLD_REMI_URL";
+    const FRIEND_SECONDS: i64 = 5 * 3600;
+    const HEADER_END: &[u8] = b"\r\n\r\n";
+    const MESSAGE_PROMO_REPEATED: &str =
+        "api error: That promo code was already redeemed with this email address.";
+    const MESSAGE_PROMO_UNKNOWN: &str = "api error: That promo code is not valid.";
+    const MESSAGE_QUESTION_UNKNOWN: &str =
+        "api error: That question is not one this account asked.";
+    const PACK_HOURS: u32 = 10;
+    const PACK_SECONDS: i64 = 36_000;
+    const PROXY_READS_MAX: u32 = 4096;
+    const PUBLISHABLE_KEY_WORLD: &str = "pk_test_remiworld";
+    const QUESTION_ID_UNKNOWN: u64 = 999_999_999;
+    const RACE_CHARGE_COUNT: u32 = 6;
+    const RACE_CHARGE_SECONDS: u64 = 3600;
+
+    const MESSAGE_ASK_INACTIVE: &str = concat!(
+        "api error: Ask answers questions for 30 days after each recording remi processes. ",
+        "Process a recording to keep asking.",
+    );
+
+    const MESSAGE_BALANCE_SHORT: &str = concat!(
+        "api error: This recording needs 6 hours of transcription and the account has 4.5 hours ",
+        "left. Buy more hours to transcribe it.",
+    );
+
+    fn world_url(name: &str) -> String {
+        let url = std::env::var(name)
+            .unwrap_or_else(|_missing| panic!("{name} names the live world: run just test-world"));
+
+        assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+        assert!(!url.ends_with('/'), "{url}");
+
+        url
+    }
+
+    fn nanos_now() -> u128 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+    }
+
+    fn email_unique(prefix: &str) -> String {
+        assert_ne!(prefix, "");
+
+        format!("{prefix}-{}-{}@example.com", std::process::id(), nanos_now())
+    }
+
+    fn job_id_unique(salt: u32) -> String {
+        assert_ne!(salt, 0);
+
+        let job_id = format!("{:032x}", nanos_now() ^ (u128::from(salt) << 96_u32));
+
+        assert_eq!(job_id.len(), 32);
+        assert!(job_id_is_hex(&job_id));
+
+        job_id
+    }
+
+    fn job_id_is_hex(job_id: &str) -> bool {
+        job_id.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+
+    fn sign_up_form(promo_code: &str) -> AccountSignUp {
+        AccountSignUp {
+            email: email_unique("live"),
+            name: "Live Tester".to_owned(),
+            promo_code: promo_code.to_owned(),
+            region: "CA-AB".to_owned(),
+        }
+    }
+
+    async fn sign_up(host: &str, form: &AccountSignUp) -> (Account, String) {
+        let call = Call { host, label: LABEL_SIGN_UP, path: PATH_ACCOUNT, token: None };
+        let created: AccountCreated = call_post(&call, form).await.unwrap();
+
+        assert!(token_is_valid(&created.token));
+        assert_eq!(created.account.email, form.email);
+
+        (created.account, created.token)
+    }
+
+    async fn balance_read(session: &Session<'_>) -> i64 {
+        account_fetch(session).await.unwrap().unwrap().balance_seconds
+    }
+
+    async fn charge(session: &Session<'_>, job_id: &str, seconds: u64) -> AppResult<()> {
+        assert!(seconds > 0);
+        assert!(seconds <= CHARGE_SECONDS_MAX);
+
+        let request = ChargeRequest { job_id, seconds };
+
+        charge_send(session, &request).await
+    }
+
+    async fn stripe_pay(session_id: &str) {
+        let fakes = world_url(ENVIRONMENT_FAKES_URL);
+        let client = client_get(&HTTP_CLIENT).unwrap();
+        let body = serde_json::json!({ "session_id": session_id });
+        let url = format!("{fakes}/control/stripe/pay");
+        let response = client.post(url).json(&body).send().await.unwrap();
+
+        assert!(response.status().is_success());
+
+        let reply: serde_json::Value = response.json().await.unwrap();
+
+        assert_eq!(reply["webhook_status"], 200_u16);
+    }
+
+    fn live_runtime() -> &'static tokio::runtime::Runtime {
+        static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+            tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap()
+        });
+
+        &RUNTIME
+    }
+
+    #[test]
+    #[ignore = "live: runs against the world that just test-world starts"]
+    fn live_a_sign_up_carries_its_promo_and_its_token_reads_the_account_back() {
+        live_runtime().block_on(async {
+            let host = world_url(ENVIRONMENT_REMI_URL);
+            let (account, token) = sign_up(&host, &sign_up_form(" friend ")).await;
+            let fetched =
+                account_fetch(&Session { host: &host, token: &token }).await.unwrap().unwrap();
+            let refused =
+                account_fetch(&Session { host: &host, token: "not-the-token" }).await.unwrap();
+
+            assert!(refused.is_none());
+            assert_eq!(account.balance_seconds, FRIEND_SECONDS);
+            assert_eq!(fetched.balance_seconds, FRIEND_SECONDS);
+            assert_eq!(fetched.email, account.email);
+            assert!(fetched.payments);
+            assert_eq!(fetched.publishable_key.0, PUBLISHABLE_KEY_WORLD);
+
+            let offers: Vec<(u32, u32)> =
+                fetched.offers.iter().map(|offer| (offer.hours, offer.price_cents)).collect();
+
+            assert_eq!(offers, vec![(10, 1000), (50, 5000), (200, 20_000)]);
+        });
+    }
+
+    #[test]
+    #[ignore = "live: runs against the world that just test-world starts"]
+    fn live_a_charge_is_taken_once_and_one_over_the_balance_reads_the_server_message() {
+        live_runtime().block_on(async {
+            let host = world_url(ENVIRONMENT_REMI_URL);
+            let (_account, token) = sign_up(&host, &sign_up_form("FRIEND")).await;
+            let session = Session { host: &host, token: &token };
+            let job_id = job_id_unique(1);
+            let job_id_over = job_id_unique(2);
+
+            charge(&session, &job_id, CHARGE_SECONDS).await.unwrap();
+            charge(&session, &job_id, CHARGE_SECONDS).await.unwrap();
+
+            let refused = charge(&session, &job_id_over, 21_600).await.unwrap_err();
+            let balance = balance_read(&session).await;
+
+            assert_eq!(balance, FRIEND_SECONDS - i64::try_from(CHARGE_SECONDS).unwrap());
+            assert_eq!(refused.to_string(), MESSAGE_BALANCE_SHORT);
+        });
+    }
+
+    #[test]
+    #[ignore = "live: runs against the world that just test-world starts"]
+    fn live_a_checkout_starts_a_session_the_app_can_open_and_finishes_once_paid() {
+        live_runtime().block_on(async {
+            let host = world_url(ENVIRONMENT_REMI_URL);
+            let (_account, token) = sign_up(&host, &sign_up_form("")).await;
+            let hours = NonZeroU32::new(PACK_HOURS).unwrap();
+            let start = Call {
+                host: &host,
+                label: LABEL_CHECKOUT,
+                path: PATH_CHECKOUT,
+                token: Some(&token),
+            };
+            let started: CheckoutStarted =
+                call_post(&start, &CheckoutStartRequest { hours }).await.unwrap();
+            let finish = Call {
+                host: &host,
+                label: LABEL_CHECKOUT_FINISH,
+                path: PATH_CHECKOUT_FINISH,
+                token: Some(&token),
+            };
+            let request = CheckoutFinishRequest { session_id: &started.session_id };
+            let unpaid: CheckoutFinished = call_post(&finish, &request).await.unwrap();
+
+            assert!(checkout_started_is_valid(&started));
+            assert!(!unpaid.paid);
+            assert_eq!(unpaid.account.balance_seconds, 0);
+
+            stripe_pay(&started.session_id).await;
+
+            let paid: CheckoutFinished = call_post(&finish, &request).await.unwrap();
+            let again: CheckoutFinished = call_post(&finish, &request).await.unwrap();
+
+            assert!(paid.paid);
+            assert_eq!(paid.account.balance_seconds, PACK_SECONDS);
+            assert_eq!(again.account.balance_seconds, PACK_SECONDS);
+        });
+    }
+
+    #[test]
+    #[ignore = "live: runs against the world that just test-world starts"]
+    fn live_a_question_needs_a_recent_recording_and_finishes_once() {
+        live_runtime().block_on(async {
+            let host = world_url(ENVIRONMENT_REMI_URL);
+            let (_account, token) = sign_up(&host, &sign_up_form("FRIEND")).await;
+            let account = QuestionAccount { host: &host, token };
+            let inactive = question_start(&account).await.unwrap_err();
+
+            charge(&account.session(), &job_id_unique(3), CHARGE_SECONDS).await.unwrap();
+
+            let started = question_start(&account).await.unwrap();
+            let question_id = started.question_id.unwrap();
+            let unknown = QuestionFinish::new(QUESTION_ID_UNKNOWN, 5);
+            let refused = question_finish(&account, &unknown).await.unwrap_err();
+
+            question_finish(&account, &QuestionFinish::new(question_id, 1234)).await.unwrap();
+            question_finish(&account, &QuestionFinish::new(question_id, 99)).await.unwrap();
+
+            assert_eq!(inactive.to_string(), MESSAGE_ASK_INACTIVE);
+            assert_eq!(started.wait_seconds, 0);
+            assert_eq!(refused.to_string(), MESSAGE_QUESTION_UNKNOWN);
+        });
+    }
+
+    #[test]
+    #[ignore = "live: runs against the world that just test-world starts"]
+    fn live_a_promo_refusal_reads_the_server_message_and_credits_nothing() {
+        live_runtime().block_on(async {
+            let host = world_url(ENVIRONMENT_REMI_URL);
+            let (_account, token) = sign_up(&host, &sign_up_form("FRIEND")).await;
+            let call =
+                Call { host: &host, label: LABEL_PROMO, path: PATH_PROMO, token: Some(&token) };
+            let unknown =
+                call_post::<_, Account>(&call, &PromoRequest { code: "NOSUCHCODE" }).await;
+            let repeated = call_post::<_, Account>(&call, &PromoRequest { code: "friend" }).await;
+            let balance = balance_read(&Session { host: &host, token: &token }).await;
+
+            assert_eq!(unknown.unwrap_err().to_string(), MESSAGE_PROMO_UNKNOWN);
+            assert_eq!(repeated.unwrap_err().to_string(), MESSAGE_PROMO_REPEATED);
+            assert_eq!(balance, FRIEND_SECONDS);
+        });
+    }
+
+    #[test]
+    #[ignore = "live: runs against the world that just test-world starts"]
+    fn live_charges_racing_on_one_account_never_spend_more_than_it_holds() {
+        live_runtime().block_on(async {
+            let host = world_url(ENVIRONMENT_REMI_URL);
+            let (_account, token) = sign_up(&host, &sign_up_form("FRIEND")).await;
+            let mut racing = Vec::with_capacity(usize_of!(RACE_CHARGE_COUNT));
+
+            for salt in 0..RACE_CHARGE_COUNT {
+                let host_owned = host.clone();
+                let token_owned = token.clone();
+                let job_id = job_id_unique(salt + 10);
+
+                racing.push(tokio::spawn(async move {
+                    let session = Session { host: &host_owned, token: &token_owned };
+
+                    charge(&session, &job_id, RACE_CHARGE_SECONDS).await.is_ok()
+                }));
+            }
+
+            let mut charged: u32 = 0;
+
+            for handle in racing {
+                charged += u32::from(handle.await.unwrap());
+            }
+
+            let spent = i64::from(charged) * i64::try_from(RACE_CHARGE_SECONDS).unwrap();
+            let balance = balance_read(&Session { host: &host, token: &token }).await;
+
+            assert_eq!(charged, 5);
+            assert_eq!(balance, FRIEND_SECONDS - spent);
+        });
+    }
+
+    #[test]
+    #[ignore = "live: runs against the world that just test-world starts"]
+    fn live_a_charge_whose_answer_is_lost_is_sent_again_and_taken_once() {
+        live_runtime().block_on(async {
+            let host = world_url(ENVIRONMENT_REMI_URL);
+            let (_account, token) = sign_up(&host, &sign_up_form("FRIEND")).await;
+            let (proxy, relaying) = proxy_losing_first_answer(&host).await;
+            let job_id = job_id_unique(30);
+
+            charge(&Session { host: &proxy, token: &token }, &job_id, CHARGE_SECONDS)
+                .await
+                .unwrap();
+
+            let relayed = relaying.await.unwrap();
+            let balance = balance_read(&Session { host: &host, token: &token }).await;
+
+            assert!(relayed >= 2, "{relayed}");
+            assert_eq!(balance, FRIEND_SECONDS - i64::try_from(CHARGE_SECONDS).unwrap());
+        });
+    }
+
+    async fn proxy_losing_first_answer(upstream: &str) -> (String, JoinHandle<u32>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let address = upstream.trim_start_matches("http://").to_owned();
+
+        let relaying = tokio::spawn(async move {
+            let mut relayed: u32 = 0;
+
+            for connection_index in 0..PROXY_READS_MAX {
+                let accepted =
+                    tokio::time::timeout(Duration::from_secs(5), listener.accept()).await;
+
+                let Ok(Ok((mut client, _peer))) = accepted else {
+                    return relayed;
+                };
+
+                let request = message_read(&mut client).await;
+                let mut server = TcpStream::connect(&address).await.unwrap();
+
+                server.write_all(&request).await.unwrap();
+
+                let answer = message_read(&mut server).await;
+
+                relayed += 1;
+
+                if connection_index == 0 {
+                    continue;
+                }
+
+                client.write_all(&answer).await.unwrap();
+            }
+
+            relayed
+        });
+
+        (format!("http://127.0.0.1:{port}"), relaying)
+    }
+
+    async fn message_read(stream: &mut TcpStream) -> Vec<u8> {
+        let mut received: Vec<u8> = Vec::new();
+        let mut block = [0_u8; 8192];
+
+        for _read_index in 0..PROXY_READS_MAX {
+            if message_complete(&received) {
+                return received;
+            }
+
+            let read = stream.read(&mut block).await.unwrap();
+
+            if read == 0 {
+                return received;
+            }
+
+            received.extend_from_slice(&block[..read]);
+        }
+
+        panic!("a message did not end within {PROXY_READS_MAX} reads");
+    }
+
+    fn message_complete(received: &[u8]) -> bool {
+        let Some(head_end) =
+            received.windows(HEADER_END.len()).position(|window| window == HEADER_END)
+        else {
+            return false;
+        };
+
+        let head = String::from_utf8_lossy(&received[..head_end]).to_ascii_lowercase();
+        let length = head
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("content-length:").map(|value| value.trim().to_owned())
+            })
+            .map_or(0, |value| value.parse::<usize>().unwrap());
+
+        received.len() >= head_end + HEADER_END.len() + length
     }
 }

@@ -1,12 +1,12 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import SideBar from '../../src/components/side_bar.vue'
 import { use_account } from '../../src/composables/use_account'
 import { use_ask } from '../../src/composables/use_ask'
 import { use_context_menu } from '../../src/composables/use_context_menu'
 import { use_pipeline } from '../../src/composables/use_pipeline'
 import { assert } from '../../src/lib/assert'
-import { ATTACH_TO } from './fixtures'
+import { ATTACH_TO, mount_auto_unmount } from './fixtures'
 import type { VueWrapper } from '@vue/test-utils'
 
 
@@ -15,7 +15,6 @@ vi.mock('../../src/lib/ipc')
 const account = use_account()
 const ask_state = use_ask()
 const context_menu = use_context_menu()
-const mounted = new Set<VueWrapper>()
 const pipeline = use_pipeline()
 
 
@@ -29,14 +28,12 @@ function menu_labels(): string[] {
 }
 
 function mount_sidebar(): VueWrapper {
-    assert(mounted.size === 0)
+    assert(document.body.childElementCount === 0)
 
-    const wrapper = mount(SideBar, {
+    const wrapper = mount_auto_unmount(SideBar, {
         [ATTACH_TO]: document.body,
         global: { stubs: { SidebarFolders: true, TasksPanel: true } },
     })
-
-    mounted.add(wrapper)
 
     assert(wrapper.element instanceof Node)
     assert(document.body.contains(wrapper.element))
@@ -45,7 +42,7 @@ function mount_sidebar(): VueWrapper {
 }
 
 async function nav_right_click(wrapper: VueWrapper, label: string): Promise<string[]> {
-    assert(mounted.has(wrapper))
+    assert(!wrapper.vm.$.isUnmounted)
     assert(label.length > 0)
 
     const button = wrapper.findAll('button').find((candidate) => candidate.text() === label)
@@ -59,16 +56,13 @@ async function nav_right_click(wrapper: VueWrapper, label: string): Promise<stri
 }
 
 beforeEach(() => {
+    onTestFinished(() => {
+        context_menu.close()
+        document.body.innerHTML = ''
+    })
+
     pipeline.pipeline_reset()
     account.status.value = { billing: false, signed_in: false }
-})
-
-afterEach(() => {
-    for (const wrapper of mounted) wrapper.unmount()
-
-    mounted.clear()
-    context_menu.close()
-    document.body.innerHTML = ''
 })
 
 describe('SideBar menus', () => {
@@ -93,8 +87,8 @@ describe('SideBar menus', () => {
 
         const billing_on = await nav_right_click(wrapper, 'Settings')
 
-        expect(billing_off).toEqual(['General', 'AI'])
-        expect(billing_on).toEqual(['General', 'AI', 'Account'])
+        expect(billing_off).toEqual(['General'])
+        expect(billing_on).toEqual(['General', 'Account'])
     })
 })
 

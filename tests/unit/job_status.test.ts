@@ -42,4 +42,13 @@ describe('job_title', () => {
 
         expect(job_title(recording)).toBe('Recording 1')
     })
+
+    it('keeps the whole name of a file that is only a dot and an extension', () => {
+        expect(job_title(job_meta_build({ source_path: '/home/you/.wav' }))).toBe('.wav')
+    })
+
+    it('names a job untitled when its path has no file name', () => {
+        expect(job_title(job_meta_build({ source_path: '' }))).toBe('Untitled recording')
+        expect(job_title(job_meta_build({ source_path: '/home/you/' }))).toBe('Untitled recording')
+    })
 })

@@ -20,7 +20,7 @@ function bullet_list(...items: ClipboardNode[]): ClipboardNode {
 
 function code_block(value: string): ClipboardNode {
     assert(typeof value === 'string')
-    assert(value.length >= 0)
+    assert(value.length > 0)
 
     return node('codeBlock', [text(value)])
 }
@@ -83,7 +83,7 @@ function ordered_list(items: ClipboardNode[], attributes: Attributes = {}): Clip
 
 function paragraph(...inline: (string | ClipboardNode)[]): ClipboardNode {
     assert(Array.isArray(inline))
-    assert(inline.length >= 0)
+    assert(inline.length > 0)
 
     return node('paragraph', inline.map((part) => (typeof part === 'string' ? text(part) : part)))
 }
@@ -111,7 +111,7 @@ function task_item(checked: boolean, ...blocks: ClipboardNode[]): ClipboardNode 
 
 function text(value: string): ClipboardNode {
     assert(typeof value === 'string')
-    assert(value.length >= 0)
+    assert(value.length > 0)
 
     return {
         [KEY_ATTRIBUTES]: {},

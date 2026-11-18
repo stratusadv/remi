@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { assert } from '../../src/lib/assert'
 import {
-    PALETTE_DEFAULT,
+    MODE_STORAGE_KEY,
+    PALETTE_STORAGE_KEY,
+    THEME_DEFAULT,
     THEME_STORAGE_KEY,
+    mode_apply_to_html,
+    mode_resolve,
     palette_apply_to_html,
+    storage_read,
+    storage_write,
     system_media_query,
     theme_apply_to_html,
-    theme_resolve,
-    theme_storage_read,
-    theme_storage_write,
 } from '../../src/lib/theme'
 import type { Mock } from 'vitest'
 
@@ -48,108 +51,109 @@ describe('system_media_query', () => {
     })
 })
 
-describe('theme_resolve', () => {
+describe('mode_resolve', () => {
     it('honours an explicit light or dark choice without consulting the system', () => {
         const stub = match_media_stub(true)
 
         vi.stubGlobal('matchMedia', stub)
 
-        expect(theme_resolve('light')).toBe('light')
-        expect(theme_resolve('dark')).toBe('dark')
+        expect(mode_resolve('light')).toBe('light')
+        expect(mode_resolve('dark')).toBe('dark')
         expect(stub).not.toHaveBeenCalled()
     })
 
-    it('follows the system preference when the choice is system or null', () => {
+    it('follows the system preference when the choice is system, null, or unknown', () => {
         vi.stubGlobal('matchMedia', match_media_stub(true))
 
-        expect(theme_resolve('system')).toBe('light')
-        expect(theme_resolve(null)).toBe('light')
+        expect(mode_resolve('system')).toBe('light')
+        expect(mode_resolve(null)).toBe('light')
+        expect(mode_resolve('purple')).toBe('light')
 
         vi.stubGlobal('matchMedia', match_media_stub(false))
 
-        expect(theme_resolve('system')).toBe('dark')
-        expect(theme_resolve(null)).toBe('dark')
+        expect(mode_resolve('system')).toBe('dark')
+        expect(mode_resolve(null)).toBe('dark')
+        expect(mode_resolve('purple')).toBe('dark')
     })
 
     it('defaults to dark when the system preference is unavailable', () => {
         vi.stubGlobal('matchMedia', undefined)
 
-        expect(theme_resolve(null)).toBe('dark')
-        expect(theme_resolve('system')).toBe('dark')
+        expect(mode_resolve(null)).toBe('dark')
+        expect(mode_resolve('system')).toBe('dark')
     })
 })
 
-describe('theme_storage_read', () => {
-    it('returns null when nothing is stored', () => {
-        expect(theme_storage_read()).toBeNull()
+describe('storage_read and storage_write', () => {
+    it('reads null for a key that was never written', () => {
+        expect(storage_read(MODE_STORAGE_KEY)).toBeNull()
+        expect(storage_read(PALETTE_STORAGE_KEY)).toBeNull()
+        expect(storage_read(THEME_STORAGE_KEY)).toBeNull()
     })
 
-    it('returns the stored light or dark choice', () => {
-        localStorage.setItem(THEME_STORAGE_KEY, 'light')
+    it('reads back each value under its own key', () => {
+        storage_write(MODE_STORAGE_KEY, 'light')
+        storage_write(PALETTE_STORAGE_KEY, 'nord')
+        storage_write(THEME_STORAGE_KEY, 'standard')
 
-        expect(theme_storage_read()).toBe('light')
-
-        localStorage.setItem(THEME_STORAGE_KEY, 'dark')
-
-        expect(theme_storage_read()).toBe('dark')
+        expect(storage_read(MODE_STORAGE_KEY)).toBe('light')
+        expect(storage_read(PALETTE_STORAGE_KEY)).toBe('nord')
+        expect(storage_read(THEME_STORAGE_KEY)).toBe('standard')
+        expect(localStorage.length).toBe(3)
     })
 
-    it('treats any other stored value as null', () => {
-        localStorage.setItem(THEME_STORAGE_KEY, 'system')
+    it('removes the key when the value is null', () => {
+        storage_write(THEME_STORAGE_KEY, 'standard')
+        storage_write(THEME_STORAGE_KEY, null)
 
-        expect(theme_storage_read()).toBeNull()
-
-        localStorage.setItem(THEME_STORAGE_KEY, 'purple')
-
-        expect(theme_storage_read()).toBeNull()
-    })
-})
-
-describe('theme_storage_write', () => {
-    it('stores light and dark under the theme key', () => {
-        theme_storage_write('light')
-
-        expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe('light')
-
-        theme_storage_write('dark')
-
-        expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe('dark')
+        expect(storage_read(THEME_STORAGE_KEY)).toBeNull()
+        expect(localStorage.length).toBe(0)
     })
 
-    it('removes the key for system and null', () => {
-        theme_storage_write('dark')
-        theme_storage_write('system')
+    it('refuses a key outside the remi namespace', () => {
+        expect(() => storage_read('theme')).toThrow()
 
-        expect(localStorage.getItem(THEME_STORAGE_KEY)).toBeNull()
+        expect(() => {
+            storage_write('theme', 'dark')
+        }).toThrow()
 
-        theme_storage_write('dark')
-        theme_storage_write(null)
-
-        expect(localStorage.getItem(THEME_STORAGE_KEY)).toBeNull()
+        expect(localStorage.length).toBe(0)
     })
 })
 
-describe('theme_apply_to_html', () => {
+describe('mode_apply_to_html', () => {
     it('sets the light class and colour scheme and clears the dark class', () => {
         const root = document.documentElement
 
-        root.classList.add('theme-dark')
-        theme_apply_to_html('light')
+        root.classList.add('mode-dark')
+        mode_apply_to_html('light')
 
-        expect(root.classList.contains('theme-light')).toBe(true)
-        expect(root.classList.contains('theme-dark')).toBe(false)
+        expect(root.classList.contains('mode-light')).toBe(true)
+        expect(root.classList.contains('mode-dark')).toBe(false)
         expect(root.style.colorScheme).toBe('light')
     })
 
     it('sets the dark class and colour scheme and clears the light class', () => {
         const root = document.documentElement
 
-        root.classList.add('theme-light')
-        theme_apply_to_html('dark')
+        root.classList.add('mode-light')
+        mode_apply_to_html('dark')
 
-        expect(root.classList.contains('theme-dark')).toBe(true)
-        expect(root.classList.contains('theme-light')).toBe(false)
+        expect(root.classList.contains('mode-dark')).toBe(true)
+        expect(root.classList.contains('mode-light')).toBe(false)
         expect(root.style.colorScheme).toBe('dark')
+    })
+})
+
+describe('theme_apply_to_html', () => {
+    it('writes the theme to the root data attribute', () => {
+        theme_apply_to_html('standard')
+
+        expect(document.documentElement.dataset['theme']).toBe('standard')
+
+        theme_apply_to_html(THEME_DEFAULT)
+
+        expect(document.documentElement.dataset['theme']).toBe('cubism')
     })
 })
 
@@ -159,8 +163,8 @@ describe('palette_apply_to_html', () => {
 
         expect(document.documentElement.dataset['palette']).toBe('nord')
 
-        palette_apply_to_html(PALETTE_DEFAULT)
+        palette_apply_to_html('graphite')
 
-        expect(document.documentElement.dataset['palette']).toBe('cubist')
+        expect(document.documentElement.dataset['palette']).toBe('graphite')
     })
 })

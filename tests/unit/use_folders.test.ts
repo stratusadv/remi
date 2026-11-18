@@ -98,7 +98,7 @@ describe('folders', () => {
 
         await folders_state.refresh()
 
-        expect(folders_state.error_message.value).toBe('Error: unreadable')
+        expect(folders_state.error_message.value).toBe('unreadable')
         expect(folders_state.folders.value).toEqual(['Acme', 'Board', 'Hiring'])
     })
 })
@@ -115,6 +115,26 @@ describe('folder_create', () => {
         expect(name).toBe('Legal')
         expect(ipc.folder_create).toHaveBeenCalledWith('Legal')
         expect(folders_state.folders.value).toContain('Legal')
+    })
+
+    it('reports why the list could not be read once the folder is made', async () => {
+        const unreadable = new Error('io error: folders.json could not be read')
+
+        vi.mocked(ipc.folders_list).mockRejectedValue(unreadable)
+
+        const created = folders_state.folder_create().catch((error: unknown) => error)
+
+        await prompt_answer('Legal')
+
+        const outcome = await created
+
+        expect(outcome).toBe(unreadable)
+        expect(ipc.folder_create).toHaveBeenCalledWith('Legal')
+
+        expect(folders_state.error_message.value).toBe(
+            'remi could not read or write one of its files. Check that the disk has free '
+            + 'space, then try again.',
+        )
     })
 
     it('explains a repeated name and creates nothing', async () => {

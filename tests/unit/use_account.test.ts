@@ -6,9 +6,10 @@ import {
     use_account,
 } from '../../src/composables/use_account'
 import { assert } from '../../src/lib/assert'
+import { MESSAGE_UNSHOWN } from '../../src/lib/errors'
 import { ipc } from '../../src/lib/ipc'
-import { WRITE_TEXT } from './fixtures'
-import type { Account, AccountOffer } from '../../src/types'
+import { WRITE_TEXT, deferred_new } from './fixtures'
+import type { Account, AccountOffer, AccountSignUp } from '../../src/types'
 
 
 vi.mock('../../src/lib/ipc')
@@ -32,11 +33,18 @@ const ACCOUNT_SAMPLE = Object.freeze<Account>({
     publishable_key: 'pk_test_51Hscribe',
 })
 
+const SIGN_UP = Object.freeze<AccountSignUp>({
+    email: 'avery@example.com',
+    name: 'Avery',
+    promo_code: 'WIB2026',
+    region: 'CA-AB',
+})
+
 const account_state = use_account()
 
 function account_with(balance_seconds: number): Account {
     assert(Number.isSafeInteger(balance_seconds))
-    assert(Object.isFrozen(ACCOUNT_SAMPLE))
+    assert(ACCOUNT_SAMPLE.offers.every((offer, index) => offer === OFFERS[index]))
 
     return { ...ACCOUNT_SAMPLE, balance_seconds }
 }
@@ -84,6 +92,35 @@ describe('status_load', () => {
     })
 })
 
+describe('refresh', () => {
+    it('reloads the status and starts the account read without waiting for it', async () => {
+        const read = deferred_new<Account | null>()
+
+        vi.mocked(ipc.account_status).mockResolvedValue({ billing: true, signed_in: true })
+        vi.mocked(ipc.account_get).mockReturnValue(read.promise)
+
+        await account_state.refresh()
+
+        expect(account_state.status.value).toEqual({ billing: true, signed_in: true })
+        expect(ipc.account_get).toHaveBeenCalledTimes(1)
+        expect(account_state.account.value).toBeNull()
+
+        read.resolve(account_with(5400))
+        await read.promise
+
+        expect(account_state.account.value).toEqual(account_with(5400))
+    })
+
+    it('reads no account when the reloaded status is signed out', async () => {
+        vi.mocked(ipc.account_status).mockResolvedValue({ billing: true, signed_in: false })
+
+        await account_state.refresh()
+
+        expect(account_state.sign_up_needed.value).toBe(true)
+        expect(ipc.account_get).not.toHaveBeenCalled()
+    })
+})
+
 describe('account_load', () => {
     it('asks for nothing while the copy is signed out', async () => {
         account_state.status.value = { billing: true, signed_in: false }
@@ -111,9 +148,10 @@ describe('account_load', () => {
         account_state.status.value = { billing: true, signed_in: true }
         vi.mocked(ipc.account_get).mockResolvedValue(leaked)
 
-        await expect(account_state.account_load()).rejects.toThrow(MESSAGE_ASSERTION)
+        await expect(account_state.account_load()).resolves.toBeUndefined()
 
         expect(account_state.account.value).toBeNull()
+        expect(account_state.error_message.value).toBe(MESSAGE_UNSHOWN)
     })
 
     it('signs the copy out when the server refuses its token', async () => {
@@ -132,9 +170,10 @@ describe('account_load', () => {
         account_state.status.value = { billing: true, signed_in: true }
         vi.mocked(ipc.account_get).mockResolvedValue(account_with(-1))
 
-        await expect(account_state.account_load()).rejects.toThrow(MESSAGE_ASSERTION)
+        await expect(account_state.account_load()).resolves.toBeUndefined()
 
         expect(account_state.account.value).toBeNull()
+        expect(account_state.error_message.value).toBe(MESSAGE_UNSHOWN)
     })
 
     it('records a failed read and keeps the account it had', async () => {
@@ -149,16 +188,152 @@ describe('account_load', () => {
     })
 })
 
+describe('a status change during a request', () => {
+    it('discards an account read that lands after the build stopped billing', async () => {
+        const read = deferred_new<Account | null>()
+
+        account_state.status.value = { billing: true, signed_in: true }
+        vi.mocked(ipc.account_get).mockReturnValue(read.promise)
+        vi.mocked(ipc.account_status).mockResolvedValue({ billing: false, signed_in: false })
+
+        const loading = account_state.account_load()
+
+        await account_state.status_load()
+        read.resolve(account_with(5400))
+
+        await expect(loading).resolves.toBeUndefined()
+
+        expect(account_state.status.value).toEqual({ billing: false, signed_in: false })
+        expect(account_state.account.value).toBeNull()
+        expect(account_state.error_message.value).toBeNull()
+    })
+
+    it('discards an account read that lands after the copy was signed out', async () => {
+        const read = deferred_new<Account | null>()
+
+        account_state.status.value = { billing: true, signed_in: true }
+        vi.mocked(ipc.account_get).mockReturnValue(read.promise)
+        vi.mocked(ipc.account_status).mockResolvedValue({ billing: true, signed_in: false })
+
+        const loading = account_state.account_load()
+
+        await account_state.status_load()
+        read.resolve(account_with(5400))
+
+        await expect(loading).resolves.toBeUndefined()
+
+        expect(account_state.status.value).toEqual({ billing: true, signed_in: false })
+        expect(account_state.account.value).toBeNull()
+        expect(account_state.sign_up_needed.value).toBe(true)
+    })
+
+    it('discards a sign-in that lands after the build stopped billing', async () => {
+        const signed_in = deferred_new<Account>()
+
+        account_state.status.value = { billing: true, signed_in: false }
+        vi.mocked(ipc.account_sign_in).mockReturnValue(signed_in.promise)
+        vi.mocked(ipc.account_status).mockResolvedValue({ billing: false, signed_in: false })
+
+        const signing_in = account_state.sign_in(SIGN_IN_CODE)
+
+        await account_state.status_load()
+        signed_in.resolve(account_with(5400))
+
+        await expect(signing_in).resolves.toBeUndefined()
+
+        expect(account_state.status.value).toEqual({ billing: false, signed_in: false })
+        expect(account_state.account.value).toBeNull()
+    })
+})
+
+describe('an account read that a write overtakes', () => {
+    it('keeps a promo redeemed while an older read was in flight', async () => {
+        const read = deferred_new<Account | null>()
+
+        account_state.status.value = { billing: true, signed_in: true }
+        account_state.account.value = account_with(5400)
+        vi.mocked(ipc.account_get).mockReturnValue(read.promise)
+        vi.mocked(ipc.account_promo_redeem).mockResolvedValue(account_with(905_400))
+
+        const loading = account_state.account_load()
+
+        await account_state.promo_redeem('WIB2026')
+        read.resolve(account_with(5400))
+        await loading
+
+        expect(account_state.account.value).toEqual(account_with(905_400))
+        expect(account_state.balance_text.value).toBe('251.5 hours')
+    })
+
+    it('drops the failure of a read that a promo overtook', async () => {
+        const gate = deferred_new<undefined>()
+
+        const failing = gate.promise.then(() => {
+            throw new Error('network error: offline')
+        })
+
+        account_state.status.value = { billing: true, signed_in: true }
+        account_state.account.value = account_with(5400)
+        vi.mocked(ipc.account_get).mockReturnValue(failing)
+        vi.mocked(ipc.account_promo_redeem).mockResolvedValue(account_with(905_400))
+
+        const loading = account_state.account_load()
+
+        await account_state.promo_redeem('WIB2026')
+        gate.resolve(undefined)
+        await loading
+
+        expect(account_state.error_message.value).toBeNull()
+        expect(account_state.account.value).toEqual(account_with(905_400))
+    })
+})
+
+describe('two account reads in flight', () => {
+    it('keeps the newer of two reads when the older one lands last', async () => {
+        const older = deferred_new<Account | null>()
+        const newer = deferred_new<Account | null>()
+
+        account_state.status.value = { billing: true, signed_in: true }
+        vi.mocked(ipc.account_get).mockReturnValueOnce(older.promise)
+        vi.mocked(ipc.account_get).mockReturnValueOnce(newer.promise)
+
+        const loading = Promise.all([account_state.account_load(), account_state.account_load()])
+
+        newer.resolve(account_with(3600))
+        await newer.promise
+        older.resolve(account_with(5400))
+        await loading
+
+        expect(account_state.account.value).toEqual(account_with(3600))
+    })
+
+    it('keeps the newer of two reads when the older one lands first', async () => {
+        const older = deferred_new<Account | null>()
+        const newer = deferred_new<Account | null>()
+
+        account_state.status.value = { billing: true, signed_in: true }
+        vi.mocked(ipc.account_get).mockReturnValueOnce(older.promise)
+        vi.mocked(ipc.account_get).mockReturnValueOnce(newer.promise)
+
+        const loading = Promise.all([account_state.account_load(), account_state.account_load()])
+
+        older.resolve(account_with(5400))
+        await older.promise
+        newer.resolve(account_with(3600))
+        await loading
+
+        expect(account_state.account.value).toEqual(account_with(3600))
+    })
+})
+
 describe('create, sign_in, and promo_redeem', () => {
     it('signs the copy in with the account a sign-up creates', async () => {
-        const sign_up = { email: 'avery@example.com', name: 'Avery', promo_code: 'WIB2026' }
-
         account_state.status.value = { billing: true, signed_in: false }
         vi.mocked(ipc.account_create).mockResolvedValue(account_with(900_000))
 
-        await account_state.create(sign_up)
+        await account_state.create(SIGN_UP)
 
-        expect(ipc.account_create).toHaveBeenCalledWith(sign_up)
+        expect(ipc.account_create).toHaveBeenCalledWith(SIGN_UP)
         expect(account_state.status.value).toEqual({ billing: true, signed_in: true })
         expect(account_state.sign_up_needed.value).toBe(false)
         expect(account_state.balance_text.value).toBe('250 hours')
@@ -173,6 +348,26 @@ describe('create, sign_in, and promo_redeem', () => {
         expect(ipc.account_sign_in).toHaveBeenCalledWith(SIGN_IN_CODE)
         expect(account_state.status.value.signed_in).toBe(true)
         expect(account_state.balance_text.value).toBe('0 minutes')
+    })
+
+    it('refuses a sign-up or a sign-in on a build without billing and sends nothing', async () => {
+        await expect(account_state.create(SIGN_UP)).rejects.toThrow(MESSAGE_ASSERTION)
+        await expect(account_state.sign_in(SIGN_IN_CODE)).rejects.toThrow(MESSAGE_ASSERTION)
+
+        expect(ipc.account_create).not.toHaveBeenCalled()
+        expect(ipc.account_sign_in).not.toHaveBeenCalled()
+    })
+
+    it('refuses a sign-up without a province or state it knows and sends nothing', async () => {
+        const sign_up_blank = { ...SIGN_UP, region: '' }
+        const sign_up_unknown = { ...SIGN_UP, region: 'CA-XX' }
+
+        account_state.status.value = { billing: true, signed_in: false }
+
+        await expect(account_state.create(sign_up_blank)).rejects.toThrow(MESSAGE_ASSERTION)
+        await expect(account_state.create(sign_up_unknown)).rejects.toThrow(MESSAGE_ASSERTION)
+
+        expect(ipc.account_create).not.toHaveBeenCalled()
     })
 
     it('sends a promo code without the space around it and shows the new balance', async () => {

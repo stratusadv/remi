@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import uuid
 
 import pytest
@@ -51,6 +52,8 @@ def ask_limited(settings: Settings) -> None:
 
 
 def _account_active(client: Client, *, email: str = 'avery@example.com') -> tuple[Account, str]:
+    assert '@' in email
+
     token = account_create(client, email=email)
     account = Account.objects.get(email=email)
 
@@ -60,6 +63,8 @@ def _account_active(client: Client, *, email: str = 'avery@example.com') -> tupl
 
 
 def _charge_aged(account: Account, *, seconds: float) -> None:
+    assert seconds > 0
+
     entry = AccountLedgerEntry.objects.create(
         account=account,
         kind=AccountLedgerEntryKindChoices.CHARGE,
@@ -73,6 +78,9 @@ def _charge_aged(account: Account, *, seconds: float) -> None:
 
 
 def _question_aged(account: Account, *, seconds: float, tokens: int) -> None:
+    assert math.isfinite(seconds)
+    assert 0 < tokens <= QUESTION_TOKENS_MAX
+
     question = AccountQuestion.objects.create(account=account, tokens=tokens)
     created = timezone.now() - timedelta(seconds=seconds)
 
@@ -86,8 +94,11 @@ def _question_finish(
     question_id: object,
     tokens: object,
 ) -> _MonkeyPatchedWSGIResponse:
-    body = {'question_id': question_id, 'tokens': tokens}
+    assert token
+    assert isinstance(question_id, int | str)
+    assert isinstance(tokens, int | str)
 
+    body = {'question_id': question_id, 'tokens': tokens}
     return api_post(client, ACCOUNT_QUESTION_FINISH_PATH, body=body, token=token)
 
 

@@ -67,7 +67,7 @@ function server_options(): ServerOptions {
         strictPort: true,
         host: false,
         watch: {
-            ignored: ['**/src-tauri/**'],
+            ignored: ['**/.venv/**', '**/server/**', '**/src-tauri/**', '**/target/**'],
         },
     }
 

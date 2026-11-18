@@ -26,6 +26,8 @@ const _: () = assert!(GROUPS_FILE_BYTES_MAX >= GROUP_COUNT_MAX * GROUP_BYTES_MAX
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Person {
+    #[serde(default)]
+    pub(crate) description: String,
     pub(crate) id: String,
     #[serde(alias = "first_name")]
     pub(crate) name_first: String,
@@ -33,8 +35,6 @@ pub(crate) struct Person {
     pub(crate) name_last: String,
     #[serde(default)]
     pub(crate) role: String,
-    #[serde(default)]
-    pub(crate) description: String,
 }
 
 impl Person {
@@ -96,7 +96,9 @@ pub(crate) fn groups_load_all() -> AppResult<Vec<Group>> {
     let raw = workspace::file_read_bounded(&path, GROUPS_FILE_BYTES_MAX)?;
 
     let groups: Vec<Group> = serde_json::from_str(&raw).map_err(|error| {
-        AppError::Config(format!("the saved groups could not be read: {error}"))
+        tracing::warn!("{} could not be read: {error}", path.display());
+
+        AppError::Config("the saved groups could not be read".into())
     })?;
 
     groups_count_validate(&groups)?;
@@ -114,7 +116,9 @@ pub(crate) fn people_load_all() -> AppResult<Vec<Person>> {
     let raw = workspace::file_read_bounded(&path, PEOPLE_FILE_BYTES_MAX)?;
 
     let people: Vec<Person> = serde_json::from_str(&raw).map_err(|error| {
-        AppError::Config(format!("the saved people could not be read: {error}"))
+        tracing::warn!("{} could not be read: {error}", path.display());
+
+        AppError::Config("the saved people could not be read".into())
     })?;
 
     people_count_validate(&people)?;
@@ -179,7 +183,7 @@ fn group_normalize(group: &Group) -> Group {
 
 fn group_validate(group: &Group) -> AppResult<()> {
     if group.id.is_empty() {
-        return Err(AppError::Config("the group has no id".into()));
+        return Err(AppError::Internal("the group has no id".into()));
     }
 
     if group.name.is_empty() {
@@ -270,11 +274,11 @@ fn people_save_all(people: &[Person]) -> AppResult<()> {
 
 fn person_normalize(person: &Person) -> Person {
     let normalized = Person {
+        description: person.description.trim().to_owned(),
         id: person.id.trim().to_owned(),
         name_first: person.name_first.trim().to_owned(),
         name_last: person.name_last.trim().to_owned(),
         role: person.role.trim().to_owned(),
-        description: person.description.trim().to_owned(),
     };
 
     assert!(normalized.name_first.len() <= person.name_first.len());
@@ -285,7 +289,7 @@ fn person_normalize(person: &Person) -> Person {
 
 fn person_validate(person: &Person) -> AppResult<()> {
     if person.id.is_empty() {
-        return Err(AppError::Config("the person has no id".into()));
+        return Err(AppError::Internal("the person has no id".into()));
     }
 
     if person.name_first.is_empty() {
@@ -330,11 +334,11 @@ mod tests {
         let [name_first, name_last] = *names;
 
         Person {
+            description: String::new(),
             id: "test".to_owned(),
             name_first: name_first.to_owned(),
             name_last: name_last.to_owned(),
             role: String::new(),
-            description: String::new(),
         }
     }
 

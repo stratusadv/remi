@@ -19,6 +19,7 @@
         "strict": true,
         "allowUnreachableCode": false,
         "allowUnusedLabels": false,
+        "erasableSyntaxOnly": true,
         "exactOptionalPropertyTypes": true,
         "forceConsistentCasingInFileNames": true,
         "noFallthroughCasesInSwitch": true,
@@ -33,6 +34,13 @@
     },
     "vueCompilerOptions": {
         "dataAttributes": ["data-*"],
+        "inferComponentDollarEl": true,
+        "inferComponentDollarRefs": true,
+        "inferTemplateDollarAttrs": true,
+        "inferTemplateDollarEl": true,
+        "inferTemplateDollarRefs": true,
+        "inferTemplateDollarSlots": true,
+        "strictCssModules": true,
         "strictTemplates": true
     },
     "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "tests/**/*.ts"],

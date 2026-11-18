@@ -5,7 +5,7 @@ import { use_ask } from '../composables/use_ask'
 import { use_context_menu } from '../composables/use_context_menu'
 import { use_folders } from '../composables/use_folders'
 import { use_pipeline } from '../composables/use_pipeline'
-import { assert } from '../lib/assert'
+import { AssertionError, assert } from '../lib/assert'
 import RemiMark from './remi_mark.vue'
 import SidebarFolders from './sidebar_folders.vue'
 import SidebarIcon from './sidebar_icon.vue'
@@ -32,7 +32,6 @@ const NAV_MENU_ITEMS: Readonly<Partial<Record<View, readonly MenuItem[]>>> = Obj
     ],
     settings: [
         { id: 'settings_general', label: 'General', icon: 'settings' },
-        { id: 'settings_ai', label: 'AI', icon: 'sparkles' },
         { id: 'settings_account', label: 'Account', icon: 'person' },
     ],
     templates: [{ id: 'template_add', label: 'Add template', icon: 'add' }],
@@ -55,12 +54,12 @@ const collapsed = ref<boolean>(
     typeof localStorage !== 'undefined' && localStorage.getItem(COLLAPSED_STORAGE_KEY) === '1',
 )
 
-const workflow_items: NavItem[] = [
+const workflow_items = Object.freeze<NavItem[]>([
     { id: 'jobs', label: 'Home', icon: 'jobs' },
     { id: 'ask', label: 'Ask', icon: 'ask' },
     { id: 'templates', label: 'Templates', icon: 'templates' },
     { id: 'people', label: 'People', icon: 'people' },
-]
+])
 
 function brand_click(): void {
     assert(view_current.value.length > 0)
@@ -69,26 +68,34 @@ function brand_click(): void {
     pipeline_reset()
 
     assert(folder_current.value === null)
+    assert(view_current.value === 'jobs')
 }
 
 async function chat_new(): Promise<void> {
     assert(view_current.value.length > 0)
 
-    await chat_clear()
-    view_reopen('ask')
+    return chat_clear().then(() => {
+        view_reopen('ask')
 
-    assert(view_current.value === 'ask')
+        assert(view_current.value === 'ask')
+    })
 }
 
 function collapse_toggle(): void {
     collapsed.value = !collapsed.value
 
     if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(COLLAPSED_STORAGE_KEY, collapsed.value ? '1' : '0')
+        const stored = collapsed.value ? '1' : '0'
+
+        localStorage.setItem(COLLAPSED_STORAGE_KEY, stored)
+
+        assert(localStorage.getItem(COLLAPSED_STORAGE_KEY) === stored)
     }
 }
 
 function nav_button_class(item_id: View): string {
+    assert(item_id.length > 0)
+
     const current = view_current.value === item_id
     const folder_shown = [item_id === 'jobs', folder_current.value !== null].every(Boolean)
 
@@ -107,6 +114,7 @@ function nav_click(item_id: View): void {
 
 function nav_menu(event: MouseEvent, item_id: View): void {
     assert(event.type === 'contextmenu')
+    assert(item_id.length > 0)
 
     const billing = account_status.value.billing
     const items = NAV_MENU_ITEMS[item_id]
@@ -114,6 +122,8 @@ function nav_menu(event: MouseEvent, item_id: View): void {
     assert(items !== undefined, `the sidebar has no menu for ${item_id}`)
 
     const shown = items.filter((item) => billing || item.id !== 'settings_account')
+
+    assert(shown.length > 0)
 
     context_menu_open(event, shown, nav_menu_select)
 }
@@ -127,18 +137,19 @@ async function nav_menu_select(id: string): Promise<void> {
         case 'recording_new':
             job_start_new()
 
+            assert(view_current.value === 'transcribe')
+
             return
         case 'group_add':
         case 'person_add':
         case 'settings_account':
-        case 'settings_ai':
         case 'settings_general':
         case 'template_add':
             view_intent_open(id)
 
             return
         default:
-            throw new Error(`The sidebar has no action for the menu item ${id}.`)
+            throw new AssertionError(`The sidebar has no action for the menu item ${id}.`)
     }
 }
 </script>
@@ -151,6 +162,7 @@ async function nav_menu_select(id: string): Promise<void> {
         <div class="sidebar-header">
             <button
                 v-if="!collapsed"
+                type="button"
                 class="sidebar-brand"
                 title="Reset and go to recordings"
                 aria-label="remi"
@@ -159,6 +171,7 @@ async function nav_menu_select(id: string): Promise<void> {
                 <RemiMark class="sidebar-brand-lockup" lockup small />
             </button>
             <button
+                type="button"
                 class="sidebar-icon-btn"
                 :title="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
                 @click="collapse_toggle"
@@ -182,6 +195,7 @@ async function nav_menu_select(id: string): Promise<void> {
             <ul class="flex flex-col gap-0.5">
                 <li v-for="item in workflow_items" :key="item.id">
                     <button
+                        type="button"
                         :class="nav_button_class(item.id)"
                         :title="collapsed ? item.label : undefined"
                         @click="nav_click(item.id)"
@@ -207,6 +221,7 @@ async function nav_menu_select(id: string): Promise<void> {
 
         <div class="sidebar-divider sidebar-footer-actions border-t">
             <button
+                type="button"
                 :class="nav_button_class('settings')"
                 :title="collapsed ? 'Settings' : undefined"
                 @click="view_reopen('settings')"

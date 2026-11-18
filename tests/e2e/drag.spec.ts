@@ -130,10 +130,10 @@ test('a drag out of the transcript selects none of the controls', async ({ page 
 })
 
 test('a press on a clear button keeps the caret in its field', async ({ page }) => {
-    await nav_to(page, 'Settings')
-    await page.getByRole('tab', { name: 'AI' }).click()
+    await page.goto('/?billing=signed-out')
+    await expect(page.getByRole('heading', { name: 'Welcome to remi' })).toBeVisible()
 
-    const field = page.locator('.clearable input').first()
+    const field = page.getByLabel('Name', { exact: true })
 
     await field.fill(FIELD_TEXT)
     await page.locator('.clearable-button').first().click()

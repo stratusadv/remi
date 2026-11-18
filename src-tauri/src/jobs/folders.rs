@@ -134,7 +134,9 @@ fn folders_load() -> AppResult<Vec<String>> {
     let raw = workspace::file_read_bounded(&path, FOLDERS_FILE_BYTES_MAX)?;
 
     let folders: Vec<String> = serde_json::from_str(&raw).map_err(|error| {
-        AppError::Config(format!("the saved folders could not be read: {error}"))
+        tracing::warn!("{} could not be read: {error}", path.display());
+
+        AppError::Config("the saved folders could not be read".into())
     })?;
 
     folders_validate(&folders)?;

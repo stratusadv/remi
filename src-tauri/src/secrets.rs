@@ -1,9 +1,3 @@
-use crate::error::{AppError, AppResult};
-use std::fs;
-use std::path::Path;
-
-const SECRET_FILE_BYTES_MAX: u32 = 64 << 10;
-
 #[cfg(windows)]
 mod dpapi {
     use crate::error::{AppError, AppResult};
@@ -18,7 +12,7 @@ mod dpapi {
 
     fn blob_input(bytes: &[u8]) -> AppResult<CRYPT_INTEGER_BLOB> {
         let length = u32::try_from(bytes.len()).map_err(|_overflow| {
-            AppError::Config("the secret is larger than DPAPI accepts".into())
+            AppError::Internal("the secret is larger than DPAPI accepts".into())
         })?;
 
         assert_eq!(usize_of!(length), bytes.len());
@@ -30,7 +24,7 @@ mod dpapi {
         assert_ne!(call, "");
 
         if blob.pbData.is_null() {
-            return Err(AppError::Config(format!("{call} returned no data")));
+            return Err(AppError::Internal(format!("{call} returned no data")));
         }
 
         let length = usize_of!(blob.cbData);
@@ -54,7 +48,7 @@ mod dpapi {
 
         let code = unsafe { GetLastError() };
 
-        AppError::Config(format!("{call} failed (code {code})"))
+        AppError::Internal(format!("{call} failed (code {code})"))
     }
 
     pub(crate) fn protect(plaintext: &[u8]) -> AppResult<Vec<u8>> {
@@ -112,15 +106,11 @@ mod dpapi {
     }
 }
 
-pub(crate) fn protected_delete(path: &Path) -> AppResult<()> {
-    assert!(path.file_name().is_some());
+use crate::error::{AppError, AppResult};
+use std::fs;
+use std::path::Path;
 
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-
-    Ok(())
-}
+const SECRET_FILE_BYTES_MAX: u32 = 64 << 10;
 
 pub(crate) fn protected_read(path: &Path) -> AppResult<Option<String>> {
     assert!(path.file_name().is_some());
@@ -132,7 +122,7 @@ pub(crate) fn protected_read(path: &Path) -> AppResult<Option<String>> {
     let size = fs::metadata(path)?.len();
 
     if size > u64::from(SECRET_FILE_BYTES_MAX) {
-        return Err(AppError::Config(format!(
+        return Err(AppError::Internal(format!(
             "{} is {size} bytes, over the {SECRET_FILE_BYTES_MAX} bytes a secret store can hold",
             path.display(),
         )));
@@ -150,8 +140,9 @@ pub(crate) fn protected_read(path: &Path) -> AppResult<Option<String>> {
 
         let plaintext_bytes = dpapi::unprotect(&ciphertext)?;
 
-        let plaintext = String::from_utf8(plaintext_bytes)
-            .map_err(|error| AppError::Config(format!("decrypted bytes are not utf-8: {error}")))?;
+        let plaintext = String::from_utf8(plaintext_bytes).map_err(|error| {
+            AppError::Internal(format!("decrypted bytes are not utf-8: {error}"))
+        })?;
 
         Ok(Some(plaintext))
     }
@@ -200,7 +191,7 @@ mod tests {
     use crate::workspace::test_support::root_scoped;
 
     #[test]
-    fn a_secret_survives_a_round_trip_and_is_gone_once_deleted() {
+    fn a_secret_survives_a_round_trip_and_a_rewrite() {
         let _root = root_scoped();
         let path = root().unwrap().join("nested").join("secret.bin");
 
@@ -213,12 +204,6 @@ mod tests {
         protected_write(&path, "replaced").unwrap();
 
         assert_eq!(protected_read(&path).unwrap().as_deref(), Some("replaced"));
-
-        protected_delete(&path).unwrap();
-        protected_delete(&path).unwrap();
-
-        assert!(protected_read(&path).unwrap().is_none());
-        assert!(!path.exists());
     }
 
     #[cfg(windows)]

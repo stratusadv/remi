@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import logging
+
 from typing_extensions import TYPE_CHECKING
 
 from ninja import NinjaAPI
 from ninja.errors import AuthenticationError, HttpError, Throttled, ValidationError
-from ninja.throttling import AnonRateThrottle, AuthRateThrottle
+
+from django.core.exceptions import SuspiciousOperation
 
 from app.account.constants import SIGNED_OUT_MESSAGE
 from app.api.auth import AccountBearerAuth
 from app.core.exceptions import BillingError
+from app.core.throttles import AccountRateThrottle, AddressRateThrottle
 
 if TYPE_CHECKING:
     from django.http import HttpRequest, HttpResponse
@@ -16,18 +20,21 @@ if TYPE_CHECKING:
 
 ERROR_TYPE = 'billing_error'
 LOCATION_CONTAINERS = ('body', 'form', 'payload', 'query')
+SERVER_ERROR_MESSAGE = 'The server ran into a problem. Try again in a few minutes.'
 STATUS_BAD_REQUEST = 400
 STATUS_ERROR_MAX = 599
+STATUS_SERVER_ERROR = 500
 STATUS_THROTTLED = 429
 THROTTLE_RATE_ANONYMOUS = '600/m'
 THROTTLE_RATE_AUTHENTICATED = '1200/m'
+logger = logging.getLogger(__name__)
 
 api_v1 = NinjaAPI(
     auth=AccountBearerAuth(),
     openapi_url=None,
     throttle=[
-        AnonRateThrottle(THROTTLE_RATE_ANONYMOUS),
-        AuthRateThrottle(THROTTLE_RATE_AUTHENTICATED),
+        AddressRateThrottle(THROTTLE_RATE_ANONYMOUS, scope='anonymous'),
+        AccountRateThrottle(THROTTLE_RATE_AUTHENTICATED, scope='account'),
     ],
     title='remi API',
     urls_namespace='api_v1',
@@ -35,6 +42,7 @@ api_v1 = NinjaAPI(
 )
 
 api_v1.add_router('/account/', 'app.api.v1.account.router.router')
+api_v1.add_router('/ai/', 'app.api.v1.ai.router.router')
 api_v1.add_router('/funnel/', 'app.api.v1.funnel.router.router')
 
 
@@ -59,6 +67,8 @@ def error_response(
 
     detail = {'code': code, 'message': message, 'type': ERROR_TYPE}
     payload = {'error': detail}
+
+    logger.info('%s %s answered %s %s: %s', request.method, request.path, status, code, message)
 
     return api_v1.create_response(request, payload, status=status)
 
@@ -107,6 +117,22 @@ def billing_error_handle(request: HttpRequest, error: BillingError) -> HttpRespo
     return error_response(request, code=error.code, message=str(error), status=error.status)
 
 
+@api_v1.exception_handler(Exception)
+def exception_handle(request: HttpRequest, error: Exception) -> HttpResponse:
+    if not isinstance(error, Exception):
+        message = f'error must be an Exception: {type(error).__name__}'
+        raise TypeError(message)
+
+    logger.error('%s %s failed', request.method, request.path, exc_info=error)
+
+    return error_response(
+        request,
+        code='server_error',
+        message=SERVER_ERROR_MESSAGE,
+        status=STATUS_SERVER_ERROR,
+    )
+
+
 @api_v1.exception_handler(HttpError)
 def http_error_handle(request: HttpRequest, error: HttpError) -> HttpResponse:
     if not isinstance(error, HttpError):
@@ -125,6 +151,16 @@ def http_error_handle(request: HttpRequest, error: HttpError) -> HttpResponse:
     )
 
 
+@api_v1.exception_handler(SuspiciousOperation)
+def suspicious_operation_handle(request: HttpRequest, error: SuspiciousOperation) -> HttpResponse:
+    if not isinstance(error, SuspiciousOperation):
+        message = f'error must be a SuspiciousOperation: {type(error).__name__}'
+        raise TypeError(message)
+
+    message = 'The request is too large or malformed.'
+    return error_response(request, code='request_invalid', message=message, status=400)
+
+
 @api_v1.exception_handler(Throttled)
 def throttled_handle(request: HttpRequest, error: Throttled) -> HttpResponse:
     if not isinstance(error, Throttled):
@@ -132,7 +168,6 @@ def throttled_handle(request: HttpRequest, error: Throttled) -> HttpResponse:
         raise TypeError(message)
 
     message = 'Too many requests. Try again in a minute.'
-
     return error_response(request, code='throttled', message=message, status=STATUS_THROTTLED)
 
 
@@ -143,5 +178,4 @@ def validation_error_handle(request: HttpRequest, error: ValidationError) -> Htt
         raise TypeError(message)
 
     message = validation_message(error.errors)
-
     return error_response(request, code='request_invalid', message=message, status=400)

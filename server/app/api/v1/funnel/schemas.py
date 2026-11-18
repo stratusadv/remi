@@ -5,6 +5,7 @@ import re
 from ninja import Schema
 from pydantic import field_validator
 
+from app.account.constants import ACCOUNT_NAME_LENGTH_MAX
 from app.funnel.choices import (
     CampaignChoices,
     FunnelPlatformChoices,
@@ -41,6 +42,8 @@ class FunnelDownloadSchema(Schema):
 class FunnelEmailSchema(Schema):
     campaign: CampaignChoices
     email: str
+    name_first: str = ''
+    name_last: str = ''
 
     @field_validator('email')
     @classmethod
@@ -50,6 +53,21 @@ class FunnelEmailSchema(Schema):
             raise TypeError(message)
 
         return funnel_email_address_clean(value)
+
+    @field_validator('name_first', 'name_last')
+    @classmethod
+    def name_clean(cls, value: str) -> str:
+        if not isinstance(value, str):
+            message = f'a name must be a str: {type(value).__name__}'
+            raise TypeError(message)
+
+        name = value.strip()
+
+        if len(name) > ACCOUNT_NAME_LENGTH_MAX:
+            message = f'a name has at most {ACCOUNT_NAME_LENGTH_MAX} characters'
+            raise ValueError(message)
+
+        return name
 
 
 class FunnelVisitSchema(Schema):

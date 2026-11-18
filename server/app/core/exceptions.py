@@ -28,6 +28,21 @@ class CheckoutUnknownError(RefusalError):
     status = 404
 
 
+class GatewayInactiveError(RefusalError):
+    code = 'gateway_inactive'
+    status = 403
+
+
+class GatewayRefusedError(RefusalError):
+    code = 'gateway_refused'
+    status = 400
+
+
+class PaymentUnknownError(RefusalError):
+    code = 'payment_unknown'
+    status = 404
+
+
 class PromoInvalidError(RefusalError):
     code = 'promo_invalid'
     status = 400
@@ -43,8 +58,23 @@ class RequestInvalidError(RefusalError):
     status = 400
 
 
+class TranscriptionUnpaidError(RefusalError):
+    code = 'transcription_unpaid'
+    status = 403
+
+
 class EmailUnavailableError(UnavailableError):
     code = 'email_unavailable'
+    status = 503
+
+
+class GatewayBusyError(UnavailableError):
+    code = 'gateway_busy'
+    status = 429
+
+
+class GatewayUnavailableError(UnavailableError):
+    code = 'gateway_unavailable'
     status = 503
 
 

@@ -37,6 +37,11 @@ class SendgridFake:
             message = f'a SendGrid request carries a JSON body, not {type(request.data).__name__}'
             raise TypeError(message)
 
+        if timeout is not None:
+            if timeout <= 0:
+                message = f'timeout must be positive: {timeout}'
+                raise ValueError(message)
+
         sent = SendgridRequest(
             authorization=request.get_header('Authorization', ''),
             payload=json.loads(request.data),

@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, useTemplateRef, watch } from 'vue'
+import { use_context_menu } from '../composables/use_context_menu'
 import { use_dialog } from '../composables/use_dialog'
+import { use_modal } from '../composables/use_modal'
 import { assert } from '../lib/assert'
+import { transition_leave_inert } from '../lib/transition'
 
 
 const { current, input, close } = use_dialog()
-const input_ref = ref<HTMLInputElement | null>(null)
+const { menu } = use_context_menu()
+const input_element = useTemplateRef<HTMLInputElement>('input_element')
+const covered = use_modal('host', () => current.value !== null)
 
 
 function input_focus(): void {
-    const field = input_ref.value
+    const field = input_element.value
 
     if (field === null) return
 
@@ -17,20 +22,31 @@ function input_focus(): void {
 
     field.focus()
     field.select()
+
+    assert(field.selectionStart === 0)
+    assert(field.selectionEnd === field.value.length)
 }
 
 
-function on_backdrop_press(): void {
+function on_backdrop_press(event: MouseEvent): void {
+    assert(event.button === 0)
+    assert(event.target === event.currentTarget)
+
     if (current.value === null) return
 
     close(false)
 }
 
 function on_keydown(event: KeyboardEvent): void {
+    assert(event.type === 'keydown')
+
     if (current.value === null) return
+    if (menu.value !== null) return
+    if (event.isComposing) return
 
     if (event.key === 'Escape') {
         event.preventDefault()
+        event.stopPropagation()
         close(false)
 
         return
@@ -38,22 +54,25 @@ function on_keydown(event: KeyboardEvent): void {
 
     if (event.key === 'Enter') {
         event.preventDefault()
+        event.stopPropagation()
         close(true)
     }
 }
 
 onMounted(() => {
-    window.addEventListener('keydown', on_keydown)
+    window.addEventListener('keydown', on_keydown, true)
 })
 
 onBeforeUnmount(() => {
-    window.removeEventListener('keydown', on_keydown)
+    window.removeEventListener('keydown', on_keydown, true)
 })
 
 watch(current, (next) => {
+    assert(next === current.value)
+
     if (typeof document === 'undefined') return
 
-    document.body.style.overflow = next !== null ? 'hidden' : ''
+    document.body.style.overflow = next === null ? '' : 'hidden'
 
     if (next?.input_shown !== true) return
 
@@ -63,12 +82,13 @@ watch(current, (next) => {
 
 <template>
     <Teleport to="body">
-        <Transition name="app-dialog">
+        <Transition name="app-dialog" @before-leave="transition_leave_inert">
             <div
                 v-if="current"
-                class="app-dialog-backdrop"
+                class="app-dialog-backdrop app-dialog-host"
                 role="dialog"
                 aria-modal="true"
+                :inert="covered"
                 @mousedown.left.self.prevent="on_backdrop_press"
             >
                 <div
@@ -146,7 +166,7 @@ watch(current, (next) => {
                     <p class="app-dialog-message">{{ current.message }}</p>
                     <input
                         v-if="current.input_shown"
-                        ref="input_ref"
+                        ref="input_element"
                         v-model="input"
                         class="input app-dialog-input"
                         type="text"

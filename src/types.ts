@@ -1,4 +1,3 @@
-export type APIKey = string
 export type AudioPath = string
 export type ChatExchangeState = 'done' | 'failed' | 'stopped'
 export type ChatID = string
@@ -11,6 +10,8 @@ export type JobID = string
 export type Markdown = string
 export type PromoCode = string
 export type RecordID = string
+export type RegionCode = string
+export type SearchQuery = string
 export type SecondsEnd = number
 export type SecondsStart = number
 export type SignInCode = string
@@ -151,12 +152,13 @@ export interface StageChunk {
     stage: TranscriptionStage
 }
 
-export type ThemeChoice = 'system' | 'light' | 'dark'
-export type ThinkingChoice = 'low' | 'medium' | 'xhigh'
+export type ModeChoice = 'system' | 'light' | 'dark'
+export type ThemeChoice = 'cubism' | 'standard'
 export type JobsViewChoice = 'grid' | 'list'
 
 export type PaletteChoice =
     | 'cubist'
+    | 'graphite'
     | 'rose-pine'
     | 'catppuccin'
     | 'nord'
@@ -172,45 +174,17 @@ export type PaletteChoice =
 
 export interface Settings {
     notes_template_id_default: string | null
+    mode: ModeChoice | null
     theme: ThemeChoice | null
     palette: PaletteChoice | null
     recordings_directory: string | null
-    notes_model: string | null
-    notes_thinking: ThinkingChoice | null
-    api_host: string | null
     jobs_view: JobsViewChoice | null
-    embeddings_host: string | null
-    embeddings_model: string | null
 }
 
 export interface SearchStatus {
     error: string | null
-    model: string | null
-    model_default: string
     passages: number
     passages_embedded: number
-}
-
-export interface NotesModels {
-    models: string[]
-    model_default: string
-}
-
-export interface KeyStatus {
-    builtin: boolean
-    length: number
-    user: boolean
-}
-
-export interface SourceStatus {
-    builtin: boolean
-    user: boolean
-}
-
-export interface ServiceStatus {
-    host: SourceStatus
-    notes: KeyStatus
-    transcription: KeyStatus
 }
 
 export interface Account {
@@ -232,6 +206,7 @@ export interface AccountSignUp {
     email: string
     name: string
     promo_code: PromoCode
+    region: RegionCode
 }
 
 export interface AccountStatus {
@@ -322,14 +297,16 @@ export interface SegmentFocus {
     segment_index_last: number
 }
 
-export interface AIRewriteArgs {
+export type SegmentRange = Pick<SegmentFocus, 'segment_index_first' | 'segment_index_last'>
+
+export interface AIRewriteRequest {
     text: string
     instruction: string
     whole_document: boolean
     on_chunk: (chunk: string) => void
 }
 
-export type AIRewriteHandler = (args: AIRewriteArgs) => Promise<string>
+export type AIRewriteHandler = (request: AIRewriteRequest) => Promise<string>
 export type AIGenerateHandler = (description: string) => Promise<string>
 
 export interface WindowSize {

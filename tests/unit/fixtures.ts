@@ -1,4 +1,6 @@
 import { Editor } from '@tiptap/core'
+import { mount } from '@vue/test-utils'
+import { onTestFinished } from 'vitest'
 import { assert } from '../../src/lib/assert'
 import type {
     AskSource,
@@ -33,7 +35,7 @@ export interface Deferred<Value> {
 
 export function ask_source_build(patch: Partial<AskSource> = {}): AskSource {
     assert(typeof patch === 'object')
-    assert(patch.marker === undefined || /^M\d+$/.test(patch.marker))
+    assert(patch.marker === undefined || /^M\d+$/u.test(patch.marker))
 
     return {
         end_seconds: null,
@@ -114,6 +116,24 @@ export function job_meta_build(patch: Partial<JobMeta> = {}): JobMeta {
         favourite: false,
         ...patch,
     }
+}
+
+export function mount_auto_unmount<Component>(
+    component: Component,
+    options?: Parameters<typeof mount<Component>>[1],
+): ReturnType<typeof mount<Component>> {
+    assert(typeof component === 'object' || typeof component === 'function')
+    assert(options === undefined || typeof options === 'object')
+
+    const wrapper = mount<Component>(component, options)
+
+    assert(!wrapper.getCurrentComponent().isUnmounted)
+
+    onTestFinished(() => {
+        if (!wrapper.getCurrentComponent().isUnmounted) wrapper.unmount()
+    })
+
+    return wrapper
 }
 
 export function person_build(patch: Partial<Person> = {}): Person {

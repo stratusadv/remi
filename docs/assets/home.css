@@ -212,6 +212,11 @@
     display: none;
 }
 
+.art .table-wide {
+    --table-opacity: 1;
+    animation: table-away var(--loop) infinite;
+}
+
 .art .col-a-pos {
     transform: translate(780px, 334px);
 }
@@ -234,14 +239,18 @@
 }
 
 .art .words-pos {
-    transform: translate(490.0px, 295.4px);
+    transform: translate(490.0px, 322.3px);
 }
 
 .art .flight {
-    transform: translate(1667.7px, 199.6px);
+    --wide: 1;
+    --tall: 0;
+    transform: translate(1652.6px, 221.6px);
 }
 
 .art .plane-pos-1 {
+    --wide: 1;
+    --tall: 0;
     --px: 541px;
     --py: 122px;
     --tpx: -92.4px;
@@ -250,6 +259,8 @@
 }
 
 .art .plane-pos-2 {
+    --wide: 1;
+    --tall: 0;
     --px: 869px;
     --py: 31px;
     --tpx: 50.5px;
@@ -258,10 +269,14 @@
 }
 
 .art .cam {
+    --cam-x: -1200px;
+    --cam-y: 0px;
     animation: camera var(--loop) infinite;
 }
 
 .art .pro {
+    --walk-x: -1200px;
+    --walk-y: 0px;
     animation: walk var(--loop) infinite;
 }
 
@@ -277,6 +292,15 @@
 
 .art .open-hand {
     animation: open-hand var(--loop) infinite;
+}
+
+.art .raised {
+    animation: raised var(--loop) infinite;
+}
+
+.art .lowered {
+    opacity: 0;
+    animation: lowered var(--loop) infinite;
 }
 
 .art .placed {
@@ -302,19 +326,19 @@
 
 .art .thumb {
     transform-box: view-box;
-    transform-origin: 581px 316px;
+    transform-origin: 476px 330px;
     animation: thumb var(--loop) infinite;
 }
 
 .art .rec-button {
     transform-box: view-box;
-    transform-origin: 528px 290px;
+    transform-origin: 512px 309px;
     animation: button var(--loop) infinite;
 }
 
 .art .disc {
     transform-box: view-box;
-    transform-origin: 589.74px 423.58px;
+    transform-origin: 589.74px 452.1px;
     animation: listen var(--loop) infinite;
 }
 
@@ -425,6 +449,8 @@
 }
 
 .art .word {
+    --wx: var(--dx);
+    --wy: var(--dy);
     opacity: 0;
     animation: word var(--loop) var(--d) infinite both;
 }
@@ -433,11 +459,22 @@
     animation: fly-x var(--loop) infinite;
 }
 
+.art .fly-x-tall {
+    animation: fly-x-tall var(--loop) infinite;
+}
+
 .art .fly-y {
     animation: fly-y var(--loop) infinite;
 }
 
+.art .fly-y-tall {
+    animation: fly-y-tall var(--loop) infinite;
+}
+
 .art .shard {
+    --shard-start: 0.190;
+    --shard-swell: 0.247;
+    --shard-land: 1;
     opacity: 0;
     animation: shard var(--loop) infinite;
 }
@@ -530,8 +567,16 @@
     animation: plane-x var(--loop) infinite;
 }
 
+.art .plane-x-tall {
+    animation: plane-x-tall var(--loop) infinite;
+}
+
 .art .plane-y {
     animation: plane-y var(--loop) infinite;
+}
+
+.art .plane-y-tall {
+    animation: plane-y-tall var(--loop) infinite;
 }
 
 .art .plane {
@@ -643,7 +688,7 @@
 }
 
 .statement .facets i:nth-child(2) {
-    --shape: polygon(89% 20%, 96% 25%, 93% 47%, 85% 41%);
+    --shape: polygon(89% 5%, 96% 8%, 93% 21%, 85% 18%);
     --fill: var(--saffron);
 }
 
@@ -722,142 +767,76 @@
     color: var(--paper-soft);
 }
 
-.vault {
-    position: relative;
-    height: 360px;
-    overflow: hidden;
-    background:
-        linear-gradient(112deg, transparent 0 36%, rgba(28, 41, 64, 0.9) 36% 62%, transparent 62%),
-        linear-gradient(204deg, rgba(91, 75, 196, 0.22) 0 26%, transparent 26%),
-        var(--navy-deep);
-    box-shadow: inset 0 0 0 1px var(--edge-strong);
+.homebound {
+    --homebound-loop: 8s;
+    display: block;
+    width: 100%;
+    height: auto;
 }
 
-.vault-in {
-    position: absolute;
-    top: 50%;
-    left: 0;
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    width: 36%;
-    height: 88px;
-    padding-left: 28px;
-    overflow: hidden;
-    transform: translateY(-62%);
-    mask-image: linear-gradient(90deg, transparent, #000000 30%, #000000 80%, transparent);
+.homebound-cloud {
+    transform-box: fill-box;
+    transform-origin: 30% 70%;
+    animation: homebound-cloud var(--homebound-loop) ease-in-out infinite;
 }
 
-.vault-in i {
-    flex: none;
-    width: 5px;
-    height: calc(var(--level) * 100%);
-    background: var(--cyan);
-    animation: flow 1.8s ease-in-out calc(var(--i) * -70ms) infinite both;
+.homebound-iris {
+    transform: translate(-8px, 4px);
+    animation: homebound-iris var(--homebound-loop) ease-in-out infinite;
 }
 
-.vault-core {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    display: grid;
-    place-items: center;
-    width: 132px;
-    height: 132px;
-    background: linear-gradient(104deg, #263a5c 0 56%, #18233a 56%);
-    box-shadow: 0 0 0 3px var(--ink), 12px 12px 0 var(--cyan);
-    transform: translate(-50%, -64%);
+.homebound-brow {
+    transform-box: fill-box;
+    transform-origin: 50% 50%;
+    animation: homebound-brow var(--homebound-loop) ease-in-out infinite;
 }
 
-.vault-ring {
-    position: absolute;
-    inset: -26px;
-    border: 1.5px solid rgba(79, 208, 245, 0.55);
-    rotate: 45deg;
-    animation: breathe 3.2s ease-in-out infinite;
+.homebound-mouth {
+    transform-box: fill-box;
+    transform-origin: 50% 0%;
+    animation: homebound-mouth var(--homebound-loop) ease-in-out infinite;
 }
 
-.vault-lock {
-    position: relative;
-    width: 40px;
-    height: 30px;
-    margin-top: 18px;
-    background: linear-gradient(104deg, var(--saffron) 0 55%, var(--saffron-deep) 55%);
-    box-shadow: 0 0 0 2.5px var(--ink);
+.homebound-lips {
+    opacity: 0;
+    animation: homebound-lips var(--homebound-loop) ease-in-out infinite;
 }
 
-.vault-lock::before {
-    position: absolute;
-    bottom: calc(100% + 2.5px);
-    left: 50%;
-    width: 26px;
-    height: 20px;
-    margin-left: -13px;
-    border: 5px solid var(--ice);
-    border-bottom: 0;
-    content: "";
+.homebound-suck {
+    opacity: 0;
+    animation: homebound-suck var(--homebound-loop) linear infinite;
 }
 
-.vault-lock::after {
-    position: absolute;
-    top: 8px;
-    left: 50%;
-    width: 6px;
-    height: 13px;
-    margin-left: -3px;
-    background: var(--ink);
-    content: "";
+.homebound-suck path {
+    animation: homebound-flow 0.5s linear infinite;
 }
 
-.vault-label,
-.vault-kept {
-    position: absolute;
-    left: 50%;
-    white-space: nowrap;
-    transform: translateX(-50%);
+.homebound-notes {
+    transform-box: fill-box;
+    transform-origin: 0% 50%;
+    animation: homebound-notes var(--homebound-loop) ease-in-out infinite;
 }
 
-.vault-label {
-    top: calc(100% + 70px);
-    color: var(--soft);
-    font: 500 13px/1 var(--sans);
+.homebound-shackle {
+    animation: homebound-shackle var(--homebound-loop) ease-in-out infinite;
 }
 
-.vault-kept {
-    top: calc(100% + 94px);
-    color: var(--saffron);
-    font: 500 12px/1 var(--mono);
-    letter-spacing: 0.06em;
+.homebound-pop {
+    transform-box: fill-box;
+    transform-origin: 50% 50%;
+    opacity: 0;
+    animation: homebound-pop var(--homebound-loop) ease-out infinite;
 }
 
-.vault-out {
-    position: absolute;
-    top: 50%;
-    right: 36px;
-    display: grid;
-    gap: 12px;
-    width: 24%;
-    transform: translateY(-80%);
+.homebound-plane {
+    transform: translate(256.5px, 221px) rotate(-227.1deg);
+    animation: homebound-plane var(--homebound-loop) linear infinite;
 }
 
-.vault-out span {
-    width: var(--w);
-    height: 8px;
-    background: var(--paper);
-    transform-origin: left;
-    animation: write 4s ease-in-out infinite both;
-}
-
-.vault-out span:nth-child(2) {
-    animation-delay: 0.3s;
-}
-
-.vault-out span:nth-child(3) {
-    animation-delay: 0.6s;
-}
-
-.vault-out span:nth-child(4) {
-    animation-delay: 0.9s;
+.homebound-plane-body {
+    transform-box: fill-box;
+    transform-origin: 50% 50%;
+    animation: homebound-plane-body var(--homebound-loop) ease-in-out infinite;
 }
 
 .ask {
@@ -1217,6 +1196,19 @@
     box-shadow: 0 0 0 3px var(--ink);
 }
 
+.still-steam {
+    animation: still-steam 3.2s ease-in-out calc(var(--i) * -1.07s) infinite;
+}
+
+.still-signal {
+    animation: still-signal 2.4s ease-in-out calc(var(--i) * 0.3s) infinite both;
+}
+
+.still-tick {
+    stroke-dasharray: 1;
+    animation: still-tick 7s ease-in-out calc(var(--i) * 0.5s) infinite both;
+}
+
 .poster h2 {
     font-size: clamp(3rem, 6vw, 5.5rem);
 }
@@ -1252,41 +1244,21 @@ body > .foot {
 
 @keyframes camera {
     0%, 27.27% {
-        transform: translateX(0px);
+        transform: translate(0px, 0px);
         animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
     }
 
     35%, 75.91% {
-        transform: translateX(-1200px);
+        transform: translate(var(--cam-x), var(--cam-y));
         animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
     }
 
     83.64%, 97.27% {
-        transform: translateX(-2400px);
+        transform: translate(calc(var(--cam-x) * 2), calc(var(--cam-y) * 2));
     }
 
     97.5%, 100% {
-        transform: translateX(0px);
-    }
-}
-
-@keyframes camera-tall {
-    0%, 27.27% {
-        transform: translateY(0px);
-        animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
-    }
-
-    35%, 75.91% {
-        transform: translateY(-760px);
-        animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
-    }
-
-    83.64%, 97.27% {
-        transform: translateY(-1520px);
-    }
-
-    97.5%, 100% {
-        transform: translateY(0px);
+        transform: translate(0px, 0px);
     }
 }
 
@@ -1329,54 +1301,7 @@ body > .foot {
     }
 
     83.64%, 97.27% {
-        transform: translate(-1200px, 0px);
-    }
-
-    97.5%, 100% {
-        transform: translate(0px, 0px);
-    }
-}
-
-@keyframes walk-tall {
-    0%, 27.27% {
-        transform: translate(0px, 0px);
-    }
-
-    28.24% {
-        transform: translate(0px, -8px);
-    }
-
-    29.2% {
-        transform: translate(0px, 0px);
-    }
-
-    30.17% {
-        transform: translate(0px, -8px);
-    }
-
-    31.14% {
-        transform: translate(0px, 0px);
-    }
-
-    32.1% {
-        transform: translate(0px, -8px);
-    }
-
-    33.07% {
-        transform: translate(0px, 0px);
-    }
-
-    34.04% {
-        transform: translate(0px, -8px);
-    }
-
-    35%, 75.91% {
-        transform: translate(0px, 0px);
-        animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
-    }
-
-    83.64%, 97.27% {
-        transform: translate(0px, -1322.6px);
+        transform: translate(var(--walk-x), var(--walk-y));
     }
 
     97.5%, 100% {
@@ -1396,7 +1321,7 @@ body > .foot {
     }
 
     5.98% {
-        transform: translate(17.63px, 164.47px) rotate(8deg);
+        transform: translate(37.93px, 163.53px) rotate(8deg);
         animation-timing-function: cubic-bezier(0.5, 0, 0.7, 0.4);
     }
 
@@ -1432,7 +1357,7 @@ body > .foot {
     }
 
     23.47%, 24.84% {
-        transform: translate(17.63px, 164.47px) rotate(8deg);
+        transform: translate(37.93px, 163.53px) rotate(8deg);
         animation-timing-function: cubic-bezier(0.45, 0, 0.3, 1);
     }
 
@@ -1522,6 +1447,38 @@ body > .foot {
     }
 }
 
+@keyframes raised {
+    0% {
+        opacity: 1;
+        animation-timing-function: step-end;
+    }
+
+    40.72% {
+        opacity: 0;
+        animation-timing-function: step-end;
+    }
+
+    97.73%, 100% {
+        opacity: 1;
+    }
+}
+
+@keyframes lowered {
+    0% {
+        opacity: 0;
+        animation-timing-function: step-end;
+    }
+
+    40.72% {
+        opacity: 1;
+        animation-timing-function: step-end;
+    }
+
+    97.73%, 100% {
+        opacity: 0;
+    }
+}
+
 @keyframes placed {
     0% {
         opacity: 0;
@@ -1544,7 +1501,7 @@ body > .foot {
     }
 
     27.85%, 96.82% {
-        opacity: 0;
+        opacity: var(--table-opacity);
     }
 
     97.27%, 100% {
@@ -1559,12 +1516,12 @@ body > .foot {
     }
 
     3.61% {
-        transform: translate(-31.5px, -9.89px) rotate(-30deg);
+        transform: translate(-3.47px, 3.4px) rotate(21.9deg);
         animation-timing-function: cubic-bezier(0.5, 0, 0.7, 0.4);
     }
 
     3.85%, 4.1% {
-        transform: translate(-35.15px, -3.15px) rotate(-38deg);
+        transform: translate(-5.44px, 3.22px) rotate(35.7deg);
         animation-timing-function: cubic-bezier(0.3, 0.7, 0.4, 1);
     }
 
@@ -1574,12 +1531,12 @@ body > .foot {
     }
 
     23.8% {
-        transform: translate(-31.5px, -9.89px) rotate(-30deg);
+        transform: translate(-3.47px, 3.4px) rotate(21.9deg);
         animation-timing-function: cubic-bezier(0.5, 0, 0.7, 0.4);
     }
 
     23.99%, 24.23% {
-        transform: translate(-35.15px, -3.15px) rotate(-38deg);
+        transform: translate(-5.44px, 3.22px) rotate(35.7deg);
         animation-timing-function: cubic-bezier(0.3, 0.7, 0.4, 1);
     }
 
@@ -1589,12 +1546,12 @@ body > .foot {
     }
 
     37.43% {
-        transform: translate(-35.14px, -58.11px) rotate(-22deg);
+        transform: translate(1.39px, -2.66px) rotate(4.1deg);
         animation-timing-function: cubic-bezier(0.5, 0, 0.7, 0.4);
     }
 
     37.64%, 37.84% {
-        transform: translate(-38.5px, -50.89px) rotate(-30deg);
+        transform: translate(5.24px, -9.74px) rotate(4.3deg);
         animation-timing-function: cubic-bezier(0.3, 0.7, 0.4, 1);
     }
 
@@ -2612,7 +2569,7 @@ body > .foot {
 @keyframes word {
     0% {
         opacity: 0;
-        transform: translate(var(--dx), var(--dy)) rotate(0deg) scale(0.4);
+        transform: translate(var(--wx), var(--wy)) rotate(0deg) scale(0.4);
         animation-timing-function: cubic-bezier(0.3, 0.2, 0.6, 1);
     }
 
@@ -2621,34 +2578,7 @@ body > .foot {
     }
 
     0.88% {
-        transform: translate(calc(var(--dx) * 0.75), calc(var(--dy) * 0.75 - 18px)) rotate(calc(var(--r) * 0.3)) scale(1);
-        animation-timing-function: cubic-bezier(0.5, 0, 0.75, 0.5);
-    }
-
-    2.63% {
-        opacity: 1;
-        transform: translate(0px, 0px) rotate(var(--r)) scale(0.3);
-    }
-
-    2.98%, 100% {
-        opacity: 0;
-        transform: translate(0px, 0px) rotate(var(--r)) scale(0.1);
-    }
-}
-
-@keyframes word-tall {
-    0% {
-        opacity: 0;
-        transform: translate(var(--tdx), var(--tdy)) rotate(0deg) scale(0.4);
-        animation-timing-function: cubic-bezier(0.3, 0.2, 0.6, 1);
-    }
-
-    0.3% {
-        opacity: 1;
-    }
-
-    0.88% {
-        transform: translate(calc(var(--tdx) * 0.75), calc(var(--tdy) * 0.75 - 18px)) rotate(calc(var(--r) * 0.3)) scale(1);
+        transform: translate(calc(var(--wx) * 0.75), calc(var(--wy) * 0.75 - 18px)) rotate(calc(var(--r) * 0.3)) scale(1);
         animation-timing-function: cubic-bezier(0.5, 0, 0.75, 0.5);
     }
 
@@ -2670,7 +2600,7 @@ body > .foot {
     }
 
     42.97%, 100% {
-        transform: translateX(462.3px);
+        transform: translateX(calc(477.4px * var(--wide)));
     }
 }
 
@@ -2681,17 +2611,17 @@ body > .foot {
     }
 
     38.47% {
-        transform: translateY(-14px);
+        transform: translateY(calc(-14px * var(--wide)));
         animation-timing-function: cubic-bezier(0.25, 0.6, 0.45, 1);
     }
 
     40.55% {
-        transform: translateY(-36px);
+        transform: translateY(calc(-36px * var(--wide)));
         animation-timing-function: cubic-bezier(0.55, 0, 0.4, 1);
     }
 
     42.97%, 100% {
-        transform: translateY(90.4px);
+        transform: translateY(calc(68.4px * var(--wide)));
     }
 }
 
@@ -2702,12 +2632,12 @@ body > .foot {
     }
 
     40.55% {
-        transform: translateX(46px);
+        transform: translateX(calc(46px * var(--tall)));
         animation-timing-function: cubic-bezier(0.55, 0, 0.45, 1);
     }
 
     42.97%, 100% {
-        transform: translateX(-60.7px);
+        transform: translateX(calc(-51.3px * var(--tall)));
     }
 }
 
@@ -2718,58 +2648,35 @@ body > .foot {
     }
 
     38.47% {
-        transform: translateY(-12px);
+        transform: translateY(calc(-12px * var(--tall)));
         animation-timing-function: cubic-bezier(0.5, 0, 0.3, 1);
     }
 
     42.97%, 100% {
-        transform: translateY(-332.1px);
+        transform: translateY(calc(-345.8px * var(--tall)));
     }
 }
 
 @keyframes shard {
     0%, 37.95% {
         opacity: 0;
-        transform: rotate(-2deg) scale(0.295);
+        transform: rotate(-2deg) scale(var(--shard-start));
     }
 
     38.47% {
         opacity: 1;
-        transform: rotate(-2deg) scale(0.384);
+        transform: rotate(-2deg) scale(var(--shard-swell));
         animation-timing-function: cubic-bezier(0.45, 0, 0.3, 1);
     }
 
     42.97%, 46.79% {
         opacity: 1;
-        transform: rotate(0deg) scale(1);
+        transform: rotate(0deg) scale(var(--shard-land));
     }
 
     48.87%, 100% {
         opacity: 0;
-        transform: rotate(0deg) scale(1);
-    }
-}
-
-@keyframes shard-tall {
-    0%, 37.95% {
-        opacity: 0;
-        transform: rotate(-2deg) scale(0.183);
-    }
-
-    38.47% {
-        opacity: 1;
-        transform: rotate(-2deg) scale(0.238);
-        animation-timing-function: cubic-bezier(0.45, 0, 0.3, 1);
-    }
-
-    42.97%, 46.79% {
-        opacity: 1;
-        transform: rotate(0deg) scale(0.86);
-    }
-
-    48.87%, 100% {
-        opacity: 0;
-        transform: rotate(0deg) scale(0.86);
+        transform: rotate(0deg) scale(var(--shard-land));
     }
 }
 
@@ -2984,7 +2891,7 @@ body > .foot {
     }
 
     83.64%, 100% {
-        transform: translateX(var(--px));
+        transform: translateX(calc(var(--px) * var(--wide)));
     }
 }
 
@@ -2995,12 +2902,12 @@ body > .foot {
     }
 
     78.61% {
-        transform: translateY(-70px);
+        transform: translateY(calc(-70px * var(--wide)));
         animation-timing-function: cubic-bezier(0.5, 0, 0.6, 1);
     }
 
     83.64%, 100% {
-        transform: translateY(var(--py));
+        transform: translateY(calc(var(--py) * var(--wide)));
     }
 }
 
@@ -3011,12 +2918,12 @@ body > .foot {
     }
 
     79.39% {
-        transform: translateX(calc(var(--tpx) * -0.6));
+        transform: translateX(calc(var(--tpx) * -0.6 * var(--tall)));
         animation-timing-function: cubic-bezier(0.55, 0, 0.45, 1);
     }
 
     83.64%, 100% {
-        transform: translateX(var(--tpx));
+        transform: translateX(calc(var(--tpx) * var(--tall)));
     }
 }
 
@@ -3027,7 +2934,7 @@ body > .foot {
     }
 
     83.64%, 100% {
-        transform: translateY(var(--tpy));
+        transform: translateY(calc(var(--tpy) * var(--tall)));
     }
 }
 
@@ -3187,37 +3094,452 @@ body > .foot {
     }
 }
 
-@keyframes flow {
-    0%, 100% {
-        opacity: 0.25;
+@keyframes homebound-brow {
+    0%, 18%, 60%, 100% {
+        transform: rotate(0deg);
     }
 
-    50% {
+    30%, 35% {
+        transform: rotate(9deg);
+    }
+
+    40%, 52% {
+        transform: rotate(-10deg);
+    }
+}
+
+@keyframes homebound-cloud {
+    0%, 20%, 50%, 75%, 100% {
+        transform: translate(0px, 0px) rotate(0deg);
+    }
+
+    10%, 88% {
+        transform: translate(0px, -4px) rotate(0deg);
+    }
+
+    32% {
+        transform: translate(-20px, 12px) rotate(-5deg);
+    }
+
+    36% {
+        transform: translate(-30px, 18px) rotate(-7deg);
+    }
+
+    42% {
+        transform: translate(8px, -6px) rotate(3deg);
+    }
+
+    62% {
+        transform: translate(0px, -4px) rotate(-1deg);
+    }
+}
+
+@keyframes homebound-flow {
+    to {
+        stroke-dashoffset: 26;
+    }
+}
+
+@keyframes homebound-iris {
+    0%, 14%, 100% {
+        transform: translate(-6px, 5px);
+    }
+
+    24% {
+        transform: translate(-8px, 2px);
+    }
+
+    33% {
+        transform: translate(-7px, 4px);
+    }
+
+    37% {
+        transform: translate(-4px, -5px);
+    }
+
+    45% {
+        transform: translate(-8px, 4px);
+    }
+
+    58% {
+        transform: translate(-7px, 5px);
+    }
+
+    66%, 88% {
+        transform: translate(6px, -2px);
+    }
+}
+
+@keyframes homebound-lips {
+    0%, 22%, 36.5%, 100% {
         opacity: 1;
     }
-}
 
-@keyframes breathe {
-    50% {
-        opacity: 0.35;
-        transform: scale(1.06);
+    24%, 36% {
+        opacity: 0;
     }
 }
 
-@keyframes write {
-    0% {
+@keyframes homebound-mouth {
+    0%, 22%, 37%, 100% {
+        opacity: 0;
+        transform: scale(1, 0.1);
+    }
+
+    24% {
+        opacity: 1;
+        transform: scale(1, 0.3);
+    }
+
+    31%, 35% {
+        opacity: 1;
+        transform: scale(1, 1);
+    }
+
+    36% {
+        opacity: 1;
+        transform: scale(1, 0.2);
+    }
+
+    36.5% {
+        opacity: 0;
+        transform: scale(1, 0.05);
+    }
+}
+
+@keyframes homebound-notes {
+    0%, 10%, 61%, 100% {
+        opacity: 1;
+        transform: scaleX(1);
+    }
+
+    12%, 58% {
         opacity: 0;
         transform: scaleX(0);
     }
+}
 
-    35%, 75% {
+@keyframes homebound-plane {
+    0%, 11.88% {
+        transform: translate(112.0px, 284.0px) rotate(-56.6deg);
+    }
+
+    16.03% {
+        transform: translate(119.0px, 274.1px) rotate(-52.2deg);
+    }
+
+    17.77% {
+        transform: translate(126.8px, 264.9px) rotate(-48.2deg);
+    }
+
+    19.11% {
+        transform: translate(135.2px, 256.1px) rotate(-44.1deg);
+    }
+
+    20.26% {
+        transform: translate(144.2px, 248.0px) rotate(-40.5deg);
+    }
+
+    21.28% {
+        transform: translate(153.6px, 240.3px) rotate(-37.5deg);
+    }
+
+    22.22% {
+        transform: translate(163.4px, 233.3px) rotate(-34.2deg);
+    }
+
+    23.09% {
+        transform: translate(173.6px, 226.7px) rotate(-31.0deg);
+    }
+
+    23.9% {
+        transform: translate(184.1px, 220.8px) rotate(-27.9deg);
+    }
+
+    24.68% {
+        transform: translate(195.0px, 215.3px) rotate(-25.1deg);
+    }
+
+    25.42% {
+        transform: translate(206.1px, 210.5px) rotate(-22.0deg);
+    }
+
+    26.14% {
+        transform: translate(217.4px, 206.3px) rotate(-18.8deg);
+    }
+
+    26.83% {
+        transform: translate(229.0px, 202.7px) rotate(-15.5deg);
+    }
+
+    27.5% {
+        transform: translate(240.8px, 199.8px) rotate(-12.0deg);
+    }
+
+    28.15% {
+        transform: translate(252.7px, 197.6px) rotate(-8.4deg);
+    }
+
+    28.79% {
+        transform: translate(264.7px, 196.3px) rotate(-4.4deg);
+    }
+
+    29.42% {
+        transform: translate(276.8px, 195.9px) rotate(0.2deg);
+    }
+
+    30.04% {
+        transform: translate(288.9px, 196.5px) rotate(5.3deg);
+    }
+
+    30.65% {
+        transform: translate(300.9px, 198.2px) rotate(9.4deg);
+    }
+
+    31.25% {
+        transform: translate(313.0px, 198.7px) rotate(-3.9deg);
+    }
+
+    31.84% {
+        transform: translate(324.9px, 196.4px) rotate(-18.2deg);
+    }
+
+    32.43% {
+        transform: translate(335.7px, 191.1px) rotate(-34.0deg);
+    }
+
+    33.01% {
+        transform: translate(344.6px, 183.0px) rotate(-50.7deg);
+    }
+
+    33.59% {
+        transform: translate(350.9px, 172.7px) rotate(-66.4deg);
+    }
+
+    34.16% {
+        transform: translate(354.0px, 161.0px) rotate(-84.4deg);
+    }
+
+    34.74% {
+        transform: translate(353.5px, 149.0px) rotate(-101.1deg);
+    }
+
+    35.31% {
+        transform: translate(349.5px, 137.6px) rotate(-117.6deg);
+    }
+
+    35.89% {
+        transform: translate(342.4px, 127.8px) rotate(-135.6deg);
+    }
+
+    36.46% {
+        transform: translate(332.4px, 121.0px) rotate(-155.6deg);
+    }
+
+    37.04% {
+        transform: translate(320.7px, 118.1px) rotate(-176.0deg);
+    }
+
+    37.62% {
+        transform: translate(308.7px, 119.1px) rotate(-193.6deg);
+    }
+
+    38.2% {
+        transform: translate(297.6px, 123.9px) rotate(-214.2deg);
+    }
+
+    38.79% {
+        transform: translate(289.2px, 132.5px) rotate(-236.8deg);
+    }
+
+    39.38% {
+        transform: translate(284.7px, 143.6px) rotate(-258.0deg);
+    }
+
+    39.98% {
+        transform: translate(284.0px, 155.7px) rotate(-274.6deg);
+    }
+
+    40.59% {
+        transform: translate(283.5px, 167.8px) rotate(-262.2deg);
+    }
+
+    41.2% {
+        transform: translate(280.9px, 179.6px) rotate(-253.1deg);
+    }
+
+    41.83% {
+        transform: translate(276.7px, 190.9px) rotate(-245.6deg);
+    }
+
+    42.47% {
+        transform: translate(271.0px, 201.6px) rotate(-239.0deg);
+    }
+
+    43.12% {
+        transform: translate(264.3px, 211.7px) rotate(-232.9deg);
+    }
+
+    43.8% {
+        transform: translate(256.5px, 221.0px) rotate(-227.1deg);
+    }
+
+    44.49% {
+        transform: translate(247.8px, 229.4px) rotate(-220.9deg);
+    }
+
+    45.2% {
+        transform: translate(238.2px, 236.8px) rotate(-214.6deg);
+    }
+
+    45.95% {
+        transform: translate(227.8px, 243.1px) rotate(-207.8deg);
+    }
+
+    46.72% {
+        transform: translate(217.0px, 248.5px) rotate(-206.1deg);
+    }
+
+    47.54% {
+        transform: translate(206.1px, 253.7px) rotate(-205.3deg);
+    }
+
+    48.41% {
+        transform: translate(195.1px, 258.8px) rotate(-204.3deg);
+    }
+
+    49.34% {
+        transform: translate(184.0px, 263.7px) rotate(-203.0deg);
+    }
+
+    50.36% {
+        transform: translate(172.8px, 268.3px) rotate(-201.3deg);
+    }
+
+    51.51% {
+        transform: translate(161.4px, 272.4px) rotate(-199.0deg);
+    }
+
+    52.86% {
+        transform: translate(149.8px, 276.1px) rotate(-195.5deg);
+    }
+
+    54.6% {
+        transform: translate(138.0px, 278.8px) rotate(-190.1deg);
+    }
+
+    58.75%, 100% {
+        transform: translate(126.0px, 280.0px) rotate(-180.2deg);
+    }
+}
+
+@keyframes homebound-plane-body {
+    0%, 10% {
+        opacity: 0;
+        transform: scale(0.3);
+    }
+
+    12%, 57% {
         opacity: 1;
-        transform: scaleX(1);
+        transform: scale(1);
+    }
+
+    59% {
+        opacity: 1;
+        transform: scale(0.3);
+    }
+
+    59.5%, 100% {
+        opacity: 0;
+        transform: scale(0.3);
+    }
+}
+
+@keyframes homebound-pop {
+    0%, 61% {
+        opacity: 0;
+        transform: scale(0.5);
+    }
+
+    61.5% {
+        opacity: 1;
+        transform: scale(0.6);
+    }
+
+    68%, 100% {
+        opacity: 0;
+        transform: scale(1.8);
+    }
+}
+
+@keyframes homebound-shackle {
+    0%, 59%, 96%, 100% {
+        transform: translateY(-9px);
+    }
+
+    61.5%, 94% {
+        transform: translateY(0px);
+    }
+}
+
+@keyframes homebound-suck {
+    0%, 23%, 36%, 100% {
+        opacity: 0;
+    }
+
+    27%, 33% {
+        opacity: 0.85;
+    }
+}
+
+@keyframes still-signal {
+    0%, 70%, 100% {
+        opacity: 0.2;
+    }
+
+    25% {
+        opacity: 1;
+    }
+}
+
+@keyframes still-steam {
+    0% {
+        opacity: 0;
+        stroke-dasharray: 0.45 1;
+        stroke-dashoffset: 0.45;
+        transform: translate(0px, 4px);
+    }
+
+    20% {
+        opacity: 1;
+    }
+
+    75% {
+        opacity: 0.85;
     }
 
     100% {
         opacity: 0;
-        transform: scaleX(1);
+        stroke-dasharray: 0.45 1;
+        stroke-dashoffset: -1;
+        transform: translate(4px, -8px);
+    }
+}
+
+@keyframes still-tick {
+    0%, 12% {
+        opacity: 1;
+        stroke-dashoffset: 1;
+    }
+
+    20%, 88% {
+        opacity: 1;
+        stroke-dashoffset: 0;
+    }
+
+    96%, 100% {
+        opacity: 0;
+        stroke-dashoffset: 0;
     }
 }
 
@@ -3361,25 +3683,6 @@ body > .foot {
         gap: 22px;
     }
 
-    .vault {
-        height: 300px;
-    }
-
-    .vault-in {
-        width: 32%;
-        padding-left: 14px;
-    }
-
-    .vault-core {
-        width: 104px;
-        height: 104px;
-    }
-
-    .vault-out {
-        right: 18px;
-        width: 22%;
-    }
-
     .chat-q {
         max-width: 100%;
     }
@@ -3402,11 +3705,13 @@ body > .foot {
     }
 
     .art .cam {
-        animation-name: camera-tall;
+        --cam-x: 0px;
+        --cam-y: -760px;
     }
 
     .art .pro {
-        animation-name: walk-tall;
+        --walk-x: 0px;
+        --walk-y: -1419.4px;
     }
 
     .art .bg-a {
@@ -3453,8 +3758,8 @@ body > .foot {
     }
 
     .art .table-wide {
-        transform: translate(-14.5px, 466.67px) scale(0.62, 0.5238);
-        animation: table-away var(--loop) infinite;
+        --table-opacity: 0;
+        transform: translate(-14.5px, 466.54px) scale(0.62, 0.5240);
     }
 
     .art .table-tall {
@@ -3499,43 +3804,36 @@ body > .foot {
     }
 
     .art .words-pos {
-        transform: translate(289.3px, 610.4px) scale(0.7);
+        transform: translate(289.3px, 627.1px) scale(0.7);
     }
 
     .art .word {
-        animation-name: word-tall;
+        --wx: var(--tdx);
+        --wy: var(--tdy);
     }
 
     .art .flight {
-        transform: translate(275.5px, 1311.0px);
-    }
-
-    .art .fly-x {
-        animation-name: fly-x-tall;
-    }
-
-    .art .fly-y {
-        animation-name: fly-y-tall;
+        --wide: 0;
+        --tall: 1;
+        transform: translate(266.1px, 1324.7px);
     }
 
     .art .shard {
-        animation-name: shard-tall;
+        --shard-start: 0.118;
+        --shard-swell: 0.153;
+        --shard-land: 0.86;
     }
 
     .art .plane-pos-1 {
+        --wide: 0;
+        --tall: 1;
         transform: translate(184.7px, 927.3px) scale(0.7);
     }
 
     .art .plane-pos-2 {
+        --wide: 0;
+        --tall: 1;
         transform: translate(289.6px, 1005.6px) scale(0.7);
-    }
-
-    .art .plane-x {
-        animation-name: plane-x-tall;
-    }
-
-    .art .plane-y {
-        animation-name: plane-y-tall;
     }
 }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import {
     offer_cards,
     offer_hours,
@@ -9,10 +9,11 @@ import {
 } from '../composables/use_account'
 import { assert } from '../lib/assert'
 import { SECONDS_PER_HOUR } from '../lib/duration'
-import { error_friendly } from '../lib/errors'
+import { error_friendly, error_shown } from '../lib/errors'
 import { log_warn } from '../lib/log'
 import { TEST_CARDS, checkout_preload, stripe_preload } from '../lib/stripe'
 import CheckoutOffers from './checkout_offers.vue'
+import NoticeBanner from './notice_banner.vue'
 import type { CheckoutForm, CheckoutPreloaded, TestCard } from '../lib/stripe'
 import type { AccountOffer, CheckoutSessionID } from '../types'
 
@@ -64,8 +65,8 @@ const WAVE_LEVELS = Object.freeze([
 
 const WAVE_BARS = Object.freeze(WAVE_LEVELS.map((level, index) => ({
     height: level * WAVE_HEIGHT,
-    x: index * WAVE_BAR_STEP,
-    y: ((1 - level) * WAVE_HEIGHT) / 2,
+    left: index * WAVE_BAR_STEP,
+    top: ((1 - level) * WAVE_HEIGHT) / 2,
 })))
 
 const WAVE_WIDTH = WAVE_LEVELS.length * WAVE_BAR_STEP
@@ -78,8 +79,8 @@ const {
     checkout_start,
 } = use_account()
 
-const element_ref = ref<HTMLElement | null>(null)
 const error_text = ref<string | null>(null)
+const host_element = useTemplateRef<HTMLElement>('host_element')
 const offer_current = ref<AccountOffer | null>(null)
 const phase = ref<CheckoutPhase>('choosing')
 const price_text = ref('')
@@ -88,9 +89,9 @@ const test_cards_shown = ref(false)
 const action_enabled = computed(() => phase.value === 'ready' || phase.value === 'failed')
 const fields_shown = computed(() => phase.value === 'ready' || phase.value === 'paying')
 const settled = computed(() => phase.value === 'paid' || phase.value === 'pending')
-const preloads = new Map<number, Promise<CheckoutPreloaded>>()
-let form_current: CheckoutForm | null = null
-let session_current: CheckoutSessionID | null = null
+const preloads = shallowRef<ReadonlyMap<number, Promise<CheckoutPreloaded>>>(new Map())
+const form_current = shallowRef<CheckoutForm | null>(null)
+const session_current = shallowRef<CheckoutSessionID | null>(null)
 
 const action_label = computed(() => {
     if (phase.value === 'failed') return 'Try again'
@@ -112,7 +113,8 @@ const card_current = computed(() => {
     const current = account.value
     const offer = offer_current.value
 
-    if (current === null || offer === null) return null
+    if (current === null) return null
+    if (offer === null) return null
 
     const cards = offer_cards(current.offers, current.balance_seconds)
 
@@ -151,10 +153,16 @@ watch(() => account.value?.publishable_key ?? '', key_preload, { immediate: true
 onBeforeUnmount(checkout_leave)
 
 function account_retry(): void {
+    assert(phase.value === 'choosing')
+    assert(account.value?.payments === false)
+
     void account_load()
 }
 
 function action_click(): void {
+    assert(step.value === 'pay')
+    assert(offer_current.value !== null)
+
     if (phase.value === 'failed') {
         void checkout_restart()
 
@@ -165,6 +173,9 @@ function action_click(): void {
 }
 
 function checkout_back(): void {
+    assert(step.value !== 'choose')
+    assert(offer_current.value !== null)
+
     if (phase.value === 'paying') return
 
     checkout_unmount()
@@ -175,6 +186,9 @@ function checkout_back(): void {
 
 function checkout_leave(): void {
     const pending = phase.value === 'pending'
+
+    assert(!pending || form_current.value === null)
+    assert(!pending || offer_current.value !== null)
 
     checkout_unmount()
 
@@ -195,48 +209,58 @@ async function checkout_mount(): Promise<void> {
     error_text.value = null
     price_text.value = offer_price(offer)
 
-    try {
-        await checkout_prepare(run, offer)
-    } catch (error) {
+    return checkout_prepare(run, offer).catch((error: unknown) => {
         checkout_failed(run, error)
-    }
+    })
 }
 
-async function checkout_prepare(run: number, offer: AccountOffer): Promise<void> {
-    const key = account.value?.publishable_key ?? ''
-
-    if (key === '') throw new Error(MESSAGE_PAYMENTS_OFF)
-
-    await nextTick()
+async function checkout_open(run: number, key: string, offer: AccountOffer): Promise<void> {
+    assert(run <= run_current.value)
+    assert(key.startsWith('pk_'))
+    assert(offer.hours > 0)
 
     if (run !== run_current.value) return
 
-    const host = element_ref.value
+    const host = host_element.value
 
     assert(host !== null)
 
     const preloading = preload_take(key, offer)
-    const preloaded = await preloading
 
-    if (run !== run_current.value) {
-        if (!preloads.has(offer.hours)) preloads.set(offer.hours, preloading)
+    return preloading.then(async (preloaded) => {
+        if (run !== run_current.value) {
+            if (!preloads.value.has(offer.hours)) {
+                preloads.value = new Map([...preloads.value, [offer.hours, preloading]])
+            }
 
-        return
-    }
+            return
+        }
 
-    const form = await preloaded.open(host)
+        const form = await preloaded.open(host)
 
-    if (run !== run_current.value) {
-        form.destroy()
+        if (run !== run_current.value) {
+            form.destroy()
 
-        return
-    }
+            return
+        }
 
-    form_current = form
-    session_current = preloaded.session_id
-    price_text.value = price_format(form.amount, form.currency)
-    test_cards_shown.value = form.confirm_test !== null
-    phase.value = 'ready'
+        form_current.value = form
+        session_current.value = preloaded.session_id
+        price_text.value = price_format(form.amount, form.currency)
+        test_cards_shown.value = form.confirm_test !== null
+        phase.value = 'ready'
+    })
+}
+
+async function checkout_prepare(run: number, offer: AccountOffer): Promise<void> {
+    assert(run === run_current.value)
+    assert(offer === offer_current.value)
+
+    const key = account.value?.publishable_key ?? ''
+
+    if (key === '') throw new Error(MESSAGE_PAYMENTS_OFF)
+
+    return nextTick().then(async () => checkout_open(run, key, offer))
 }
 
 function checkout_failed(run: number, error: unknown): void {
@@ -247,32 +271,47 @@ function checkout_failed(run: number, error: unknown): void {
     assert(phase.value === 'loading')
 
     phase.value = 'failed'
-    error_text.value = error_friendly(error).message
+    error_text.value = error_shown(error)
 }
 
 async function checkout_restart(): Promise<void> {
+    assert(step.value === 'pay')
+    assert(offer_current.value !== null)
+
     if (phase.value === 'paying') return
 
     checkout_unmount()
 
-    await account_load()
+    const run = run_current.value
 
-    if (offer_current.value === null) return
+    return account_load().then(async () => checkout_restart_reloaded(run))
+}
 
-    await checkout_mount()
+async function checkout_restart_reloaded(run: number): Promise<void> {
+    assert(run <= run_current.value)
+
+    if (run !== run_current.value) return
+
+    assert(phase.value === 'loading')
+    assert(offer_current.value !== null)
+
+    return checkout_mount()
 }
 
 function checkout_unmount(): void {
     const paying = phase.value === 'paying'
 
+    assert(!paying || form_current.value !== null)
+    assert(!paying || session_current.value !== null)
+
     run_current.value += 1
 
-    if (!paying) form_current?.destroy()
+    if (!paying) form_current.value?.destroy()
 
-    form_current = null
+    form_current.value = null
     error_text.value = null
     phase.value = 'loading'
-    session_current = null
+    session_current.value = null
     test_cards_shown.value = false
 }
 
@@ -283,7 +322,10 @@ function finish_failed(error: unknown): CheckoutPhase {
 }
 
 function key_preload(key: string): void {
-    preloads.clear()
+    assert(key === (account.value?.publishable_key ?? ''))
+    assert(key === '' || key.startsWith('pk_'))
+
+    preloads.value = new Map()
 
     if (key === '') return
 
@@ -291,9 +333,11 @@ function key_preload(key: string): void {
 }
 
 function offer_choose(offer: AccountOffer): void {
+    assert(offer.hours > 0)
+    assert(account.value?.offers.some((option) => option.hours === offer.hours) === true)
+
     if (phase.value !== 'choosing') return
 
-    assert(offer.hours > 0)
     assert(offer_current.value === null)
 
     offer_current.value = offer
@@ -309,13 +353,13 @@ function offer_consider(offer: AccountOffer): void {
     assert(Number.isSafeInteger(offer.hours))
 
     if (key === '') return
-    if (preloads.has(offer.hours)) return
-    if (preloads.size >= offers.length) return
+    if (preloads.value.has(offer.hours)) return
+    if (preloads.value.size >= offers.length) return
 
     const preloading = checkout_preload(key, checkout_start(offer.hours))
     const failed = preload_failed.bind(undefined, offer.hours, preloading)
 
-    preloads.set(offer.hours, preloading)
+    preloads.value = new Map([...preloads.value, [offer.hours, preloading]])
     void preloading.catch(failed)
 }
 
@@ -324,36 +368,23 @@ function paid_phase(paid: boolean): CheckoutPhase {
 }
 
 async function pay(card: TestCard | null): Promise<void> {
-    const form = form_current
-    const session_id = session_current
+    assert(card === null || test_cards_shown.value)
+    assert(step.value === 'pay')
 
     if (phase.value !== 'ready') return
-    if (form === null) return
-    if (session_id === null) return
+    if (form_current.value === null) return
+    if (session_current.value === null) return
 
-    const run = run_current.value
-
-    phase.value = 'paying'
-    error_text.value = null
-
-    const refusal = await pay_confirm(form, card).catch(pay_failed)
-
-    if (refusal !== null) {
-        pay_refused(run, form, refusal)
-
-        return
-    }
-
-    const outcome = await checkout_finish(session_id).then(paid_phase, finish_failed)
-
-    pay_settled(run, form, outcome)
+    return pay_submit(form_current.value, session_current.value, card)
 }
 
 async function pay_confirm(form: CheckoutForm, card: TestCard | null): Promise<string | null> {
+    assert(form === form_current.value)
+    assert(card === null || TEST_CARDS.some((option) => option.card === card))
+
     if (card === null) return form.confirm()
 
     assert(form.confirm_test !== null)
-    assert(TEST_CARDS.some((option) => option.card === card))
 
     return form.confirm_test(card)
 }
@@ -371,6 +402,7 @@ function pay_failed(error: unknown): string {
 function pay_refused(run: number, form: CheckoutForm, refusal: string): void {
     assert(refusal.length > 0)
     assert(run <= run_current.value)
+    assert(run !== run_current.value || form === form_current.value)
 
     if (run !== run_current.value) {
         form.destroy()
@@ -384,14 +416,46 @@ function pay_refused(run: number, form: CheckoutForm, refusal: string): void {
     error_text.value = refusal
 }
 
+async function pay_submit(
+    form: CheckoutForm,
+    session_id: CheckoutSessionID,
+    card: TestCard | null,
+): Promise<void> {
+    assert(form === form_current.value)
+    assert(session_id === session_current.value)
+    assert(card === null || form.confirm_test !== null)
+
+    const run = run_current.value
+
+    phase.value = 'paying'
+    error_text.value = null
+
+    return pay_confirm(form, card).catch(pay_failed).then(async (refusal) => {
+        if (refusal !== null) {
+            pay_refused(run, form, refusal)
+
+            return
+        }
+
+        const outcome = await checkout_finish(session_id).then(paid_phase, finish_failed)
+
+        pay_settled(run, form, outcome)
+    })
+}
+
 function preload_failed(
     hours: number,
     preloading: Promise<CheckoutPreloaded>,
     error: unknown,
 ): void {
-    assert(hours > 0)
+    const held = preloads.value
 
-    if (preloads.get(hours) === preloading) preloads.delete(hours)
+    assert(hours > 0)
+    assert(held.get(hours) === preloading || ![...held.values()].includes(preloading))
+
+    if (held.get(hours) === preloading) {
+        preloads.value = new Map([...held].filter(([entry_hours]) => entry_hours !== hours))
+    }
 
     log_warn('[checkout] a pack could not be prepared before it was chosen', error)
 }
@@ -400,9 +464,9 @@ async function preload_take(key: string, offer: AccountOffer): Promise<CheckoutP
     assert(key.length > 0)
     assert(offer.hours > 0)
 
-    const preloading = preloads.get(offer.hours)
+    const preloading = preloads.value.get(offer.hours)
 
-    preloads.delete(offer.hours)
+    preloads.value = new Map([...preloads.value].filter(([hours]) => hours !== offer.hours))
 
     return preloading ?? checkout_preload(key, checkout_start(offer.hours))
 }
@@ -410,6 +474,7 @@ async function preload_take(key: string, offer: AccountOffer): Promise<CheckoutP
 function pay_settled(run: number, form: CheckoutForm, outcome: CheckoutPhase): void {
     assert(outcome === 'paid' || outcome === 'pending')
     assert(run <= run_current.value)
+    assert(run !== run_current.value || form === form_current.value)
 
     form.destroy()
 
@@ -421,12 +486,13 @@ function pay_settled(run: number, form: CheckoutForm, outcome: CheckoutPhase): v
 
     assert(phase.value === 'paying')
 
-    form_current = null
+    form_current.value = null
     phase.value = outcome
 }
 
 function test_pay(card: TestCard): void {
     assert(test_cards_shown.value)
+    assert(TEST_CARDS.some((option) => option.card === card))
 
     void pay(card)
 }
@@ -459,9 +525,9 @@ function test_pay(card: TestCard): void {
             >
                 <rect
                     v-for="bar in WAVE_BARS"
-                    :key="bar.x"
-                    :x="bar.x"
-                    :y="bar.y"
+                    :key="bar.left"
+                    :x="bar.left"
+                    :y="bar.top"
                     width="8"
                     :height="bar.height"
                     rx="4"
@@ -601,7 +667,7 @@ function test_pay(card: TestCard): void {
                         :data-shown="fields_shown"
                         :aria-busy="phase === 'loading'"
                     >
-                        <div :key="run_current" ref="element_ref" class="checkout-element" />
+                        <div :key="run_current" ref="host_element" class="checkout-element" />
                         <div class="checkout-ghost" aria-hidden="true">
                             <div
                                 v-for="field in GHOST_FIELDS"
@@ -614,9 +680,13 @@ function test_pay(card: TestCard): void {
                             </div>
                         </div>
                     </div>
-                    <p v-if="error_text !== null" class="error checkout-error" role="alert">
+                    <NoticeBanner
+                        v-if="error_text !== null"
+                        class="checkout-error"
+                        @dismiss="error_text = null"
+                    >
                         {{ error_text }}
-                    </p>
+                    </NoticeBanner>
                     <div class="checkout-submit">
                         <p class="checkout-note">
                             <svg

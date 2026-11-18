@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { assert } from '../lib/assert'
 import { unix_now } from '../lib/duration'
+import { error_shown } from '../lib/errors'
 import { ipc } from '../lib/ipc'
 import { log_warn } from '../lib/log'
 import { use_account } from './use_account'
@@ -30,8 +31,14 @@ interface TaskRunOptions<Result> {
     stream_id?: string | null
 }
 
-const CANCELLED_PATTERN = /cancelled/i
+const CANCELLED_PATTERN = /cancelled/iu
 const TASK_RETENTION_MAX = 8
+const TASK_RUNNING_COUNT_MAX = 64
+
+const MESSAGE_TASKS_FULL = `${String(TASK_RUNNING_COUNT_MAX)} tasks are already running. `
+    + 'Wait for one to finish, then try again.'
+
+const TASK_COUNT_MAX = Math.max(TASK_RETENTION_MAX, TASK_RUNNING_COUNT_MAX)
 const tasks_all = ref<Task[]>([])
 const tasks = computed(() => tasks_all.value)
 const tasks_running = computed(() => tasks_all.value.filter((task) => task.status === 'running'))
@@ -48,8 +55,9 @@ export function is_cancelled_error(error: unknown): boolean {
 }
 
 export function use_tasks(): typeof api {
-    assert(Object.isFrozen(api))
-    assert(tasks_all.value.length <= TASK_RETENTION_MAX)
+    assert(tasks_finished.value.every((task) => task.finished_at_unix !== null))
+    assert(tasks_running.value.length <= TASK_RUNNING_COUNT_MAX)
+    assert(tasks_all.value.length <= TASK_COUNT_MAX)
 
     return api
 }
@@ -98,6 +106,7 @@ async function task_cancel(id: string): Promise<void> {
 
 function task_dismiss(id: string): void {
     assert(id.length > 0)
+    assert(tasks_running.value.every((task) => task.id !== id))
 
     tasks_all.value = tasks_all.value.filter((task) => task.id !== id)
 
@@ -122,7 +131,7 @@ function task_finish_failure(id: string, error: unknown): void {
     task_replace(id, {
         status: cancelled ? 'cancelled' : 'failed',
         finished_at_unix: unix_now(),
-        error_message: cancelled ? null : String(error),
+        error_message: cancelled ? null : error_shown(error),
     })
 
     assert(typeof cancelled === 'boolean')
@@ -164,13 +173,21 @@ function task_notify(id: string): void {
 }
 
 function task_prune(): void {
-    assert(tasks_all.value.length <= TASK_RETENTION_MAX + 1)
+    const running_count = tasks_running.value.length
 
-    if (tasks_all.value.length <= TASK_RETENTION_MAX) return
+    assert(running_count <= TASK_RUNNING_COUNT_MAX)
+    assert(tasks_all.value.length <= TASK_COUNT_MAX + 1)
 
-    tasks_all.value = tasks_all.value.slice(-TASK_RETENTION_MAX)
+    const excess = tasks_all.value.length - TASK_RETENTION_MAX
 
-    assert(tasks_all.value.length === TASK_RETENTION_MAX)
+    if (excess <= 0) return
+
+    const evicted = tasks_finished.value.slice(0, excess)
+
+    tasks_all.value = tasks_all.value.filter((task) => !evicted.includes(task))
+
+    assert(tasks_running.value.length === running_count)
+    assert(tasks_all.value.length <= TASK_RETENTION_MAX || tasks_finished.value.length === 0)
 }
 
 function task_replace(id: string, patch: Partial<Task>): void {
@@ -179,12 +196,14 @@ function task_replace(id: string, patch: Partial<Task>): void {
 
     tasks_all.value = tasks_all.value.map((task) => (task.id === id ? { ...task, ...patch } : task))
 
-    assert(tasks_all.value.length <= TASK_RETENTION_MAX)
+    assert(tasks_all.value.length <= TASK_COUNT_MAX)
 }
 
 async function task_run<Result>(options: TaskRunOptions<Result>): Promise<Result> {
     assert(typeof options.label === 'string')
     assert(typeof options.runner === 'function')
+
+    if (tasks_running.value.length >= TASK_RUNNING_COUNT_MAX) throw new Error(MESSAGE_TASKS_FULL)
 
     const id = crypto.randomUUID()
 
@@ -212,11 +231,13 @@ async function task_run<Result>(options: TaskRunOptions<Result>): Promise<Result
                 job_id: options.job_id_of?.(result) ?? null,
             })
 
-            if (task_find(id) !== undefined) await options.on_success?.(result)
+            assert(tasks_all.value.some((task) => task.id === id))
 
-            task_notify(id)
+            return Promise.resolve(options.on_success?.(result)).then(() => {
+                task_notify(id)
 
-            return result
+                return result
+            })
         })
         .catch((error: unknown) => {
             task_finish_failure(id, error)
@@ -229,7 +250,7 @@ async function task_run<Result>(options: TaskRunOptions<Result>): Promise<Result
 }
 
 function tasks_clear_finished(): void {
-    assert(tasks_all.value.length <= TASK_RETENTION_MAX)
+    assert(tasks_all.value.length <= TASK_COUNT_MAX)
 
     tasks_all.value = tasks_all.value.filter((task) => task.status === 'running')
 

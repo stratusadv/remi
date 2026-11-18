@@ -13,6 +13,9 @@ pytestmark = pytest.mark.django_db
 
 
 def _complimentary_below_target(*, email: str, job_index: int) -> Account:
+    assert '@' in email
+    assert 0 < job_index < 16**32
+
     account = create_test_account(email=email)
     job_id = f'{job_index:032x}'
 
@@ -44,7 +47,7 @@ def test_complimentary_topup_refuses_more_accounts_than_one_run_tops_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     for index in range(3):
-        _complimentary_below_target(email=f'person{index}@example.com', job_index=index + 1)
+        _ = _complimentary_below_target(email=f'person{index}@example.com', job_index=index + 1)
 
     monkeypatch.setattr(automation_service, 'COMPLIMENTARY_ACCOUNT_COUNT_MAX', 2)
 

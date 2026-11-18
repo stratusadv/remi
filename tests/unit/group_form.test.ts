@@ -1,10 +1,10 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import GroupForm from '../../src/components/group_form.vue'
 import { use_people } from '../../src/composables/use_people'
 import { assert } from '../../src/lib/assert'
 import { ipc } from '../../src/lib/ipc'
-import { ATTACH_TO, PROPERTIES, group_build, person_build } from './fixtures'
+import { ATTACH_TO, PROPERTIES, group_build, mount_auto_unmount, person_build } from './fixtures'
 import type { VueWrapper } from '@vue/test-utils'
 import type { Group } from '../../src/types'
 
@@ -13,40 +13,40 @@ vi.mock('../../src/lib/ipc')
 
 const JOHN = person_build({ id: 'john', name_first: 'John', name_last: 'Doe', role: 'Developer' })
 const JANE = person_build({ id: 'jane', name_first: 'Jane', name_last: 'Doe', role: '' })
-const mounted = new Set<VueWrapper>()
 const people_state = use_people()
 
 function chips(wrapper: VueWrapper): string[] {
     assert(wrapper.exists())
-    assert(mounted.has(wrapper))
 
-    return wrapper.findAll('.tag-chip').map((chip) => chip.text())
+    const shown = wrapper.findAll('.tag-chip')
+
+    assert(wrapper.findAll('.tag-chip-remove').length === shown.length)
+
+    return shown.map((chip) => chip.text())
 }
 
 function mount_form(group: Group | null): VueWrapper {
     assert(group === null || group.id.length > 0)
-    assert(mounted.size >= 0)
+    assert(people_state.people.value.length > 0)
 
-    const wrapper = mount(GroupForm, { [PROPERTIES]: { group }, [ATTACH_TO]: document.body })
-
-    mounted.add(wrapper)
+    const wrapper = mount_auto_unmount(GroupForm, {
+        [PROPERTIES]: { group },
+        [ATTACH_TO]: document.body,
+    })
 
     return wrapper
 }
 
 beforeEach(() => {
+    onTestFinished(() => {
+        document.body.innerHTML = ''
+    })
+
     vi.resetAllMocks()
     people_state.people.value = [JOHN, JANE]
     people_state.groups.value = []
     vi.mocked(ipc.people_list).mockResolvedValue([JOHN, JANE])
     vi.mocked(ipc.groups_list).mockResolvedValue([])
-})
-
-afterEach(() => {
-    for (const wrapper of mounted) wrapper.unmount()
-
-    mounted.clear()
-    document.body.innerHTML = ''
 })
 
 describe('GroupForm', () => {
@@ -95,7 +95,7 @@ describe('GroupForm', () => {
         await wrapper.get('input').setValue('Fresh')
         await wrapper.get('.btn-primary').trigger('click')
 
-        expect(wrapper.emitted<Group[]>('save')?.[0]?.[0]?.id).toMatch(/^[0-9a-f-]{36}$/)
+        expect(wrapper.emitted<Group[]>('save')?.[0]?.[0]?.id).toMatch(/^[0-9a-f-]{36}$/u)
     })
 
     it('emits cancel', async () => {

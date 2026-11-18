@@ -74,6 +74,9 @@ def _beacon_send(
     path: str,
     fields: dict[str, str],
 ) -> _MonkeyPatchedWSGIResponse:
+    assert path in (FUNNEL_DOWNLOAD_PATH, FUNNEL_VISIT_PATH)
+    assert fields.keys() <= {'campaign', 'code', 'platform', 'source'}
+
     return client.post(path, data=urlencode(fields), content_type=BEACON_CONTENT_TYPE)
 
 
@@ -216,8 +219,9 @@ def test_download_beacon_counts_each_platform_under_its_campaign(
     with django_capture_on_commit_callbacks(execute=True):
         for platform in ('linux', 'macos', 'windows'):
             fields = {'campaign': 'general', 'platform': platform}
+            response = _beacon_send(client, FUNNEL_DOWNLOAD_PATH, fields)
 
-            assert _beacon_send(client, FUNNEL_DOWNLOAD_PATH, fields).status_code == 204
+            assert response.status_code == 204
 
     dispatched = metric_dispatched.dispatched
     references = [dispatch.reference for dispatch in dispatched]
@@ -572,8 +576,9 @@ def test_visit_beacon_counts_a_scan_only_for_a_qr_code(
     with django_capture_on_commit_callbacks(execute=True):
         for source in ('link', 'qr', 'email'):
             fields = {'campaign': 'wib', 'source': source}
+            response = _beacon_send(client, FUNNEL_VISIT_PATH, fields)
 
-            assert _beacon_send(client, FUNNEL_VISIT_PATH, fields).status_code == 204
+            assert response.status_code == 204
 
     assert metric_dispatched.dispatched == [
         MetricDispatch('link', 'remi--funnel--visits', 'remi--wib', VALUE_ONE),

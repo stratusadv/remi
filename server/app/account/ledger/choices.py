@@ -6,3 +6,22 @@ class AccountLedgerEntryKindChoices(TextChoices):
     GRANT = 'grant', 'Grant'
     PROMO = 'promo', 'Promo'
     PURCHASE = 'purchase', 'Purchase'
+    REINSTATEMENT = 'reinstatement', 'Reinstatement'
+    REVERSAL = 'reversal', 'Reversal'
+
+
+ACCOUNT_LEDGER_ENTRY_KINDS_DEBIT = (
+    AccountLedgerEntryKindChoices.CHARGE,
+    AccountLedgerEntryKindChoices.REVERSAL,
+)
+
+ACCOUNT_LEDGER_ENTRY_KINDS_PAYMENT = (
+    AccountLedgerEntryKindChoices.PURCHASE,
+    AccountLedgerEntryKindChoices.REINSTATEMENT,
+    AccountLedgerEntryKindChoices.REVERSAL,
+)
+
+ACCOUNT_LEDGER_ENTRY_KINDS_ZERO = (
+    AccountLedgerEntryKindChoices.REINSTATEMENT,
+    AccountLedgerEntryKindChoices.REVERSAL,
+)

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef } from 'vue'
 import { use_ask } from '../composables/use_ask'
 import { use_context_menu } from '../composables/use_context_menu'
 import { use_pipeline } from '../composables/use_pipeline'
 import {
     answer_blocks,
+    answer_claim,
     answer_parts,
     answer_plain,
     answer_settled,
@@ -13,14 +14,22 @@ import {
     sources_cited,
 } from '../lib/answer'
 import { assert } from '../lib/assert'
-import { error_dialog_show, error_friendly } from '../lib/errors'
+import { MESSAGE_UNSHOWN, error_dialog_show } from '../lib/errors'
+import { ipc } from '../lib/ipc'
 import { job_title } from '../lib/job_status'
 import { log_warn } from '../lib/log'
 import { MENU_ITEM_ASK, MENU_ITEM_OPEN_MEETING } from '../lib/menu'
 import type { Exchange } from '../composables/use_ask'
+import type { ChunkHit } from '../composables/use_pipeline'
 import type { AnswerPart, SourceCited } from '../lib/answer'
 import type { MenuItem } from '../lib/menu'
+import type { SearchQuery } from '../types'
 
+
+interface ItemPlace {
+    index: number
+    position: number
+}
 
 interface Preview {
     above: boolean
@@ -35,7 +44,7 @@ interface RenderedBlock {
     tag: 'ol' | 'p' | 'ul'
 }
 
-const props = defineProps<{
+const properties = defineProps<{
     exchange: Exchange
     last: boolean
 }>()
@@ -43,33 +52,40 @@ const props = defineProps<{
 const emit = defineEmits<{ retry: [] }>()
 
 const COPIED_FLASH_MS = 1500
-const MENU_ITEM_ANSWER_COPY: MenuItem = { id: 'answer_copy', label: 'Copy answer', icon: 'copy' }
-const MENU_ITEM_RETRY: MenuItem = { id: 'retry', label: 'Ask again', icon: 'retry' }
+
+const MENU_ITEM_ANSWER_COPY = Object.freeze<MenuItem>({
+    id: 'answer_copy',
+    label: 'Copy answer',
+    icon: 'copy',
+})
+
+const MENU_ITEM_RETRY = Object.freeze<MenuItem>({ id: 'retry', label: 'Ask again', icon: 'retry' })
 const PREVIEW_GAP_PX = 6
 const PREVIEW_HEIGHT_PX = 168
 const PREVIEW_WIDTH_PX = 288
 const VIEWPORT_MARGIN_PX = 12
-const { meeting_ask } = use_ask()
+const { meeting_ask, sources_open } = use_ask()
 const { open: context_menu_open } = use_context_menu()
 const { job_open_at } = use_pipeline()
 const copied = ref(false)
 const preview = ref<Preview | null>(null)
-let copied_timer: ReturnType<typeof setTimeout> | null = null
+const source_hovered = ref<number | null>(null)
+const copied_timer = shallowRef<ReturnType<typeof setTimeout> | null>(null)
 
 const live = computed(
-    () => props.exchange.state === 'searching' || props.exchange.state === 'answering',
+    () => properties.exchange.state === 'searching' || properties.exchange.state === 'answering',
 )
 
-const streaming = computed(() => props.exchange.state === 'answering')
+const streaming = computed(() => properties.exchange.state === 'answering')
 
 const cited = computed(() => {
-    const { answer, meetings, sources } = props.exchange
+    const { answer, meetings, sources } = properties.exchange
 
     return sources_cited(answer, sources, meetings)
 })
 
 const rendered = computed<RenderedBlock[]>(() => {
-    const settled = answer_settled(props.exchange.answer, streaming.value)
+    const settled = answer_settled(properties.exchange.answer, streaming.value)
 
     return answer_blocks(settled).map((block): RenderedBlock => {
         if (block.kind === 'paragraph') {
@@ -83,7 +99,7 @@ const rendered = computed<RenderedBlock[]>(() => {
 })
 
 const status = computed<string | null>(() => {
-    const { answer, meetings, notice, sources, state } = props.exchange
+    const { answer, meetings, notice, sources, state } = properties.exchange
 
     if (state === 'searching') return notice.length > 0 ? notice : 'Searching your meetings'
     if (state !== 'answering') return null
@@ -95,19 +111,19 @@ const status = computed<string | null>(() => {
 })
 
 const notice_shown = computed<boolean>(() => {
-    const { notice, state } = props.exchange
+    const { notice, state } = properties.exchange
 
     return notice.length > 0 && (state === 'answering' || state === 'done')
 })
 
 const problem = computed<string | null>(() => {
-    if (props.exchange.state !== 'failed') return null
+    if (properties.exchange.state !== 'failed') return null
 
-    return error_friendly(props.exchange.error ?? '').message
+    return properties.exchange.error ?? MESSAGE_UNSHOWN
 })
 
 const scope_label = computed<string | null>(() => {
-    const { meetings, scope } = props.exchange
+    const { meetings, scope } = properties.exchange
 
     if (scope.kind === 'all') return null
     if (scope.kind === 'project') return `In ${scope.project}`
@@ -117,21 +133,24 @@ const scope_label = computed<string | null>(() => {
     return `In ${meeting === undefined ? 'one meeting' : job_title(meeting)}`
 })
 
-const copyable = computed(() => !live.value && props.exchange.answer.trim().length > 0)
+const copyable = computed(() => !live.value && properties.exchange.answer.trim().length > 0)
+const sources_shown = computed(() => sources_open.value.includes(properties.exchange.id))
 
 
 onBeforeUnmount(() => {
-    if (copied_timer !== null) clearTimeout(copied_timer)
+    if (copied_timer.value !== null) clearTimeout(copied_timer.value)
 
     preview_hide()
 })
 
-function caret_at(index: number, position: number): boolean {
-    assert(index >= 0)
-    assert(position >= 0)
+function caret_at(place: ItemPlace): boolean {
+    assert(place.index >= 0)
+    assert(place.index < rendered.value.length)
+    assert(place.position >= 0)
 
     if (!streaming.value) return false
 
+    const { index, position } = place
     const block = rendered.value.at(-1)
 
     return index === rendered.value.length - 1 && position === (block?.items.length ?? 0) - 1
@@ -139,36 +158,44 @@ function caret_at(index: number, position: number): boolean {
 
 function cite_label(entry: SourceCited): string {
     assert(entry.number > 0)
+    assert(entry.source.job_id === entry.meeting.id)
 
     const where = `${source_date(entry.meeting)}, ${source_where(entry.source)}`
 
     return `Source ${String(entry.number)}: ${job_title(entry.meeting)}, ${where}`
 }
 
-async function copy(): Promise<void> {
-    assert(copyable.value)
+function copied_clear(): void {
+    assert(copied.value)
+    assert(copied_timer.value !== null)
 
-    const text = answer_plain(props.exchange.answer, cited.value)
+    copied.value = false
+}
 
-    try {
-        await navigator.clipboard.writeText(text)
-    } catch (error) {
-        log_warn('[ask] clipboard write failed', error)
-
-        return
-    }
+function copied_flash(): void {
+    assert(!copied.value || copied_timer.value !== null)
 
     copied.value = true
 
-    if (copied_timer !== null) clearTimeout(copied_timer)
+    if (copied_timer.value !== null) clearTimeout(copied_timer.value)
 
-    copied_timer = setTimeout(() => {
-        copied.value = false
-    }, COPIED_FLASH_MS)
+    copied_timer.value = setTimeout(copied_clear, COPIED_FLASH_MS)
+}
+
+async function copy(): Promise<void> {
+    assert(copyable.value)
+    assert(properties.exchange.state === 'done' || properties.exchange.state === 'stopped')
+
+    const text = answer_plain(properties.exchange.answer, cited.value)
+
+    return navigator.clipboard.writeText(text).then(copied_flash, (error: unknown) => {
+        log_warn('[ask] clipboard write failed', error)
+    })
 }
 
 function count_label(count: number, noun: string): string {
     assert(Number.isInteger(count))
+    assert(count >= 0)
     assert(noun.length > 0)
 
     return `${String(count)} ${noun}${count === 1 ? '' : 's'}`
@@ -176,20 +203,26 @@ function count_label(count: number, noun: string): string {
 
 function exchange_context_menu(event: MouseEvent): void {
     assert(event.type === 'contextmenu')
-    assert(props.exchange.id.length > 0)
+    assert(properties.exchange.id.length > 0)
 
     context_menu_open(event, exchange_menu_items(), exchange_menu_select)
 }
 
 function exchange_menu_items(): MenuItem[] {
-    const { state } = props.exchange
+    const { state } = properties.exchange
     const actions_shown = state === 'done' || state === 'stopped'
     const items: MenuItem[] = []
 
-    if (actions_shown && copyable.value) items.push(MENU_ITEM_ANSWER_COPY)
-    if (props.last && !live.value) items.push(MENU_ITEM_RETRY)
+    if (actions_shown) {
+        if (copyable.value) items.push(MENU_ITEM_ANSWER_COPY)
+    }
+
+    if (properties.last) {
+        if (!live.value) items.push(MENU_ITEM_RETRY)
+    }
 
     assert(items.length <= 2)
+    assert(!live.value || items.length === 0)
 
     return items
 }
@@ -204,8 +237,16 @@ async function exchange_menu_select(id: string): Promise<void> {
     emit('retry')
 }
 
+function hovered(number: number): 'false' | 'true' {
+    assert(number > 0)
+    assert(source_hovered.value === null || source_hovered.value > 0)
+
+    return source_hovered.value === number ? 'true' : 'false'
+}
+
 function parts_of(text: string): AnswerPart[] {
     assert(typeof text === 'string')
+    assert(cited.value.length <= properties.exchange.sources.length)
 
     return answer_parts(text, cited.value)
 }
@@ -213,9 +254,13 @@ function parts_of(text: string): AnswerPart[] {
 function preview_hide(): void {
     window.removeEventListener('scroll', preview_hide, true)
     preview.value = null
+    source_hovered.value = null
 }
 
 function preview_show(event: Event, entry: SourceCited): void {
+    assert(event.type === 'mouseenter' || event.type === 'focus')
+    assert(entry.number > 0)
+
     const target = event.currentTarget
 
     if (!(target instanceof HTMLElement)) return
@@ -228,6 +273,23 @@ function preview_show(event: Event, entry: SourceCited): void {
 
     window.addEventListener('scroll', preview_hide, { capture: true, passive: true })
     preview.value = { above, cited: entry, left, top }
+    source_hovered.value = entry.number
+}
+
+function source_claim(entry: SourceCited): string {
+    assert(entry.number > 0)
+
+    const parts = parts_of(properties.exchange.answer)
+
+    const claims = parts.flatMap((part, offset) => {
+        if (part.cited?.number !== entry.number) return []
+
+        return [answer_claim(parts, offset)]
+    })
+
+    assert(claims.length > 0, `source ${String(entry.number)} is never cited in its answer`)
+
+    return claims.join(' ')
 }
 
 function source_context_menu(event: MouseEvent, entry: SourceCited): void {
@@ -241,24 +303,64 @@ function source_context_menu(event: MouseEvent, entry: SourceCited): void {
     context_menu_open(event, items, source_menu_select.bind(undefined, entry))
 }
 
+function source_hover(number: number | null): void {
+    assert(number === null || number > 0)
+    assert(number === null || cited.value.some((entry) => entry.number === number))
+
+    source_hovered.value = number
+}
+
 async function source_menu_select(entry: SourceCited, id: string): Promise<void> {
     assert(entry.meeting.id.length > 0)
 
-    if (id === MENU_ITEM_OPEN_MEETING.id) return source_open(entry)
+    if (id === MENU_ITEM_OPEN_MEETING.id) return source_open(entry, source_claim(entry))
 
     assert(id === MENU_ITEM_ASK.id, `the source has no action for ${id}`)
 
     return meeting_ask(entry.meeting.id)
 }
 
-async function source_open(entry: SourceCited): Promise<void> {
+async function source_open(entry: SourceCited, claim: SearchQuery): Promise<void> {
+    assert(entry.number > 0)
+    assert(entry.source.job_id === entry.meeting.id)
+
     preview_hide()
 
-    try {
-        await job_open_at(entry.meeting, entry.source)
-    } catch (error) {
-        await error_dialog_show(error)
-    }
+    const citation = { number: entry.number, question: properties.exchange.question }
+
+    return source_passage(entry, claim)
+        .then(async (passage) => job_open_at(entry.meeting, passage, citation))
+        .catch(error_dialog_show)
+}
+
+async function source_passage(entry: SourceCited, claim: SearchQuery): Promise<ChunkHit> {
+    assert(entry.source.job_id === entry.meeting.id)
+
+    if (entry.source.source === 'transcript') return entry.source
+
+    return ipc.job_transcript_range_find(entry.meeting.id, claim).then((range): ChunkHit => {
+        assert(range === null || range.segment_index_first <= range.segment_index_last)
+
+        if (range === null) return entry.source
+
+        return { ...range, source: 'transcript' }
+    })
+}
+
+function sources_toggle(event: Event): void {
+    assert(event.type === 'toggle')
+    assert(event.currentTarget instanceof HTMLDetailsElement)
+
+    const details = event.currentTarget
+    const { id } = properties.exchange
+
+    assert(id.length > 0)
+
+    if (details.open === sources_shown.value) return
+
+    const others = sources_open.value.filter((open) => open !== id)
+
+    sources_open.value = details.open ? [...others, id] : others
 }
 </script>
 
@@ -296,7 +398,8 @@ async function source_open(entry: SourceCited): Promise<void> {
                                 type="button"
                                 class="ask-cite"
                                 :aria-label="cite_label(part.cited)"
-                                @click="source_open(part.cited)"
+                                :data-hovered="hovered(part.cited.number)"
+                                @click="source_open(part.cited, answer_claim(item, offset))"
                                 @contextmenu="source_context_menu($event, part.cited)"
                                 @mouseenter="preview_show($event, part.cited)"
                                 @mouseleave="preview_hide"
@@ -305,10 +408,11 @@ async function source_open(entry: SourceCited): Promise<void> {
                             >
                                 {{ part.cited.number }}
                             </button>
+                            <strong v-else-if="part.strong">{{ part.text }}</strong>
                             <template v-else>{{ part.text }}</template>
                         </template>
                         <span
-                            v-if="caret_at(index, position)"
+                            v-if="caret_at({ index, position })"
                             class="streaming-caret"
                             aria-hidden="true"
                         >▌</span>
@@ -327,7 +431,12 @@ async function source_open(entry: SourceCited): Promise<void> {
 
             <p v-if="notice_shown" class="ask-notice" role="note">{{ exchange.notice }}</p>
 
-            <details v-if="!live && cited.length > 0" class="ask-sources">
+            <details
+                v-if="!live && cited.length > 0"
+                class="ask-sources"
+                :open="sources_shown"
+                @toggle="sources_toggle"
+            >
                 <summary class="ask-sources-toggle">
                     <svg
                         class="ask-sources-chevron"
@@ -349,40 +458,46 @@ async function source_open(entry: SourceCited): Promise<void> {
                         :key="entry.source.marker"
                         @contextmenu="source_context_menu($event, entry)"
                     >
-                        <button type="button" class="ask-source" @click="source_open(entry)">
-                            <span class="ask-source-number">{{ entry.number }}</span>
-                            <span class="ask-source-body">
-                                <span class="ask-source-title">{{ job_title(entry.meeting) }}</span>
-                                <span class="ask-source-meta">
-                                    <svg
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        stroke-width="1.5"
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                        aria-hidden="true"
-                                    >
-                                        <template v-if="entry.source.source === 'transcript'">
-                                            <path d="M4.5 10v4" />
-                                            <path d="M9 6.5v11" />
-                                            <path d="M13.5 8.5v7" />
-                                            <path d="M18 10.5v3" />
-                                        </template>
-                                        <template v-else>
-                                            <path d="M6.75 3.75h7.5l3 3v13.5H6.75Z" />
-                                            <path d="M9.75 11.25h4.5" />
-                                            <path d="M9.75 14.25h4.5" />
-                                        </template>
-                                    </svg>
-                                    <span>{{ source_date(entry.meeting) }}</span>
-                                    <span aria-hidden="true">&middot;</span>
-                                    <span class="ask-source-where">
-                                        {{ source_where(entry.source) }}
-                                    </span>
-                                </span>
-                                <span v-if="entry.source.snippet" class="ask-source-snippet">
-                                    {{ entry.source.snippet }}
+                        <button
+                            type="button"
+                            class="ask-source"
+                            @click="source_open(entry, source_claim(entry))"
+                            @mouseenter="source_hover(entry.number)"
+                            @mouseleave="source_hover(null)"
+                            @focus="source_hover(entry.number)"
+                            @blur="source_hover(null)"
+                        >
+                            <span
+                                class="ask-source-number"
+                                :data-hovered="hovered(entry.number)"
+                            >{{ entry.number }}</span>
+                            <span class="ask-source-title">{{ job_title(entry.meeting) }}</span>
+                            <span class="ask-source-meta">
+                                <svg
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="1.5"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    aria-hidden="true"
+                                >
+                                    <template v-if="entry.source.source === 'transcript'">
+                                        <path d="M4.5 10v4" />
+                                        <path d="M9 6.5v11" />
+                                        <path d="M13.5 8.5v7" />
+                                        <path d="M18 10.5v3" />
+                                    </template>
+                                    <template v-else>
+                                        <path d="M6.75 3.75h7.5l3 3v13.5H6.75Z" />
+                                        <path d="M9.75 11.25h4.5" />
+                                        <path d="M9.75 14.25h4.5" />
+                                    </template>
+                                </svg>
+                                <span>{{ source_date(entry.meeting) }}</span>
+                                <span aria-hidden="true">&middot;</span>
+                                <span class="ask-source-where">
+                                    {{ source_where(entry.source) }}
                                 </span>
                             </span>
                         </button>
@@ -587,6 +702,11 @@ async function source_open(entry: SourceCited): Promise<void> {
     color: var(--color-content-meta);
 }
 
+.ask-answer strong {
+    color: var(--color-content-strong);
+    font-weight: 600;
+}
+
 .ask-cite {
     display: inline-flex;
     align-items: center;
@@ -605,15 +725,18 @@ async function source_open(entry: SourceCited): Promise<void> {
     font-family: var(--font-mono);
     font-size: 0.6875rem;
     font-weight: 600;
-    line-height: 1;
+    line-height: 1.125rem;
     vertical-align: 0.125em;
-    transition: background-color 100ms ease, color 100ms ease;
 }
 
 .ask-cite:hover,
-.ask-cite:focus-visible {
-    background: var(--color-content-strong);
-    color: var(--color-surface);
+.ask-cite[data-hovered="true"],
+.ask-source-number[data-hovered="true"] {
+    background: linear-gradient(
+        104deg,
+        var(--color-accent-hover) 0 58%,
+        color-mix(in oklab, var(--color-accent-hover), var(--shade) 14%) 58%
+    );
 }
 
 .ask-problem {
@@ -646,6 +769,7 @@ async function source_open(entry: SourceCited): Promise<void> {
 .ask-sources {
     display: grid;
     justify-items: start;
+    min-width: 0;
 }
 
 .ask-sources-toggle {
@@ -696,8 +820,6 @@ async function source_open(entry: SourceCited): Promise<void> {
 
 .ask-source-list {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
-    gap: 0.5rem;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -705,52 +827,24 @@ async function source_open(entry: SourceCited): Promise<void> {
 
 .ask-source {
     display: flex;
+    align-items: center;
     gap: 0.625rem;
     width: 100%;
-    height: 100%;
-    padding: 0.625rem 0.75rem;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    background: var(--color-panel);
+    padding: 0.3125rem 0.5rem;
+    border-radius: var(--radius-md);
     text-align: left;
-    transition: border-color 120ms ease, background-color 120ms ease;
 }
 
-.ask-source:hover {
-    border-color: var(--color-border-strong);
-    background: var(--color-row-hover);
-}
-
-.ask-source-number {
-    display: inline-flex;
-    flex: none;
-    align-items: center;
-    justify-content: center;
-    width: 1.25rem;
-    height: 1.25rem;
-    border-radius: 999px;
-    background: linear-gradient(
-        104deg,
-        var(--color-accent) 0 58%,
-        color-mix(in oklab, var(--color-accent), var(--shade) 14%) 58%
-    );
-    color: var(--color-accent-content);
-    font-family: var(--font-mono);
-    font-size: 0.6875rem;
-    font-weight: 600;
-}
-
-.ask-source-body {
-    display: grid;
-    gap: 0.125rem;
-    min-width: 0;
+.ask-source:focus-visible {
+    outline-offset: -2px;
 }
 
 .ask-source-title {
     overflow: hidden;
+    min-width: 0;
     color: var(--color-content-strong);
     font-size: 0.875rem;
-    font-weight: 600;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -774,17 +868,6 @@ async function source_open(entry: SourceCited): Promise<void> {
 .ask-source-where {
     overflow: hidden;
     text-overflow: ellipsis;
-}
-
-.ask-source-snippet {
-    display: -webkit-box;
-    overflow: hidden;
-    color: var(--color-content-muted);
-    font-size: 0.75rem;
-    line-height: 1.45;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
 }
 
 .ask-actions {

@@ -1,3 +1,4 @@
+import { flushPromises } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { use_notes_templates } from '../../src/composables/use_notes_templates'
@@ -6,7 +7,7 @@ import { use_settings } from '../../src/composables/use_settings'
 import { assert } from '../../src/lib/assert'
 import { ipc } from '../../src/lib/ipc'
 import { deferred_new, job_meta_build, search_hit_build, transcript_build } from './fixtures'
-import type { TemplateID, Waveform } from '../../src/types'
+import type { JobMeta, TemplateID, Waveform } from '../../src/types'
 
 
 vi.mock('../../src/lib/ipc')
@@ -24,6 +25,13 @@ function job_open_mocks(engines: string[], notes: string | null): void {
     vi.mocked(ipc.job_transcript_load).mockResolvedValue(transcript_build(['hello', 'world']))
     vi.mocked(ipc.notes_load).mockResolvedValue(notes)
     vi.mocked(ipc.job_waveform_get).mockResolvedValue(WAVEFORM)
+}
+
+function notes_edit(notes: string): void {
+    assert(notes.length > 0)
+    assert(pipeline.job_id_current.value !== null)
+
+    pipeline.notes_markdown.value = notes
 }
 
 async function settle(): Promise<void> {
@@ -52,6 +60,7 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.restoreAllMocks()
+    pipeline.notes_generations.value = []
 })
 
 describe('view_set', () => {
@@ -97,11 +106,11 @@ describe('view intents', () => {
 
         const count = pipeline.view_reopen_count.value
 
-        pipeline.view_intent_open('settings_ai')
+        pipeline.view_intent_open('settings_account')
 
         expect(pipeline.view_current.value).toBe('settings')
         expect(pipeline.view_reopen_count.value).toBe(count + 1)
-        expect(pipeline.view_intent_take()).toBe('settings_ai')
+        expect(pipeline.view_intent_take()).toBe('settings_account')
     })
 
     it('drops an intent nobody took once a view is opened without one', () => {
@@ -166,6 +175,46 @@ describe('job_open', () => {
         await pipeline.job_open(job_meta_build(), 'details')
 
         expect(pipeline.view_current.value).toBe('details')
+    })
+
+    it('opens a meeting whose notes are still being written on the text so far', async () => {
+        job_open_mocks(['stratus.listen'], '# Old notes')
+
+        pipeline.notes_generations.value = [
+            { job_id: 'job-other', stream_id: 'stream-other', text: '# Other meeting' },
+            { job_id: 'job-9', stream_id: 'stream-9', text: '# Half written' },
+        ]
+
+        await pipeline.job_open(job_meta_build({ id: 'job-9' }), null)
+
+        expect(pipeline.notes_markdown.value).toBe('# Half written')
+        expect(pipeline.view_current.value).toBe('notes')
+    })
+})
+
+describe('job_open with an edit not yet saved', () => {
+    it('keeps the edit when the open meeting is opened again', async () => {
+        const meta = job_meta_build({ id: 'job-9' })
+
+        job_open_mocks(['stratus.listen'], '# Notes')
+
+        await pipeline.job_open(meta, null)
+        notes_edit('# Notes, edited')
+        await pipeline.job_open(meta, 'notes')
+
+        expect(ipc.notes_load).toHaveBeenCalledTimes(2)
+        expect(pipeline.notes_markdown.value).toBe('# Notes, edited')
+    })
+
+    it('loads the notes of another meeting from disk over the edit', async () => {
+        job_open_mocks(['stratus.listen'], '# Notes')
+
+        await pipeline.job_open(job_meta_build({ id: 'job-8' }), null)
+        notes_edit('# Notes, edited')
+        await pipeline.job_open(job_meta_build({ id: 'job-9' }), null)
+
+        expect(ipc.notes_load).toHaveBeenLastCalledWith('job-9')
+        expect(pipeline.notes_markdown.value).toBe('# Notes')
     })
 })
 
@@ -309,6 +358,44 @@ describe('transcript_segments_text_set', () => {
     })
 })
 
+describe('transcript_stored_segments_text_set', () => {
+    it('saves the corrected stored transcript of a meeting that is not open', async () => {
+        job_open_mocks(['stratus.listen'], null)
+        vi.mocked(ipc.job_transcript_save).mockResolvedValue(undefined)
+
+        await pipeline.job_open(job_meta_build({ id: 'job-4' }), null)
+
+        const shown = pipeline.transcript.value
+        const corrections = [{ index: 1, text: '  there  ' }]
+
+        await pipeline.transcript_stored_segments_text_set('job-3', corrections)
+
+        const expected = {
+            text: 'hello there',
+            segments: [
+                { text: 'hello', start_seconds: 0, end_seconds: 10 },
+                { text: '  there  ', start_seconds: 10, end_seconds: 20 },
+            ],
+        }
+
+        expect(ipc.job_transcript_load).toHaveBeenLastCalledWith('job-3', 'stratus.listen')
+        expect(ipc.job_transcript_save).toHaveBeenCalledTimes(1)
+        expect(ipc.job_transcript_save).toHaveBeenCalledWith('job-3', expected)
+        expect(pipeline.transcript.value).toBe(shown)
+    })
+
+    it('saves nothing without a stored transcript or without corrections', async () => {
+        vi.mocked(ipc.job_transcript_engines_list).mockResolvedValue([])
+
+        await pipeline.transcript_stored_segments_text_set('job-3', [{ index: 0, text: 'x' }])
+        await pipeline.transcript_stored_segments_text_set('job-3', [])
+
+        expect(ipc.job_transcript_engines_list).toHaveBeenCalledTimes(1)
+        expect(ipc.job_transcript_load).not.toHaveBeenCalled()
+        expect(ipc.job_transcript_save).not.toHaveBeenCalled()
+    })
+})
+
 describe('template_id_ensure', () => {
     const { templates } = use_notes_templates()
     const { settings } = use_settings()
@@ -407,6 +494,112 @@ describe('meta_refresh', () => {
     })
 })
 
+describe('meta_refresh after another meeting opens', () => {
+    it('keeps the fresh copy of a meeting closed meanwhile off the meeting open now', async () => {
+        const fresh = deferred_new<JobMeta | null>()
+        const meta_open = job_meta_build({ id: 'job-b' })
+
+        job_open_mocks(['stratus.listen'], null)
+
+        await pipeline.job_open(job_meta_build({ id: 'job-a' }), null)
+        vi.mocked(ipc.job_meta_get).mockReturnValue(fresh.promise)
+
+        const refreshed = pipeline.meta_refresh()
+
+        await pipeline.job_open(meta_open, null)
+        fresh.resolve(job_meta_build({ id: 'job-a', title: 'Renamed' }))
+        await refreshed
+
+        expect(pipeline.meta_current.value).toEqual(meta_open)
+    })
+})
+
+describe('notes_refresh', () => {
+    it('loads the stored notes of the meeting open now', async () => {
+        job_open_mocks(['stratus.listen'], null)
+
+        await pipeline.job_open(job_meta_build({ id: 'job-9' }), null)
+        vi.mocked(ipc.notes_load).mockResolvedValue('# Notes')
+        await pipeline.notes_refresh()
+
+        expect(ipc.notes_load).toHaveBeenLastCalledWith('job-9')
+        expect(pipeline.notes_markdown.value).toBe('# Notes')
+    })
+
+    it('keeps an edit made while the notes load', async () => {
+        const stored = deferred_new<string | null>()
+
+        job_open_mocks(['stratus.listen'], null)
+
+        await pipeline.job_open(job_meta_build({ id: 'job-9' }), null)
+        vi.mocked(ipc.notes_load).mockReturnValue(stored.promise)
+
+        const refreshed = pipeline.notes_refresh()
+
+        notes_edit('# Typed meanwhile')
+        stored.resolve('# Notes')
+        await refreshed
+
+        expect(pipeline.notes_markdown.value).toBe('# Typed meanwhile')
+    })
+
+    it('keeps the notes of one meeting off the meeting opened while they load', async () => {
+        const stored = deferred_new<string | null>()
+
+        job_open_mocks(['stratus.listen'], null)
+
+        await pipeline.job_open(job_meta_build({ id: 'job-a' }), null)
+        vi.mocked(ipc.notes_load).mockReturnValueOnce(stored.promise)
+
+        const refreshed = pipeline.notes_refresh()
+
+        await pipeline.job_open(job_meta_build({ id: 'job-b' }), null)
+        stored.resolve('# Notes of the first meeting')
+        await refreshed
+
+        expect(pipeline.job_id_current.value).toBe('job-b')
+        expect(pipeline.notes_markdown.value).toBe('')
+    })
+
+    it('leaves the notes to a generation still writing them', async () => {
+        job_open_mocks(['stratus.listen'], null)
+
+        pipeline.notes_generations.value = [
+            { job_id: 'job-9', stream_id: 'stream-9', text: '# Half written' },
+        ]
+
+        await pipeline.job_open(job_meta_build({ id: 'job-9' }), null)
+        vi.mocked(ipc.notes_load).mockResolvedValue('# Notes')
+        await pipeline.notes_refresh()
+
+        expect(pipeline.notes_markdown.value).toBe('# Half written')
+    })
+})
+
+describe('source_replace', () => {
+    it('clears the open meeting around the new recording and stays on the view shown', async () => {
+        const meta = job_meta_build({ id: 'job-9' })
+        const focus = { job_id: 'job-9', segment_index_first: 0, segment_index_last: 1 }
+
+        job_open_mocks(['stratus.listen'], '# Notes')
+
+        await pipeline.job_open(meta, 'notes', { citation: { number: 1, question: 'Who?' }, focus })
+        await settle()
+
+        pipeline.source_replace('/tmp/ten.wav')
+
+        expect(pipeline.job_id_current.value).toBeNull()
+        expect(pipeline.source_path.value).toBe('/tmp/ten.wav')
+        expect(pipeline.meta_current.value).toBeNull()
+        expect(pipeline.transcript.value).toBeNull()
+        expect(pipeline.notes_markdown.value).toBe('')
+        expect(pipeline.waveform_current.value).toBeNull()
+        expect(pipeline.segment_focus.value).toBeNull()
+        expect(pipeline.citation_return.value).toBeNull()
+        expect(pipeline.view_current.value).toBe('notes')
+    })
+})
+
 describe('waveform_refresh', () => {
     it('clears the waveform when no job is open', async () => {
         pipeline.waveform_current.value = WAVEFORM
@@ -415,6 +608,49 @@ describe('waveform_refresh', () => {
 
         expect(pipeline.waveform_current.value).toBeNull()
         expect(ipc.job_waveform_get).not.toHaveBeenCalled()
+    })
+
+    it('keeps the waveform of a meeting closed meanwhile off the meeting open now', async () => {
+        const peaks = deferred_new<Waveform | null>()
+
+        job_open_mocks(['stratus.listen'], null)
+        vi.mocked(ipc.job_waveform_get).mockReturnValueOnce(peaks.promise)
+
+        await pipeline.job_open(job_meta_build({ id: 'job-a' }), null)
+        await pipeline.job_open(job_meta_build({ id: 'job-b' }), null)
+        await settle()
+
+        peaks.resolve({ peaks: [0.9], duration_seconds: 5 })
+        await flushPromises()
+
+        expect(pipeline.waveform_current.value).toEqual(WAVEFORM)
+    })
+
+    it('keeps the failure of a meeting closed meanwhile off the meeting open now', async () => {
+        const gate = deferred_new<null>()
+
+        job_open_mocks(['stratus.listen'], null)
+
+        vi.mocked(ipc.job_waveform_get).mockImplementationOnce(async () => {
+            await gate.promise
+
+            throw new Error('no peaks')
+        })
+
+        await pipeline.job_open(job_meta_build({ id: 'job-a' }), null)
+        await pipeline.job_open(job_meta_build({ id: 'job-b' }), null)
+        await settle()
+
+        gate.resolve(null)
+        await flushPromises()
+
+        expect(pipeline.waveform_current.value).toEqual(WAVEFORM)
+
+        expect(output.warn).toHaveBeenCalledWith(
+            '[pipeline] waveform unavailable',
+            'job-a',
+            expect.any(Error),
+        )
     })
 })
 
@@ -477,5 +713,75 @@ describe('job_open_at', () => {
         pipeline.pipeline_reset()
 
         expect(pipeline.segment_focus.value).toBeNull()
+    })
+})
+
+describe('citation_return', () => {
+    const citation = { number: 1, question: 'Who is drafting the banner copy?' }
+
+    const hit = search_hit_build({
+        segment_index_first: 1,
+        segment_index_last: 2,
+        source: 'transcript',
+    })
+
+    it('keeps the way back to the answer through every step of the opened meeting', async () => {
+        job_open_mocks(['stratus.listen'], '# Notes')
+        pipeline.view_set('ask')
+
+        await pipeline.job_open_at(job_meta_build(), hit, citation)
+        await settle()
+
+        expect(pipeline.view_current.value).toBe('transcribe')
+        expect(pipeline.citation_return.value).toEqual(citation)
+
+        const steps_seen = []
+
+        for (const step of ['details', 'notes', 'transcribe'] as const) {
+            pipeline.view_set(step)
+            steps_seen.push(pipeline.citation_return.value)
+        }
+
+        await settle()
+
+        expect(steps_seen).toEqual([citation, citation, citation])
+        expect(pipeline.citation_return.value).toEqual(citation)
+
+        pipeline.view_set('ask')
+        await settle()
+
+        expect(pipeline.citation_return.value).toBeNull()
+    })
+
+    it('drops the way back once the user leaves the meeting by any other route', async () => {
+        job_open_mocks(['stratus.listen'], '# Notes')
+
+        await pipeline.job_open_at(job_meta_build(), hit, citation)
+        pipeline.view_set('jobs')
+        await settle()
+
+        expect(pipeline.citation_return.value).toBeNull()
+
+        await pipeline.job_open_at(job_meta_build(), hit, citation)
+        await pipeline.job_open(job_meta_build({ id: 'job-8' }), null)
+
+        expect(pipeline.citation_return.value).toBeNull()
+
+        await pipeline.job_open_at(job_meta_build(), hit, citation)
+        pipeline.job_start_new()
+        await settle()
+
+        expect(pipeline.view_current.value).toBe('transcribe')
+        expect(pipeline.citation_return.value).toBeNull()
+    })
+
+    it('offers no way back when a meeting opens from search', async () => {
+        job_open_mocks(['stratus.listen'], '# Notes')
+
+        await pipeline.job_open_at(job_meta_build(), hit)
+        await pipeline.job_open_at(job_meta_build(), search_hit_build({ source: 'notes' }))
+
+        expect(pipeline.view_current.value).toBe('notes')
+        expect(pipeline.citation_return.value).toBeNull()
     })
 })

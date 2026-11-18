@@ -11,6 +11,7 @@ webview_software := if os() == "linux" {
 } else { "" }
 
 [doc('Benchmark the Ask search at a typical, a heavy, and the largest library the app allows')]
+[env('TMPDIR', justfile_directory() / 'src-tauri' / 'target')]
 bench:
     cargo test --manifest-path {{ manifest }} --config 'profile.dev.opt-level=3' --lib search::benchmark -- --ignored --nocapture
 
@@ -39,6 +40,9 @@ ci:
     just test-e2e
     just server-lint
     just server-test
+    just server-simulation
+    just server-system
+    just test-world
 
 [doc('Remove the build outputs')]
 clean:
@@ -122,10 +126,20 @@ server-run: server-db
     uv run --locked manage.py migrate
     uv run --locked manage.py runserver 127.0.0.1:8001
 
+[doc('Run the server simulations against the local database, each scenario once per seed')]
+[working-directory('server')]
+server-simulation SEEDS="4" WORKERS="auto": server-db
+    SIMULATION_SEED_COUNT={{ SEEDS }} uv run --locked pytest -m simulation -n {{ WORKERS }}
+
 [doc('Install the server dependencies')]
 [working-directory('server')]
 server-sync:
     uv sync --locked
+
+[doc('Run the server against the stratusadv-portal checkout and the HTTP fakes as live processes')]
+[working-directory('server')]
+server-system: server-db
+    uv run --locked pytest -m system -p no:xdist
 
 [doc('Run the server tests in parallel against the local database')]
 [working-directory('server')]
@@ -144,6 +158,14 @@ test:
 [doc('Run the end-to-end tests in Chromium against the mock backend')]
 test-e2e:
     bun run test:e2e
+
+[doc('Build the app against a local world, then run the app client, the website, and the real app against the server, the portal, and the fakes')]
+[linux]
+test-world: server-db
+    REMI_ACCOUNT_HOST=http://127.0.0.1:47801 CARGO_TARGET_DIR={{ justfile_directory() }}/src-tauri/target/world bun run tauri build --debug --no-bundle
+    cd server && uv run --locked python -m harness.world.run -- cargo test --manifest-path ../src-tauri/Cargo.toml --lib account::live -- --ignored
+    cd server && uv run --locked python -m harness.world.run -- bun --cwd={{ justfile_directory() }} run test:world --project website
+    cd server && {{ webview_software }} uv run --locked python -m harness.world.run -- xvfb-run -a dbus-run-session --config-file={{ justfile_directory() }}/tests/world/dbus-session.conf -- bun --cwd={{ justfile_directory() }} run test:world --project app
 
 [doc('Count the tokens each Ask question uses against the live notes service named in .env')]
 [unix]

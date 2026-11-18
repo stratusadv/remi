@@ -42,6 +42,29 @@ def test_currency_is_lowercased_defaulted_and_refused_unless_three_letters(
         environment_currency(variable, default='CAD')
 
 
+def test_currency_that_stripe_counts_in_other_than_cents_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    variable = EnvironmentVariable.REMI_PRICE_CURRENCY
+    refused = [('JPY', 'whole units'), ('krw', 'whole units'), ('kwd', 'thousandths')]
+    accepted = []
+
+    for value, unit in refused:
+        monkeypatch.setenv(variable.name, value)
+
+        with pytest.raises(ImproperlyConfigured, match=f'which Stripe counts in {unit}'):
+            environment_currency(variable, default='cad')
+
+    for value in ['eur', 'isk', 'ugx', 'usd']:
+        monkeypatch.setenv(variable.name, value)
+
+        currency = environment_currency(variable, default='cad')
+
+        accepted.append(currency)
+
+    assert accepted == ['eur', 'isk', 'ugx', 'usd']
+
+
 def test_flag_reads_zero_one_or_unset_and_refuses_anything_else(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

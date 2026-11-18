@@ -20,15 +20,17 @@ import { use_drag_drop } from './composables/use_drag_drop'
 import { use_endpoints } from './composables/use_endpoints'
 import { use_folders } from './composables/use_folders'
 import { use_jobs } from './composables/use_jobs'
+import { use_modal_shown } from './composables/use_modal'
 import { use_network } from './composables/use_network'
 import { use_notes_templates } from './composables/use_notes_templates'
 import { use_people } from './composables/use_people'
 import { use_pipeline } from './composables/use_pipeline'
-import { use_service } from './composables/use_service'
 import { use_settings } from './composables/use_settings'
 import { use_theme } from './composables/use_theme'
 import { use_update } from './composables/use_update'
+import { assert } from './lib/assert'
 import { log_warn } from './lib/log'
+import { transition_leave_inert } from './lib/transition'
 
 
 const { view_current, view_reopen_count } = use_pipeline()
@@ -38,7 +40,6 @@ const { refresh: people_refresh } = use_people()
 const { refresh: jobs_refresh } = use_jobs()
 const { refresh: folders_refresh } = use_folders()
 const { refresh: settings_refresh } = use_settings()
-const { notes_ready, refresh: service_refresh, transcription_ready } = use_service()
 
 const {
     account_load,
@@ -48,6 +49,7 @@ const {
 
 const { online } = use_network()
 const { dragging_over } = use_drag_drop()
+const modal_shown = use_modal_shown()
 const { phase: update_phase, status_text: update_status_text, update_check_startup } = use_update()
 
 
@@ -62,7 +64,7 @@ const update_banner_visible = computed(
 
 const ready = ref<boolean>(false)
 
-const view_components = {
+const view_components = Object.freeze({
     ask: AskView,
     checkout: CheckoutView,
     jobs: JobsManager,
@@ -73,25 +75,15 @@ const view_components = {
     templates: TemplatesManager,
     people: PeopleManager,
     settings: SettingsManager,
-}
-
-const current_component = computed(() => view_components[view_current.value])
-
-const configured = computed(() => transcription_ready.value && notes_ready.value)
-
-const welcome = ref(false)
-
-watch([configured, sign_up_needed], ([done, needed]) => {
-    if (needed) {
-        welcome.value = true
-
-        return
-    }
-
-    if (done) welcome.value = false
 })
 
+const component_current = computed(() => view_components[view_current.value])
+
 const view_key = computed(() => `${view_current.value}-${String(view_reopen_count.value)}`)
+
+const notes_reopen_count = computed(() => (
+    view_current.value === 'notes' ? view_reopen_count.value : 0
+))
 
 watch(online, () => {
     offline_banner_dismissed.value = false
@@ -102,25 +94,32 @@ watch(update_banner_visible, () => {
 })
 
 function editor_load(): void {
+    assert(ready.value)
+
     import('./components/rich_editor.vue').catch((error: unknown) => {
         log_warn('[app] editor prefetch failed', error)
     })
 }
 
 function editor_prefetch(): void {
+    assert(ready.value)
+
     if (typeof window.requestIdleCallback === 'function') {
-        window.requestIdleCallback(editor_load)
+        const idle_handle = window.requestIdleCallback(editor_load)
+
+        assert(idle_handle > 0)
 
         return
     }
 
-    setTimeout(editor_load, 0)
+    const timer_handle = window.setTimeout(editor_load, 0)
+
+    assert(timer_handle > 0)
 }
 
 onMounted(async () => {
     await Promise.all([
         settings_refresh(),
-        service_refresh(),
         endpoints_refresh(),
         templates_refresh(),
         people_refresh(),
@@ -132,7 +131,6 @@ onMounted(async () => {
         document.fonts.load('1em "Geist Mono"'),
     ])
 
-    welcome.value = !configured.value || sign_up_needed.value
     ready.value = true
 
     editor_prefetch()
@@ -147,6 +145,7 @@ onMounted(async () => {
     <div
         class="flex flex-col h-screen overflow-hidden app-shell"
         :data-ready="ready ? 'true' : 'false'"
+        :inert="modal_shown"
     >
         <NoticeBanner
             v-if="!online && !offline_banner_dismissed"
@@ -165,14 +164,14 @@ onMounted(async () => {
         >
             {{ update_status_text }}
         </NoticeBanner>
-        <Transition name="welcome" mode="out-in">
-            <WelcomeScreen v-if="ready && welcome" key="welcome" />
+        <Transition name="welcome" mode="out-in" @before-leave="transition_leave_inert">
+            <WelcomeScreen v-if="ready && sign_up_needed" key="welcome" />
             <div v-else key="app" class="flex flex-1 overflow-hidden">
                 <Sidebar />
                 <main class="flex-1 overflow-y-auto">
                     <div class="app-content px-5 py-6 sm:px-8 sm:py-8 lg:px-12 lg:py-10">
-                        <KeepAlive include="StepNotes">
-                            <component :is="current_component" :key="view_key" />
+                        <KeepAlive :key="notes_reopen_count" include="step_notes" :max="1">
+                            <component :is="component_current" :key="view_key" />
                         </KeepAlive>
                     </div>
                 </main>

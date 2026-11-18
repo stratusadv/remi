@@ -1,152 +1,95 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { use_account } from '../composables/use_account'
-import { use_endpoints } from '../composables/use_endpoints'
-import { use_service } from '../composables/use_service'
-import { use_settings } from '../composables/use_settings'
 import { assert } from '../lib/assert'
-import { error_friendly } from '../lib/errors'
+import { error_shown } from '../lib/errors'
+import {
+    REGIONS_CANADA,
+    REGIONS_UNITED_STATES,
+    REGION_OUTSIDE,
+    REGION_OUTSIDE_NAME,
+    region_is_known,
+} from '../lib/regions'
 import ClearableInput from './clearable_input.vue'
+import NoticeBanner from './notice_banner.vue'
 import RemiMark from './remi_mark.vue'
 import StratusCredit from './stratus_credit.vue'
-import type { APIEndpointPurpose, AccountSignUp } from '../types'
+import type { AccountSignUp } from '../types'
 
 
-type WelcomeStep = 'keys' | 'sign_in' | 'sign_up'
+type WelcomeStep = 'sign_in' | 'sign_up'
 
 const ICON_ARROW = 'M5 12h14M13 6l6 6-6 6'
 
-const KEY_LABELS: Readonly<Record<APIEndpointPurpose, string>> = Object.freeze({
-    notes: 'Notes key',
-    transcription: 'Transcription key',
-})
-
-const KEY_PURPOSES: readonly APIEndpointPurpose[] = Object.freeze(['transcription', 'notes'])
-
 const STEP_ACTIONS: Readonly<Record<WelcomeStep, string>> = Object.freeze({
-    keys: 'Continue',
     sign_in: 'Sign in',
     sign_up: 'Get started',
 })
 
 const STEP_ACTIONS_BUSY: Readonly<Record<WelcomeStep, string>> = Object.freeze({
-    keys: 'Saving…',
     sign_in: 'Signing in…',
     sign_up: 'Setting up…',
 })
 
-const {
-    status,
-    notes_ready,
-    refresh: service_refresh,
-    transcription_ready,
-    api_key_set,
-} = use_service()
-
-const { endpoints, refresh: endpoints_refresh } = use_endpoints()
-const { settings, error_message: settings_error, update } = use_settings()
-
-const {
-    create: account_create,
-    sign_in: account_sign_in,
-    sign_up_needed,
-    status_load: account_status_load,
-} = use_account()
-
-const host_current = settings.value.api_host ?? endpoints.value[0]?.host ?? ''
-
-const keys_shown: readonly APIEndpointPurpose[] = KEY_PURPOSES.filter((purpose) => {
-    const source = status.value[purpose]
-
-    return !source.builtin && !source.user
-})
-
-const keys_needed = !transcription_ready.value || !notes_ready.value
-const host_draft = ref(host_current)
-const key_drafts = reactive<Record<APIEndpointPurpose, string>>({ notes: '', transcription: '' })
+const { create: account_create, sign_in: account_sign_in } = use_account()
 const problem = ref<string | null>(null)
 const sign_in_draft = ref('')
-const sign_up_draft = reactive<AccountSignUp>({ email: '', name: '', promo_code: '' })
-const step = ref<WelcomeStep>(keys_needed ? 'keys' : 'sign_up')
+const sign_up_draft = reactive<AccountSignUp>({ email: '', name: '', promo_code: '', region: '' })
+const step = ref<WelcomeStep>('sign_up')
 const submitting = ref(false)
 
 const ready = computed(() => {
     switch (step.value) {
-        case 'keys':
-            return keys_ready()
         case 'sign_in':
             return sign_in_draft.value.trim() !== ''
         case 'sign_up':
-            return sign_up_draft.name.trim() !== '' && sign_up_draft.email.trim() !== ''
+            return sign_up_ready()
     }
 })
 
 
-async function host_save(): Promise<boolean> {
-    const host = host_draft.value.trim()
-
-    if (host === host_current) return true
-
-    await update({ api_host: host })
-
-    problem.value = settings_error.value
-
-    return settings_error.value === null
-}
-
-function keys_ready(): boolean {
-    if (host_draft.value.trim() === '') return false
-
-    return keys_shown.every((purpose) => key_drafts[purpose].trim() !== '')
-}
-
-async function keys_submit(): Promise<void> {
-    const host_saved = await host_save()
-
-    if (!host_saved) return
-
-    let chain = Promise.resolve()
-
-    for (const purpose of keys_shown) {
-        chain = chain.then(async () => {
-            await api_key_set(purpose, key_drafts[purpose])
-        })
-    }
-
-    await chain
-    await account_status_load()
-    await Promise.all([service_refresh(), endpoints_refresh()])
-
-    if (sign_up_needed.value) step.value = 'sign_up'
-}
-
 function sign_in_toggle(): void {
-    assert(step.value !== 'keys')
+    const step_previous = step.value
 
     problem.value = null
     step.value = step.value === 'sign_in' ? 'sign_up' : 'sign_in'
+
+    assert(step.value !== step_previous)
+}
+
+function sign_up_ready(): boolean {
+    assert(step.value === 'sign_up')
+    assert(sign_up_draft.region === '' || region_is_known(sign_up_draft.region))
+
+    if (sign_up_draft.name.trim() === '') return false
+    if (sign_up_draft.email.trim() === '') return false
+
+    return sign_up_draft.region !== ''
 }
 
 function sign_up_trimmed(): AccountSignUp {
     assert(sign_up_draft.name.trim().length > 0)
     assert(sign_up_draft.email.trim().length > 0)
+    assert(region_is_known(sign_up_draft.region))
 
     return {
         email: sign_up_draft.email.trim(),
         name: sign_up_draft.name.trim(),
         promo_code: sign_up_draft.promo_code.trim(),
+        region: sign_up_draft.region,
     }
 }
 
 async function submit(): Promise<void> {
-    if (!ready.value || submitting.value) return
+    if (!ready.value) return
+    if (submitting.value) return
 
     submitting.value = true
     problem.value = null
 
     await submit_step()
         .catch((error: unknown) => {
-            problem.value = error_friendly(error).message
+            problem.value = error_shown(error)
         })
         .finally(() => {
             submitting.value = false
@@ -154,10 +97,13 @@ async function submit(): Promise<void> {
 }
 
 async function submit_step(): Promise<void> {
+    assert(submitting.value)
+    assert(problem.value === null)
+
     switch (step.value) {
-        case 'keys':
-            return keys_submit()
         case 'sign_in':
+            assert(sign_in_draft.value.trim().length > 0)
+
             return account_sign_in(sign_in_draft.value)
         case 'sign_up':
             return account_create(sign_up_trimmed())
@@ -182,42 +128,16 @@ async function submit_step(): Promise<void> {
                 <h1 class="welcome-title">
                     Welcome to <span class="welcome-brand">remi</span>
                 </h1>
-                <p v-if="step === 'keys'" class="welcome-text">
-                    Please enter the {{ keys_shown.length > 1 ? 'API keys' : 'API key' }} for this
-                    app.
-                </p>
-                <p v-else-if="step === 'sign_up'" class="welcome-text">
-                    Enter your name and email to start transcribing. A promo code adds free hours.
+                <p v-if="step === 'sign_up'" class="welcome-text">
+                    Enter your name, email, and province or state to start transcribing. A promo
+                    code adds free hours.
                 </p>
                 <p v-else class="welcome-text">
                     Enter the sign-in code for your account.
                 </p>
 
                 <form class="welcome-form" @submit.prevent="submit">
-                    <template v-if="step === 'keys'">
-                        <label class="welcome-field">
-                            <span class="welcome-label">API address</span>
-                            <ClearableInput
-                                v-model="host_draft"
-                                class="welcome-input"
-                                type="url"
-                                placeholder="https://api.example.com"
-                                spellcheck="false"
-                                autocomplete="off"
-                            />
-                        </label>
-                        <label v-for="purpose in keys_shown" :key="purpose" class="welcome-field">
-                            <span class="welcome-label">{{ KEY_LABELS[purpose] }}</span>
-                            <ClearableInput
-                                v-model="key_drafts[purpose]"
-                                class="welcome-input"
-                                type="password"
-                                placeholder="Paste the key"
-                                autocomplete="off"
-                            />
-                        </label>
-                    </template>
-                    <template v-else-if="step === 'sign_up'">
+                    <template v-if="step === 'sign_up'">
                         <label class="welcome-field">
                             <span class="welcome-label">Name</span>
                             <ClearableInput
@@ -236,6 +156,34 @@ async function submit_step(): Promise<void> {
                                 spellcheck="false"
                                 autocomplete="email"
                             />
+                        </label>
+                        <label class="welcome-field">
+                            <span class="welcome-label">Province or state</span>
+                            <select
+                                v-model="sign_up_draft.region"
+                                class="welcome-input"
+                                autocomplete="address-level1"
+                            >
+                                <optgroup label="Canada">
+                                    <option
+                                        v-for="(name, code) in REGIONS_CANADA"
+                                        :key="code"
+                                        :value="code"
+                                    >
+                                        {{ name }}
+                                    </option>
+                                </optgroup>
+                                <optgroup label="United States">
+                                    <option
+                                        v-for="(name, code) in REGIONS_UNITED_STATES"
+                                        :key="code"
+                                        :value="code"
+                                    >
+                                        {{ name }}
+                                    </option>
+                                </optgroup>
+                                <option :value="REGION_OUTSIDE">{{ REGION_OUTSIDE_NAME }}</option>
+                            </select>
                         </label>
                         <label class="welcome-field">
                             <span class="welcome-label">Promo code (optional)</span>
@@ -281,16 +229,17 @@ async function submit_step(): Promise<void> {
                     </button>
                 </form>
 
-                <button
-                    v-if="step !== 'keys'"
-                    type="button"
-                    class="welcome-switch"
-                    @click="sign_in_toggle"
-                >
+                <button type="button" class="welcome-switch" @click="sign_in_toggle">
                     {{ step === 'sign_in' ? 'Create an account instead' : 'Have a sign-in code?' }}
                 </button>
 
-                <p v-if="problem !== null" class="welcome-problem" role="alert">{{ problem }}</p>
+                <NoticeBanner
+                    v-if="problem !== null"
+                    class="welcome-problem"
+                    @dismiss="problem = null"
+                >
+                    {{ problem }}
+                </NoticeBanner>
             </div>
         </div>
 
@@ -475,6 +424,20 @@ async function submit_step(): Promise<void> {
     border-bottom-color: var(--color-accent);
 }
 
+.welcome-form select.welcome-input {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%238c8c8c' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 4.5l3.5 3.5 3.5-3.5'/%3E%3C/svg%3E");
+    background-position: right 0.625rem center;
+    background-repeat: no-repeat;
+}
+
+.welcome-form select.welcome-input optgroup,
+.welcome-form select.welcome-input option {
+    background-color: var(--color-panel);
+    color: var(--color-content);
+}
+
 .welcome-action {
     justify-self: start;
     gap: 0.5rem;
@@ -506,12 +469,6 @@ async function submit_step(): Promise<void> {
 .welcome-problem {
     width: 100%;
     margin: 1.25rem 0 0;
-    padding: 0.625rem 0.875rem;
-    border: 1px solid var(--color-danger-strong);
-    border-radius: var(--radius-md);
-    background: var(--color-danger);
-    color: var(--color-danger-text);
-    font-size: 0.875rem;
 }
 
 .welcome-art {

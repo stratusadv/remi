@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.django_db
 EVENT_COMPLETED = 'checkout.session.completed'
 LOGGER_LEDGER_FACTORY = 'app.account.ledger.services.factory_service'
+LOGGER_WEBHOOK = 'app.checkout.views.webhook_views'
 SECONDS_PER_HOUR = 3600
 SIGNATURE_TOLERANCE_SECONDS = 300
 
@@ -46,9 +47,10 @@ def test_webhook_completion_waits_for_an_async_payment_to_succeed(
     )
 
     waiting = stripe_event_deliver(client, header=header_completed, payload=completed)
+    balance_seconds_waiting = account_get(client, token)['balance_seconds']
 
     assert waiting.status_code == 200
-    assert account_get(client, token)['balance_seconds'] == 0
+    assert balance_seconds_waiting == 0
     assert f'Checkout session {session_id} is not paid yet' in caplog.text
 
     stripe_fake.pay(session_id)
@@ -65,9 +67,10 @@ def test_webhook_completion_waits_for_an_async_payment_to_succeed(
     )
 
     paid = stripe_event_deliver(client, header=header_succeeded, payload=succeeded)
+    balance_seconds_paid = account_get(client, token)['balance_seconds']
 
     assert paid.status_code == 200
-    assert account_get(client, token)['balance_seconds'] == PRICE_HOURS * SECONDS_PER_HOUR
+    assert balance_seconds_paid == PRICE_HOURS * SECONDS_PER_HOUR
 
 
 def test_webhook_completion_from_another_app_is_acknowledged_and_credits_nothing(
@@ -103,7 +106,9 @@ def test_webhook_completion_from_another_app_is_acknowledged_and_credits_nothing
         assert response.status_code == 200, metadata
         assert f'Checkout session {session_id} belongs to another app' in caplog.text
 
-    assert account_get(client, token)['balance_seconds'] == 0
+    balance_seconds = account_get(client, token)['balance_seconds']
+
+    assert balance_seconds == 0
 
 
 def test_webhook_signed_completion_credits_once_even_when_delivered_twice(
@@ -120,9 +125,13 @@ def test_webhook_signed_completion_credits_once_even_when_delivered_twice(
     header = stripe_signature_header(payload, secret=STRIPE_WEBHOOK_SECRET, timestamp=now)
 
     for _ in range(2):
-        assert stripe_event_deliver(client, header=header, payload=payload).status_code == 200
+        response = stripe_event_deliver(client, header=header, payload=payload)
 
-    assert account_get(client, token)['balance_seconds'] == PRICE_HOURS * SECONDS_PER_HOUR
+        assert response.status_code == 200
+
+    balance_seconds = account_get(client, token)['balance_seconds']
+
+    assert balance_seconds == PRICE_HOURS * SECONDS_PER_HOUR
 
 
 def test_webhook_unable_to_reach_stripe_fails_so_stripe_retries(
@@ -142,10 +151,11 @@ def test_webhook_unable_to_reach_stripe_fails_so_stripe_retries(
     now = int(time.time())
     header = stripe_signature_header(payload, secret=STRIPE_WEBHOOK_SECRET, timestamp=now)
     response = stripe_event_deliver(client, header=header, payload=payload)
+    balance_seconds = account_get(client, token)['balance_seconds']
 
     assert response.status_code == 503
     assert 'could not return checkout session' in caplog.text
-    assert account_get(client, token)['balance_seconds'] == 0
+    assert balance_seconds == 0
 
 
 def test_webhook_unrelated_event_or_missing_secret_changes_nothing(
@@ -166,16 +176,20 @@ def test_webhook_unrelated_event_or_missing_secret_changes_nothing(
     settings.STRIPE_WEBHOOK_SECRET = ''
 
     unconfigured = stripe_event_deliver(client, header=header, payload=payload)
+    balance_seconds = account_get(client, token)['balance_seconds']
 
     assert unrelated.status_code == 200
     assert unconfigured.status_code == 503
-    assert account_get(client, token)['balance_seconds'] == 0
+    assert balance_seconds == 0
 
 
 def test_webhook_with_a_bad_signature_or_no_payload_credits_nothing(
+    caplog: pytest.LogCaptureFixture,
     client: Client,
     stripe_fake: StripeFake,
 ) -> None:
+    caplog.set_level(logging.WARNING, logger=LOGGER_WEBHOOK)
+
     token = account_create(client)
     session_id = checkout_start(client, hours=PRICE_HOURS, token=token)
 
@@ -197,8 +211,16 @@ def test_webhook_with_a_bad_signature_or_no_payload_credits_nothing(
     ]
 
     for header in headers:
-        assert stripe_event_deliver(client, header=header, payload=payload).status_code == 400
+        refused = stripe_event_deliver(client, header=header, payload=payload)
+
+        assert refused.status_code == 400
+
+    balance_seconds = account_get(client, token)['balance_seconds']
+    refusals = [record for record in caplog.records if record.name == LOGGER_WEBHOOK]
 
     assert empty.status_code == 400
     assert fetched.status_code == 405
-    assert account_get(client, token)['balance_seconds'] == 0
+    assert balance_seconds == 0
+    assert len(refusals) == len(headers) + 1
+    assert all(record.levelno == logging.WARNING for record in refusals)
+    assert all('refused with 400: ' in record.getMessage() for record in refusals)

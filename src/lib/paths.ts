@@ -1,12 +1,13 @@
 import { documentDir, homeDir, join } from '@tauri-apps/api/path'
 import { assert } from './assert'
+import { text_truncate } from './text'
 
 
 const ELLIPSIS = '…'
-const EXTENSION_SUFFIX = /\.[^.]+$/
+const EXTENSION_SUFFIX = /(?!^)\.[^.]+$/u
 const FILE_NAME_CHARS_KEPT = 57
 const FILE_NAME_CHARS_MAX = 60
-const PATH_SEPARATORS = /[\\/]/
+const PATH_SEPARATORS = /[\\/]/u
 
 
 export async function folder_start(): Promise<string> {
@@ -36,7 +37,7 @@ export function path_file_name_short(path: string): string {
 
     if (name.length <= FILE_NAME_CHARS_MAX) return name
 
-    return name.slice(0, FILE_NAME_CHARS_KEPT) + ELLIPSIS
+    return text_truncate(name, FILE_NAME_CHARS_KEPT) + ELLIPSIS
 }
 
 export function path_file_stem(path: string): string {

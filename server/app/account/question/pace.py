@@ -184,7 +184,6 @@ def _wait_burst_seconds(*, limits: AskLimits, now: datetime, usage: AskUsage) ->
         return 0
 
     aged_out = usage.asked_burst[0] + timedelta(seconds=limits.burst_seconds)
-
     return _seconds_until(moment=aged_out, now=now)
 
 
@@ -209,7 +208,6 @@ def _wait_pace_seconds(*, limits: AskLimits, now: datetime, usage: AskUsage) -> 
         raise ValueError(message)
 
     paced = usage.asked_last + timedelta(seconds=limits.pace_seconds)
-
     return _seconds_until(moment=paced, now=now)
 
 

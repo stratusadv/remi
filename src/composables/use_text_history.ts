@@ -28,29 +28,18 @@ const INPUT_TYPES_TEXT: readonly string[] = Object.freeze([
 
 
 type TextControl = HTMLInputElement | HTMLTextAreaElement
-
-const histories = new WeakMap<HTMLElement, TextHistory>()
+type TextHistories = WeakMap<HTMLElement, TextHistory>
 
 export function text_history_listen(): void {
     assert(typeof document !== 'undefined')
     assert(typeof window !== 'undefined')
 
-    document.addEventListener('beforeinput', text_history_beforeinput)
-    document.addEventListener('focusin', text_history_focusin)
-    document.addEventListener('input', text_history_input)
-    window.addEventListener('keydown', text_history_keydown)
-}
+    const histories: TextHistories = new WeakMap()
 
-export function text_history_mark(element: HTMLElement | null): void {
-    assert(element === null || element.isConnected)
-
-    const field = text_field_of(element)
-
-    if (field === null) return
-
-    assert(text_length_of(field) <= TEXT_HISTORY_LENGTH_MAX)
-
-    histories.set(field, histories.get(field) ?? text_history_of(snapshot_of(field)))
+    document.addEventListener('beforeinput', text_history_beforeinput.bind(undefined, histories))
+    document.addEventListener('focusin', text_history_focusin.bind(undefined, histories))
+    document.addEventListener('input', text_history_input.bind(undefined, histories))
+    window.addEventListener('keydown', text_history_keydown.bind(undefined, histories))
 }
 
 function caret_offsets(field: HTMLElement, length: number): readonly [number, number] {
@@ -184,7 +173,12 @@ function text_field_typed(target: HTMLElement): HTMLElement | null {
     return host.contentEditable === EDITABLE_PLAIN ? host : null
 }
 
-function text_history_apply(event: Event, command: TextHistoryCommand): void {
+function text_history_apply(
+    histories: TextHistories,
+    event: Event,
+    command: TextHistoryCommand,
+): void {
+    assert(histories instanceof WeakMap)
     assert(event.target !== null)
     assert(TEXT_HISTORY_COMMANDS.includes(command))
 
@@ -222,7 +216,8 @@ function text_history_apply(event: Event, command: TextHistoryCommand): void {
     field.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
-function text_history_beforeinput(event: InputEvent): void {
+function text_history_beforeinput(histories: TextHistories, event: InputEvent): void {
+    assert(histories instanceof WeakMap)
     assert(event.type === 'beforeinput')
     assert(event.target !== null)
 
@@ -231,7 +226,7 @@ function text_history_beforeinput(event: InputEvent): void {
     const command = text_history_command_of_input(event.inputType)
 
     if (command !== null) {
-        if (event.cancelable) text_history_apply(event, command)
+        if (event.cancelable) text_history_apply(histories, event, command)
 
         return
     }
@@ -246,14 +241,16 @@ function text_history_beforeinput(event: InputEvent): void {
     histories.set(field, text_history_record(history, snapshot_of(field), edit))
 }
 
-function text_history_focusin(event: FocusEvent): void {
+function text_history_focusin(histories: TextHistories, event: FocusEvent): void {
+    assert(histories instanceof WeakMap)
     assert(event.type === 'focusin')
     assert(event.target !== null)
 
-    if (event.target instanceof HTMLElement) text_history_mark(event.target)
+    if (event.target instanceof HTMLElement) text_history_mark(histories, event.target)
 }
 
-function text_history_input(event: Event): void {
+function text_history_input(histories: TextHistories, event: Event): void {
+    assert(histories instanceof WeakMap)
     assert(event.type === 'input')
     assert(event.target !== null)
 
@@ -268,7 +265,8 @@ function text_history_input(event: Event): void {
     histories.set(field, text_history_settle(history, snapshot_of(field)))
 }
 
-function text_history_keydown(event: KeyboardEvent): void {
+function text_history_keydown(histories: TextHistories, event: KeyboardEvent): void {
+    assert(histories instanceof WeakMap)
     assert(event.type === 'keydown')
     assert(event.key.length > 0)
 
@@ -286,7 +284,20 @@ function text_history_keydown(event: KeyboardEvent): void {
 
     if (command === null) return
 
-    text_history_apply(event, command)
+    text_history_apply(histories, event, command)
+}
+
+function text_history_mark(histories: TextHistories, element: HTMLElement): void {
+    assert(histories instanceof WeakMap)
+    assert(element.isConnected)
+
+    const field = text_field_of(element)
+
+    if (field === null) return
+
+    assert(text_length_of(field) <= TEXT_HISTORY_LENGTH_MAX)
+
+    histories.set(field, histories.get(field) ?? text_history_of(snapshot_of(field)))
 }
 
 function text_length_of(field: HTMLElement): number {

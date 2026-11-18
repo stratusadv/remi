@@ -55,7 +55,7 @@ describe('refresh', () => {
 
         await templates_state.refresh()
 
-        expect(templates_state.error_message.value).toBe('Error: unreadable')
+        expect(templates_state.error_message.value).toBe('unreadable')
     })
 })
 
@@ -85,17 +85,17 @@ describe('save and remove', () => {
 
         await templates_state.save(TEMPLATE)
 
-        expect(templates_state.error_message.value).toBe('Error: full')
+        expect(templates_state.error_message.value).toBe('full')
         expect(ipc.notes_templates_list).not.toHaveBeenCalled()
     })
 })
 
 describe('generate', () => {
-    it('throws a key-missing message when no notes endpoint exists', async () => {
+    it('says the AI service did not load when no notes endpoint exists', async () => {
         endpoints.value = [{ ...ENDPOINT_NOTES, purpose: 'transcription' }]
 
         await expect(templates_state.generate('weekly sync')).rejects.toThrow(
-            'Add your notes API key under Settings first.',
+            'remi could not load its AI service. Restart remi and try again.',
         )
 
         expect(ipc.notes_template_generate).not.toHaveBeenCalled()

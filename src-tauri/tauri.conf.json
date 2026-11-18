@@ -55,9 +55,15 @@
             },
             "deb": {
                 "conflicts": ["scribe"],
+                "files": {
+                    "/usr/bin/scribe": "./linux-scribe-launcher.sh"
+                },
                 "replaces": ["scribe"]
             },
             "rpm": {
+                "files": {
+                    "/usr/bin/scribe": "./linux-scribe-launcher.sh"
+                },
                 "obsoletes": ["scribe"]
             }
         },

@@ -262,6 +262,21 @@ body {
     gap: 10px;
 }
 
+.email-names {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(10em, 1fr));
+    gap: 10px 12px;
+}
+
+.email-name {
+    display: grid;
+    gap: 10px;
+}
+
+.email-name input {
+    width: 100%;
+}
+
 .email-row {
     display: flex;
     flex-wrap: wrap;

@@ -182,7 +182,7 @@ function table_lines(table: ClipboardNode, indent: number): string[] {
             const paragraphs: string[] = []
 
             cell.content.forEach((paragraph) => {
-                paragraphs.push(inline_text(paragraph).replace(/\n/g, ' '))
+                paragraphs.push(inline_text(paragraph).replace(/\n/gu, ' '))
             })
 
             cells.push(paragraphs.join(' '))

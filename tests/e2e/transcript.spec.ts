@@ -1,23 +1,73 @@
 import { expect, test } from '@playwright/test'
 import { assert } from '../../src/lib/assert'
 import {
+    HAS_TEXT,
     STREAM_TIMEOUT_MS,
     app_open,
     step_current,
     transcript_rows,
     transcript_step_open,
 } from './helpers'
-import type { Page } from '@playwright/test'
+import type { ConsoleMessage, Page } from '@playwright/test'
 
+
+interface CommandFailure {
+    readonly command: string
+    readonly raw: string
+}
 
 const CLIPBOARD_READ = 'navigator.clipboard.readText()'
 const HIGHLIGHT_NAME = 'transcript-filter'
 const LINE_FIRST = 'Thanks for making time. Tell me about your current note taking.'
 const LINE_FIRST_EDITED = 'Thanks for making time today.'
 const LINE_SECOND = 'We record everything and then nobody writes it up.'
+const MESSAGE_UNSHOWN = 'remi ran into a problem it cannot show here. The details are in its log.'
+
+const TRACEBACK_CHARGE = 'api error: 500 transcription charge: Traceback (most recent call last):\n'
+    + '  File "/app/server/app/account/services/processor_service.py", line 187\n'
+    + 'psycopg.errors.UndefinedColumn: column "account"."is_complimentary" does not exist'
+
+const FAILURE_CHARGE: CommandFailure = Object.freeze({
+    command: 'transcription_remote',
+    raw: TRACEBACK_CHARGE,
+})
 
 
 test.use({ permissions: ['clipboard-read', 'clipboard-write'] })
+
+async function command_fail(page: Page, failure: CommandFailure): Promise<void> {
+    assert(!page.isClosed())
+    assert(failure.command.length > 0)
+
+    await page.evaluate(
+        ({ command, raw }) => {
+            const internals: unknown = Reflect.get(window, '__TAURI_INTERNALS__')
+
+            if (typeof internals !== 'object') throw new Error('the browser mock is not installed')
+            if (internals === null) throw new Error('the browser mock is not installed')
+
+            const invoke_mock: unknown = Reflect.get(internals, 'invoke')
+
+            if (typeof invoke_mock !== 'function') throw new Error('the browser mock has no invoke')
+
+            Reflect.set(internals, 'invoke', async (name: string, ...rest: unknown[]) => {
+                if (name === command) throw new Error(raw)
+
+                const reply: unknown = await Reflect.apply(invoke_mock, internals, [name, ...rest])
+
+                return reply
+            })
+        },
+        failure,
+    )
+}
+
+function console_traceback_is(message: ConsoleMessage): boolean {
+    assert(message.page() !== null)
+    assert(message.type().length > 0)
+
+    return message.type() === 'warning' && message.text().includes('UndefinedColumn')
+}
 
 async function highlight_count(page: Page): Promise<number> {
     assert(!page.isClosed())
@@ -90,6 +140,21 @@ test('a picked file transcribes with a streaming preview', async ({ page }) => {
     await expect(transcript_rows(page)).toHaveCount(8, { timeout: STREAM_TIMEOUT_MS })
     await expect(transcript_rows(page).first()).toContainText('Alright, everyone is here')
     await expect(page.getByRole('button', { name: 'Next' })).toBeVisible()
+})
+
+test('a failed transcription shows a short message and logs the traceback', async ({ page }) => {
+    await new_recording_open(page)
+    await page.getByRole('button', { name: 'Open or drop a recording' }).click()
+    await command_fail(page, FAILURE_CHARGE)
+
+    const logged = page.waitForEvent('console', { predicate: console_traceback_is })
+
+    await page.getByRole('button', { name: 'Transcribe' }).click()
+    await logged
+
+    await expect(page.getByRole('alert').filter({ [HAS_TEXT]: MESSAGE_UNSHOWN })).toBeVisible()
+    await expect(page.locator('body')).not.toContainText('Traceback')
+    await expect(page.locator('body')).not.toContainText('UndefinedColumn')
 })
 
 test('Cancel on the Transcript step returns home', async ({ page }) => {

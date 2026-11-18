@@ -8,6 +8,7 @@ from django.db import transaction
 
 from django_spire.contrib.constructor.service import BaseDjangoModelService
 
+from app.account.choices import RegionChoices
 from app.account.constants import ACCOUNT_EMAIL_LENGTH_MAX, ACCOUNT_NAME_LENGTH_MAX
 from app.account.tokens import token_generate, token_hash
 from app.core.exceptions import PromoInvalidError, RequestInvalidError
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 EMAIL_LENGTH_MESSAGE = f'Enter an email address of at most {ACCOUNT_EMAIL_LENGTH_MAX} characters.'
 METRIC_REFERENCE_SIGNUP = 'signup'
 NAME_LENGTH_MESSAGE = f'Enter a name of 1 to {ACCOUNT_NAME_LENGTH_MAX} characters.'
+REGION_UNKNOWN_MESSAGE = 'Choose your province or state.'
 
 
 def _email_validate(email: str) -> None:
@@ -37,12 +39,22 @@ def _email_validate(email: str) -> None:
 class AccountFactoryService(BaseDjangoModelService['Account']):
     obj: Account
 
-    def create(self, *, email: str, name: str, promo_code: str) -> tuple[Account, str]:
+    def create(
+        self,
+        *,
+        email: str,
+        name: str,
+        promo_code: str,
+        region: str,
+    ) -> tuple[Account, str]:
         if len(email.strip()) > ACCOUNT_EMAIL_LENGTH_MAX:
             raise RequestInvalidError(EMAIL_LENGTH_MESSAGE)
 
         if not 0 < len(name.strip()) <= ACCOUNT_NAME_LENGTH_MAX:
             raise RequestInvalidError(NAME_LENGTH_MESSAGE)
+
+        if region not in RegionChoices.values:
+            raise RequestInvalidError(REGION_UNKNOWN_MESSAGE)
 
         if len(promo_code.strip()) > PROMO_CODE_LENGTH_MAX:
             raise PromoInvalidError(PROMO_CODE_LENGTH_MESSAGE)
@@ -59,6 +71,7 @@ class AccountFactoryService(BaseDjangoModelService['Account']):
 
         self.obj.email = email_clean
         self.obj.name = name.strip()
+        self.obj.region = region
         self.obj.token_hash = token_hash(token)
 
         with transaction.atomic():

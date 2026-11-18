@@ -4,16 +4,16 @@ import { context_menu_listen } from './composables/use_context_menu'
 import { text_history_listen } from './composables/use_text_history'
 import { assert } from './lib/assert'
 import { ipc } from './lib/ipc'
-import { theme_apply_to_html, theme_resolve, theme_storage_read } from './lib/theme'
+import { log_error } from './lib/log'
 import './styles.css'
+import './theme_standard.css'
+import type { ComponentPublicInstance } from 'vue'
 
 
 const FIELDS = 'input, textarea, [contenteditable]'
 const MOUSE_BUTTON_MIDDLE = 1
 const USER_SELECT = '-webkit-user-select'
 
-
-theme_apply_to_html(theme_resolve(theme_storage_read()))
 
 if (import.meta.env.DEV) {
     if (!('__TAURI_INTERNALS__' in window)) {
@@ -23,10 +23,15 @@ if (import.meta.env.DEV) {
     }
 }
 
+window.addEventListener('error', main_error_uncaught)
+window.addEventListener('unhandledrejection', main_rejection_unhandled)
+
+const app = createApp(App)
 const resize_frame = shallowRef(0)
 const selection_pressed = shallowRef<string | undefined>()
 
-createApp(App).mount('#app')
+app.config.errorHandler = main_error_component
+app.mount('#app')
 
 window.addEventListener('click', main_selection_clear)
 window.addEventListener('mousedown', main_autoscroll_block)
@@ -50,6 +55,26 @@ function main_autoscroll_block(event: MouseEvent): void {
     event.preventDefault()
 }
 
+function main_error_component(
+    error: unknown,
+    instance: ComponentPublicInstance | null,
+    information: string,
+): void {
+    assert(instance === null || typeof instance === 'object')
+    assert(typeof information === 'string')
+
+    log_error(`[vue] a component failed in ${information}`, error)
+}
+
+function main_error_uncaught(event: ErrorEvent): void {
+    assert(event.type === 'error')
+    assert(typeof event.message === 'string')
+
+    const place = `${event.filename}:${String(event.lineno)}:${String(event.colno)}`
+
+    log_error(`[window] ${event.message} at ${place}`, event.error)
+}
+
 function main_press_note(event: MouseEvent): void {
     assert(event.type === 'mousedown')
     assert(event.cancelable)
@@ -60,6 +85,13 @@ function main_press_note(event: MouseEvent): void {
         && getComputedStyle(target).getPropertyValue(USER_SELECT) === 'none'
 
     selection_pressed.value = unselectable ? window.getSelection()?.toString() : undefined
+}
+
+function main_rejection_unhandled(event: PromiseRejectionEvent): void {
+    assert(event.type === 'unhandledrejection')
+    assert(event.promise instanceof Promise)
+
+    log_error('[window] a promise failed and nothing handled it', event.reason)
 }
 
 function main_resize_note(event: UIEvent): void {

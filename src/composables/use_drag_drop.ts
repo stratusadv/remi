@@ -4,6 +4,7 @@ import { assert, unreachable } from '../lib/assert'
 import { path_is_media } from '../lib/media'
 import { use_batch_transcribe } from './use_batch_transcribe'
 import { use_pipeline } from './use_pipeline'
+import { use_recorder } from './use_recorder'
 import type { Ref } from 'vue'
 import type { Event, UnlistenFn } from '@tauri-apps/api/event'
 import type { DragDropEvent } from '@tauri-apps/api/webviewWindow'
@@ -88,19 +89,21 @@ function listener_release(): void {
 function paths_dropped(paths: string[]): void {
     assert(Array.isArray(paths))
 
-    const { source_path, transcript, job_id_current, view_set } = use_pipeline()
+    const { source_replace, view_set } = use_pipeline()
     const { enqueue } = use_batch_transcribe()
+    const { recording, starting } = use_recorder()
     const media_paths = paths.filter(path_is_media)
+    const [media_path_first] = media_paths
 
     assert(media_paths.length <= paths.length)
 
-    if (media_paths.length === 0) return
+    if (media_path_first === undefined) return
 
     if (media_paths.length === 1) {
-        source_path.value = media_paths[0] ?? null
-        transcript.value = null
-        job_id_current.value = null
+        if (recording.value) return
+        if (starting.value) return
 
+        source_replace(media_path_first)
         view_set('transcribe')
 
         return

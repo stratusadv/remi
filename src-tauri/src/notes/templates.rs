@@ -129,13 +129,13 @@ const INSTRUCTIONS_PROCEDURE: &str = concat!(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct NotesTemplate {
-    pub(crate) id: String,
-    pub(crate) name: String,
     #[serde(default)]
     pub(crate) description: String,
-    pub(crate) instructions: String,
     #[serde(default)]
     pub(crate) edited: bool,
+    pub(crate) id: String,
+    pub(crate) instructions: String,
+    pub(crate) name: String,
 }
 
 pub(crate) fn template_delete(id: &str) -> AppResult<()> {
@@ -154,7 +154,7 @@ pub(crate) fn template_load(id: &str) -> AppResult<NotesTemplate> {
     let template = templates_load_all()?
         .into_iter()
         .find(|template| template.id == id)
-        .ok_or_else(|| AppError::Config(format!("template not found: {id}")))?;
+        .ok_or_else(|| AppError::Internal(format!("template not found: {id}")))?;
 
     assert_eq!(template.id, id);
 
@@ -188,7 +188,9 @@ pub(crate) fn templates_load_all() -> AppResult<Vec<NotesTemplate>> {
     let raw = workspace::file_read_bounded(&path, TEMPLATES_FILE_BYTES_MAX)?;
 
     let mut templates: Vec<NotesTemplate> = serde_json::from_str(&raw).map_err(|error| {
-        AppError::Config(format!("the saved note templates could not be read: {error}"))
+        tracing::warn!("{} could not be read: {error}", path.display());
+
+        AppError::Config("the saved note templates could not be read".into())
     })?;
 
     templates_count_validate(&templates)?;
@@ -205,48 +207,48 @@ pub(crate) fn templates_load_all() -> AppResult<Vec<NotesTemplate>> {
 fn default_templates_seed() -> Vec<NotesTemplate> {
     let seeds = vec![
         NotesTemplate {
-            id: "default-meeting-notes".to_owned(),
-            name: "Meeting notes".to_owned(),
             description: concat!(
                 "Who was there, what was discussed, decisions made, and who does ",
                 "what next.",
             )
             .to_owned(),
-            instructions: INSTRUCTIONS_MEETING.to_owned(),
             edited: false,
+            id: "default-meeting-notes".to_owned(),
+            instructions: INSTRUCTIONS_MEETING.to_owned(),
+            name: "Meeting notes".to_owned(),
         },
         NotesTemplate {
-            id: "default-summary".to_owned(),
-            name: "Quick summary".to_owned(),
             description: concat!(
                 "A few sentences on the main point and the key names, numbers, ",
                 "and dates.",
             )
             .to_owned(),
-            instructions: INSTRUCTIONS_SUMMARY.to_owned(),
             edited: false,
+            id: "default-summary".to_owned(),
+            instructions: INSTRUCTIONS_SUMMARY.to_owned(),
+            name: "Quick summary".to_owned(),
         },
         NotesTemplate {
-            id: "default-site-visit".to_owned(),
-            name: "Site visit or job notes".to_owned(),
             description: concat!(
                 "What was inspected, problems found, parts and quotes, and next ",
                 "steps.",
             )
             .to_owned(),
-            instructions: INSTRUCTIONS_SITE_VISIT.to_owned(),
             edited: false,
+            id: "default-site-visit".to_owned(),
+            instructions: INSTRUCTIONS_SITE_VISIT.to_owned(),
+            name: "Site visit or job notes".to_owned(),
         },
         NotesTemplate {
-            id: "default-procedure".to_owned(),
-            name: "Step-by-step procedure".to_owned(),
             description: concat!(
                 "How to do a task: preparation, numbered steps, safety warnings, ",
                 "and mistakes to avoid.",
             )
             .to_owned(),
-            instructions: INSTRUCTIONS_PROCEDURE.to_owned(),
             edited: false,
+            id: "default-procedure".to_owned(),
+            instructions: INSTRUCTIONS_PROCEDURE.to_owned(),
+            name: "Step-by-step procedure".to_owned(),
         },
     ];
 
@@ -283,7 +285,7 @@ fn seeds_refresh(templates: &mut [NotesTemplate]) -> bool {
 
 fn template_validate(template: &NotesTemplate) -> AppResult<()> {
     if template.id.trim().is_empty() {
-        return Err(AppError::Config("the template has no id".into()));
+        return Err(AppError::Internal("the template has no id".into()));
     }
 
     if template.name.trim().is_empty() {
@@ -357,18 +359,18 @@ mod tests {
     fn an_unedited_seed_takes_the_current_wording_and_an_edited_one_keeps_its_own() {
         let mut templates = vec![
             NotesTemplate {
-                id: "default-meeting-notes".to_owned(),
-                name: "Meeting notes".to_owned(),
                 description: String::new(),
-                instructions: "old wording".to_owned(),
                 edited: false,
+                id: "default-meeting-notes".to_owned(),
+                instructions: "old wording".to_owned(),
+                name: "Meeting notes".to_owned(),
             },
             NotesTemplate {
-                id: "default-summary".to_owned(),
-                name: "Mine".to_owned(),
                 description: String::new(),
-                instructions: "my wording".to_owned(),
                 edited: true,
+                id: "default-summary".to_owned(),
+                instructions: "my wording".to_owned(),
+                name: "Mine".to_owned(),
             },
         ];
 
@@ -382,11 +384,11 @@ mod tests {
         let [name, instructions] = *fields;
 
         NotesTemplate {
-            id: "test".to_owned(),
-            name: name.to_owned(),
             description: String::new(),
-            instructions: instructions.to_owned(),
             edited: false,
+            id: "test".to_owned(),
+            instructions: instructions.to_owned(),
+            name: name.to_owned(),
         }
     }
 
@@ -440,18 +442,18 @@ mod tests {
     fn seeds_refresh_touches_only_known_unedited_ids() {
         let mut templates = vec![
             NotesTemplate {
-                id: "custom".to_owned(),
-                name: "Custom".to_owned(),
                 description: "d".to_owned(),
-                instructions: "i".to_owned(),
                 edited: false,
+                id: "custom".to_owned(),
+                instructions: "i".to_owned(),
+                name: "Custom".to_owned(),
             },
             NotesTemplate {
-                id: "default-procedure".to_owned(),
-                name: "Step-by-step procedure".to_owned(),
                 description: "old".to_owned(),
-                instructions: INSTRUCTIONS_PROCEDURE.to_owned(),
                 edited: false,
+                id: "default-procedure".to_owned(),
+                instructions: INSTRUCTIONS_PROCEDURE.to_owned(),
+                name: "Step-by-step procedure".to_owned(),
             },
         ];
 
@@ -532,11 +534,11 @@ mod tests {
         let path = workspace::root_file_path(TEMPLATES_FILE).unwrap();
 
         let stale = vec![NotesTemplate {
-            id: "default-summary".to_owned(),
-            name: "Quick summary".to_owned(),
             description: "old".to_owned(),
-            instructions: "old".to_owned(),
             edited: false,
+            id: "default-summary".to_owned(),
+            instructions: "old".to_owned(),
+            name: "Quick summary".to_owned(),
         }];
 
         fs::write(&path, serde_json::to_string(&stale).unwrap()).unwrap();

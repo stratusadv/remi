@@ -21,7 +21,7 @@ describe('confirm', () => {
             danger: true,
         })
 
-        expect(dialog.current.value?.id).toMatch(/^[0-9a-f-]{36}$/)
+        expect(dialog.current.value?.id).toMatch(/^[0-9a-f-]{36}$/u)
     })
 
     it('applies the given options and is not dangerous for info', () => {
@@ -54,7 +54,6 @@ describe('confirm', () => {
 
         const answer = await pending
 
-
         expect(answer).toBe(true)
         expect(dialog.current.value).toBeNull()
     })
@@ -65,7 +64,6 @@ describe('confirm', () => {
         dialog.close(false)
 
         const answer = await pending
-
 
         expect(answer).toBe(false)
     })
@@ -78,14 +76,12 @@ describe('confirm', () => {
 
         const answer_first = await first
 
-
         expect(answer_first).toBe(false)
         expect(dialog.current.value?.message).toBe('Second')
 
         dialog.close(true)
 
         const answer_second = await second
-
 
         expect(answer_second).toBe(true)
     })

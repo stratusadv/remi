@@ -1,15 +1,17 @@
 use crate::cancellation::is_cancelled;
+use crate::endpoints::storage::endpoint_is_builtin;
 use crate::endpoints::types::APIEndpoint;
 use crate::error::{AppError, AppResult};
 use crate::http::{
     ClientCell,
     ClientTimeouts,
-    RETRY_ATTEMPTS_MAX,
+    RETRY_ATTEMPTS_LIMIT,
+    RetryBudget,
     client_build,
     client_get,
     response_ensure_ok,
     response_json_bounded,
-    retry_run,
+    retry_run_budgeted,
 };
 use crate::transcription::flac::{SAMPLE_RATE_MAX, flac_encode};
 use crate::transcription::types::{
@@ -36,11 +38,13 @@ use tauri::Emitter;
 const CANCEL_POLL_INTERVAL_MS: u64 = 250;
 const CHUNK_CONCURRENCY_MAX: u32 = 4;
 const CHUNK_COUNT_MAX: u32 = 4096;
+const CHUNK_RETRY_BUDGET: RetryBudget = RetryBudget { attempts_max: 7, backoff_ms_base: 500 };
 const CHUNK_SECONDS_MIN: u32 = 2;
 const CHUNK_SECONDS_TARGET: u32 = 5;
 const CONNECT_TIMEOUT_SECONDS: u64 = 15;
 const FILE_EXTENSION_FLAC: &str = ".flac";
 const FILE_NAME_DEFAULT: &str = "audio.wav";
+const HEADER_JOB_ID: &str = "Remi-Job-Id";
 
 const HTTP_TIMEOUTS: ClientTimeouts = ClientTimeouts {
     connect: Duration::from_secs(CONNECT_TIMEOUT_SECONDS),
@@ -79,19 +83,19 @@ static HTTP_CLIENT: ClientCell = LazyLock::new(|| client_build(&HTTP_TIMEOUTS));
 #[derive(Debug, Deserialize)]
 struct APISegment {
     #[serde(default)]
-    text: String,
+    end: f64,
     #[serde(default)]
     start: f64,
     #[serde(default)]
-    end: f64,
+    text: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct APIResponse {
     #[serde(default)]
-    text: String,
-    #[serde(default)]
     segments: Option<Vec<APISegment>>,
+    #[serde(default)]
+    text: String,
 }
 
 #[derive(Clone, Copy)]
@@ -108,8 +112,8 @@ struct SegmentSpan {
 
 #[cfg(test)]
 struct ChunkPayload {
-    index: u32,
     bytes: Vec<u8>,
+    index: u32,
     name: String,
     range_text: String,
 }
@@ -189,155 +193,30 @@ impl ChunkTimeline {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct AudioSource<'source> {
+    job_id: &'source str,
+    path: &'source Path,
+}
+
+impl<'source> AudioSource<'source> {
+    pub(super) fn new(job_id: &'source str, path: &'source Path) -> Self {
+        assert_ne!(job_id, "");
+        assert!(!path.as_os_str().is_empty());
+
+        Self { job_id, path }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ChunkUpload<'request> {
-    url: &'request str,
     api_key: &'request str,
+    job_id: Option<&'request str>,
     model: &'request str,
+    retry: RetryBudget,
     spelling_hint: &'request str,
+    url: &'request str,
     verbose_wanted: bool,
-}
-
-pub(super) async fn transcribe_audio_file(
-    audio_path: &Path,
-    endpoint: &APIEndpoint,
-    spelling_hint: &str,
-    progress: Option<&TranscribeProgress>,
-) -> AppResult<Transcript> {
-    let path = endpoint.api_path_transcribe_resolved();
-    let url = format!("{}{}", endpoint.host_resolved().trim_end_matches('/'), path);
-    let chunk_limit = endpoint.transcribe_chunk_seconds.and_then(NonZeroU32::new);
-    let verbose_wanted = endpoint.transcribe_verbose.unwrap_or_else(|| chunk_limit.is_none());
-
-    let upload = ChunkUpload {
-        url: &url,
-        api_key: endpoint.api_key_resolved(),
-        model: endpoint.model_resolved(),
-        spelling_hint,
-        verbose_wanted,
-    };
-
-    tracing::info!(
-        target: "remi_lib::transcription",
-        "remote transcribe: url={} model={} verbose={} chunk_seconds={:?} hint_chars={}",
-        upload.url,
-        upload.model,
-        verbose_wanted,
-        chunk_limit,
-        spelling_hint.chars().count(),
-    );
-
-    if let Some(chunk_seconds) = chunk_limit {
-        return transcribe_chunked(audio_path, &upload, chunk_seconds, progress).await;
-    }
-
-    let file_name = audio_path
-        .file_name()
-        .map_or_else(|| FILE_NAME_DEFAULT.to_owned(), |name| name.to_string_lossy().into_owned());
-
-    let file_bytes = tokio::fs::read(audio_path).await?;
-    let parsed = upload_chunk(&upload, &file_bytes, &file_name, &AtomicU32::new(0)).await?;
-
-    let segments: Vec<TranscriptSegment> = parsed
-        .segments
-        .unwrap_or_default()
-        .into_iter()
-        .map(|segment| TranscriptSegment {
-            text: segment.text,
-            start_seconds: segment.start,
-            end_seconds: segment.end,
-        })
-        .collect();
-
-    if let Some(reporter) = progress {
-        transcribe_audio_file_emit(reporter, &parsed.text, &segments);
-    }
-
-    Ok(Transcript { text: parsed.text, segments })
-}
-
-fn attempts_text(attempts: u32) -> String {
-    assert!(attempts <= RETRY_ATTEMPTS_MAX);
-
-    if attempts == 1 {
-        return "1 attempt".to_owned();
-    }
-
-    format!("{attempts} attempts")
-}
-
-fn chunk_bounds_build(speech: &SpeechFrames, cut: ChunkCut) -> AppResult<Vec<Range<u32>>> {
-    assert!(speech.sample_rate > 0);
-    assert!(cut.seconds_target <= cut.seconds_max);
-
-    let frames_max =
-        cut.seconds_max.saturating_mul(speech.sample_rate).div_euclid(speech.frame_samples);
-
-    if frames_max == 0 {
-        return Err(AppError::Config(
-            "transcribe_chunk_seconds \u{d7} sample_rate computed to 0".into(),
-        ));
-    }
-
-    let frames_target = cut
-        .seconds_target
-        .saturating_mul(speech.sample_rate)
-        .div_euclid(speech.frame_samples)
-        .clamp(1, frames_max);
-
-    let frame_count = u32::try_from(speech.voiced.len()).unwrap_or(u32::MAX);
-    let mut bounds: Vec<Range<u32>> = Vec::new();
-    let mut frame_start: u32 = 0;
-
-    for _chunk_index in 0..CHUNK_COUNT_MAX {
-        if frame_start >= frame_count {
-            break;
-        }
-
-        let frame_latest = frame_start.saturating_add(frames_max).min(frame_count);
-        let frame_earliest = frame_start.saturating_add(frames_target).min(frame_latest);
-        let frame_cut = chunk_cut_frame(&speech.voiced, &(frame_earliest..frame_latest));
-
-        assert!(frame_cut > frame_start);
-        assert!(frame_cut <= frame_latest);
-
-        bounds.push(frame_start..frame_cut);
-        frame_start = frame_cut;
-    }
-
-    if frame_start < frame_count {
-        return Err(AppError::Audio(format!(
-            "this recording holds more than the {CHUNK_COUNT_MAX} parts the app transcribes in \
-             one pass",
-        )));
-    }
-
-    assert!(bounds.len() <= usize_of!(CHUNK_COUNT_MAX));
-
-    Ok(bounds)
-}
-
-fn chunk_cut_frame(voiced: &[bool], window: &Range<u32>) -> u32 {
-    assert!(window.start <= window.end);
-    assert!(range_wide(window).end <= voiced.len());
-
-    let Range { start: frame_earliest, end: frame_latest } = *window;
-    let frames = (frame_earliest..).zip(voiced.iter().copied().skip(range_wide(window).start));
-    let mut pause_start: Option<u32> = None;
-
-    for (frame, is_voiced) in frames {
-        match (is_voiced, pause_start) {
-            (_, None) if frame >= frame_latest => return frame_latest,
-            (false, None) => pause_start = Some(frame),
-            (true, Some(start)) if frame - start >= PAUSE_FRAMES_MIN => {
-                return start.midpoint(frame).min(frame_latest);
-            }
-            (true, Some(_)) => pause_start = None,
-            (true, None) | (false, Some(_)) => {}
-        }
-    }
-
-    frame_latest
 }
 
 struct ChunkCollection<'timelines> {
@@ -419,6 +298,151 @@ impl<'timelines> ChunkCollection<'timelines> {
     }
 }
 
+pub(super) async fn transcribe_audio_file(
+    source: &AudioSource<'_>,
+    endpoint: &APIEndpoint,
+    spelling_hint: &str,
+    progress: Option<&TranscribeProgress>,
+) -> AppResult<Transcript> {
+    let audio_path = source.path;
+    let path = endpoint.api_path_transcribe_resolved();
+    let url = format!("{}{}", endpoint.host_resolved().trim_end_matches('/'), path);
+    let chunk_limit = endpoint.transcribe_chunk_seconds.and_then(NonZeroU32::new);
+    let verbose_wanted = endpoint.transcribe_verbose.unwrap_or_else(|| chunk_limit.is_none());
+
+    let upload = ChunkUpload {
+        api_key: endpoint.api_key_resolved(),
+        job_id: endpoint_is_builtin(endpoint).then_some(source.job_id),
+        model: endpoint.model_resolved(),
+        retry: CHUNK_RETRY_BUDGET,
+        spelling_hint,
+        url: &url,
+        verbose_wanted,
+    };
+
+    tracing::info!(
+        target: "remi_lib::transcription",
+        "remote transcribe: url={} model={} verbose={} chunk_seconds={:?} hint_chars={}",
+        upload.url,
+        upload.model,
+        verbose_wanted,
+        chunk_limit,
+        spelling_hint.chars().count(),
+    );
+
+    if let Some(chunk_seconds) = chunk_limit {
+        return transcribe_chunked(audio_path, &upload, chunk_seconds, progress).await;
+    }
+
+    let file_name = audio_path
+        .file_name()
+        .map_or_else(|| FILE_NAME_DEFAULT.to_owned(), |name| name.to_string_lossy().into_owned());
+
+    let file_bytes = tokio::fs::read(audio_path).await?;
+    let parsed = upload_chunk(&upload, &file_bytes, &file_name, &AtomicU32::new(0)).await?;
+
+    let segments: Vec<TranscriptSegment> = parsed
+        .segments
+        .unwrap_or_default()
+        .into_iter()
+        .map(|segment| TranscriptSegment {
+            end_seconds: segment.end,
+            start_seconds: segment.start,
+            text: segment.text,
+        })
+        .collect();
+
+    if let Some(reporter) = progress {
+        transcribe_audio_file_emit(reporter, &parsed.text, &segments);
+    }
+
+    Ok(Transcript { segments, text: parsed.text })
+}
+
+fn attempts_text(attempts: u32) -> String {
+    assert!(attempts <= RETRY_ATTEMPTS_LIMIT);
+
+    if attempts == 1 {
+        return "1 attempt".to_owned();
+    }
+
+    format!("{attempts} attempts")
+}
+
+fn chunk_bounds_build(speech: &SpeechFrames, cut: ChunkCut) -> AppResult<Vec<Range<u32>>> {
+    assert!(speech.sample_rate > 0);
+    assert!(cut.seconds_target <= cut.seconds_max);
+
+    let frames_max =
+        cut.seconds_max.saturating_mul(speech.sample_rate).div_euclid(speech.frame_samples);
+
+    if frames_max == 0 {
+        return Err(AppError::Internal(
+            "transcribe_chunk_seconds \u{d7} sample_rate computed to 0".into(),
+        ));
+    }
+
+    let frames_target = cut
+        .seconds_target
+        .saturating_mul(speech.sample_rate)
+        .div_euclid(speech.frame_samples)
+        .clamp(1, frames_max);
+
+    let frame_count = u32::try_from(speech.voiced.len()).unwrap_or(u32::MAX);
+    let mut bounds: Vec<Range<u32>> = Vec::new();
+    let mut frame_start: u32 = 0;
+
+    for _chunk_index in 0..CHUNK_COUNT_MAX {
+        if frame_start >= frame_count {
+            break;
+        }
+
+        let frame_latest = frame_start.saturating_add(frames_max).min(frame_count);
+        let frame_earliest = frame_start.saturating_add(frames_target).min(frame_latest);
+        let frame_cut = chunk_cut_frame(&speech.voiced, &(frame_earliest..frame_latest));
+
+        assert!(frame_cut > frame_start);
+        assert!(frame_cut <= frame_latest);
+
+        bounds.push(frame_start..frame_cut);
+        frame_start = frame_cut;
+    }
+
+    if frame_start < frame_count {
+        return Err(AppError::Audio(format!(
+            "this recording holds more than the {CHUNK_COUNT_MAX} parts the app transcribes in \
+             one pass",
+        )));
+    }
+
+    assert!(bounds.len() <= usize_of!(CHUNK_COUNT_MAX));
+
+    Ok(bounds)
+}
+
+fn chunk_cut_frame(voiced: &[bool], window: &Range<u32>) -> u32 {
+    assert!(window.start <= window.end);
+    assert!(range_wide(window).end <= voiced.len());
+
+    let Range { start: frame_earliest, end: frame_latest } = *window;
+    let frames = (frame_earliest..).zip(voiced.iter().copied().skip(range_wide(window).start));
+    let mut pause_start: Option<u32> = None;
+
+    for (frame, is_voiced) in frames {
+        match (is_voiced, pause_start) {
+            (_, None) if frame >= frame_latest => return frame_latest,
+            (false, None) => pause_start = Some(frame),
+            (true, Some(start)) if frame - start >= PAUSE_FRAMES_MIN => {
+                return start.midpoint(frame).min(frame_latest);
+            }
+            (true, Some(_)) => pause_start = None,
+            (true, None) | (false, Some(_)) => {}
+        }
+    }
+
+    frame_latest
+}
+
 fn chunk_payload_build(source: &ChunkSource, samples: &Range<u32>) -> AppResult<Vec<u8>> {
     assert!(samples.start < samples.end);
     assert!(source.sample_rate <= SAMPLE_RATE_MAX);
@@ -473,7 +497,7 @@ fn chunk_plans_build(
         let frame_peaks = speech
             .peaks
             .get(range_wide(bound))
-            .ok_or_else(|| AppError::Audio("a part reaches past the end of the audio".into()))?;
+            .ok_or_else(|| AppError::Internal("a part reaches past the end of the audio".into()))?;
 
         if samples_peak(frame_peaks) < SILENCE_PEAK_MAX {
             chunk_indices_silent.push(chunk_index);
@@ -595,10 +619,10 @@ fn progress_emit_segment(progress: &TranscribeProgress, text: &str, span: &Segme
     assert_ne!(progress.stream_id, "");
 
     let chunk = SegmentChunk {
+        end_seconds: span.end_seconds,
+        start_seconds: span.start_seconds,
         stream_id: progress.stream_id.clone(),
         text: text.to_owned(),
-        start_seconds: span.start_seconds,
-        end_seconds: span.end_seconds,
     };
 
     if let Err(error) = progress.app.emit(EVENT_TRANSCRIPTION_SEGMENT, chunk) {
@@ -636,10 +660,10 @@ fn chunk_samples_read(path: &Path, samples: &Range<u32>) -> AppResult<Vec<f32>> 
     pcm16_mono_check(&reader.spec())?;
 
     if samples.end > reader.len() {
-        return Err(AppError::Audio("a part reaches past the end of the audio".into()));
+        return Err(AppError::Internal("a part reaches past the end of the audio".into()));
     }
 
-    reader.seek(samples.start).map_err(|error| AppError::Audio(format!("wav seek: {error}")))?;
+    reader.seek(samples.start).map_err(|error| AppError::Internal(format!("wav seek: {error}")))?;
 
     let mut chunk_samples: Vec<f32> = Vec::with_capacity(usize_of!(count));
 
@@ -673,9 +697,10 @@ where
 
         let filled = block
             .get_mut(..usize_of!(wanted))
-            .ok_or_else(|| AppError::Audio("the read block is smaller than its read".into()))?;
+            .ok_or_else(|| AppError::Internal("the read block is smaller than its read".into()))?;
 
-        data.read_exact(filled).map_err(|error| AppError::Audio(format!("wav read: {error}")))?;
+        data.read_exact(filled)
+            .map_err(|error| AppError::Internal(format!("wav read: {error}")))?;
 
         let (pairs, _rest) = filled.as_chunks::<2>();
 
@@ -694,11 +719,11 @@ fn pcm16_mono_check(specification: &hound::WavSpec) -> AppResult<()> {
         && specification.sample_format == hound::SampleFormat::Int;
 
     if !pcm16 {
-        return Err(AppError::Audio("the prepared audio is not 16-bit PCM".into()));
+        return Err(AppError::Internal("the prepared audio is not 16-bit PCM".into()));
     }
 
     if specification.channels != 1 {
-        return Err(AppError::Audio("the prepared audio is not a single channel".into()));
+        return Err(AppError::Internal("the prepared audio is not a single channel".into()));
     }
 
     Ok(())
@@ -756,9 +781,9 @@ fn segments_from_text(text: &str, timeline: &ChunkTimeline) -> Vec<TranscriptSeg
         let chars_through = chars_before.saturating_add(chars);
 
         segments.push(TranscriptSegment {
-            text: sentence,
-            start_seconds: timeline.seconds_at(&(chars_before..chars_total)),
             end_seconds: timeline.seconds_at(&(chars_through..chars_total)),
+            start_seconds: timeline.seconds_at(&(chars_before..chars_total)),
+            text: sentence,
         });
 
         chars_before = chars_through;
@@ -906,7 +931,7 @@ async fn transcribe_chunked(
     let speech = crate::blocking::run(move || speech_frames_scan(&audio_path_owned)).await?;
 
     if speech.sample_count == 0 {
-        return Ok(Transcript { text: String::new(), segments: Vec::new() });
+        return Ok(Transcript { segments: Vec::new(), text: String::new() });
     }
 
     let seconds_target =
@@ -974,9 +999,9 @@ fn transcribe_chunked_assemble(
         } else {
             for segment in api_segments {
                 segments.push(TranscriptSegment {
-                    text: segment.text,
-                    start_seconds: segment.start + timeline.offset_seconds,
                     end_seconds: segment.end + timeline.offset_seconds,
+                    start_seconds: segment.start + timeline.offset_seconds,
+                    text: segment.text,
                 });
             }
         }
@@ -984,7 +1009,7 @@ fn transcribe_chunked_assemble(
 
     assert!(text.is_empty() || !segments.is_empty());
 
-    Transcript { text, segments }
+    Transcript { segments, text }
 }
 
 async fn transcribe_chunked_collect(
@@ -1015,12 +1040,12 @@ async fn transcribe_chunked_collect(
             Err(_elapsed) => continue,
         };
 
-        let parsed = result.map_err(|error| {
-            AppError::Transcription(format!(
+        let parsed = result.inspect_err(|error| {
+            tracing::warn!(
                 "the part at {} did not come back after {}: {error}",
                 chunk.range_text,
                 attempts_text(attempts),
-            ))
+            );
         })?;
 
         collection.accept(chunk.index, parsed, progress);
@@ -1077,7 +1102,7 @@ fn transcribe_chunked_pending(chunk_indices_silent: &[u32]) -> BTreeMap<u32, API
     let mut pending: BTreeMap<u32, APIResponse> = BTreeMap::new();
 
     for chunk_index in chunk_indices_silent {
-        let silent = APIResponse { text: String::new(), segments: None };
+        let silent = APIResponse { segments: None, text: String::new() };
         let previous = pending.insert(*chunk_index, silent);
 
         assert!(previous.is_none());
@@ -1094,7 +1119,7 @@ fn transcribe_chunked_poll_count_max(chunk_count: u64) -> u64 {
     let waves = chunk_count.div_ceil(u64::from(CHUNK_CONCURRENCY_MAX));
 
     let attempt_seconds = (REQUEST_TIMEOUT_SECONDS + CONNECT_TIMEOUT_SECONDS)
-        .saturating_mul(u64::from(RETRY_ATTEMPTS_MAX));
+        .saturating_mul(u64::from(CHUNK_RETRY_BUDGET.attempts_max));
 
     let seconds = waves.saturating_mul(attempt_seconds).saturating_add(1);
     let polls_per_second = MILLISECONDS_PER_SECOND.div_euclid(CANCEL_POLL_INTERVAL_MS);
@@ -1138,12 +1163,12 @@ async fn upload_chunk(
     attempts: &AtomicU32,
 ) -> AppResult<APIResponse> {
     if bytes.is_empty() {
-        return Err(AppError::Audio("the prepared audio holds no samples".into()));
+        return Err(AppError::Internal("the prepared audio holds no samples".into()));
     }
 
     let client = client_get(&HTTP_CLIENT)?;
 
-    retry_run(|| async {
+    retry_run_budgeted(&upload.retry, || async {
         let _previous = attempts.fetch_add(1, Ordering::Relaxed);
 
         let part = multipart::Part::bytes(bytes.to_vec())
@@ -1165,6 +1190,10 @@ async fn upload_chunk(
 
         if !upload.api_key.is_empty() {
             request = request.bearer_auth(upload.api_key);
+        }
+
+        if let Some(job_id) = upload.job_id {
+            request = request.header(HEADER_JOB_ID, job_id);
         }
 
         let sent = request.multipart(form).send().await?;
@@ -1199,13 +1228,13 @@ mod tests {
         assert!(segments.as_ref().is_none_or(|listed| listed.len() <= 8));
 
         APIResponse {
-            text: text.to_owned(),
             segments: segments.map(|listed| {
                 listed
                     .into_iter()
-                    .map(|(spoken, start, end)| APISegment { text: spoken.to_owned(), start, end })
+                    .map(|(spoken, start, end)| APISegment { end, start, text: spoken.to_owned() })
                     .collect()
             }),
+            text: text.to_owned(),
         }
     }
 
@@ -1229,8 +1258,8 @@ mod tests {
         let payloads = plans
             .into_iter()
             .map(|plan| ChunkPayload {
-                index: plan.index,
                 bytes: chunk_payload_encode(&samples[range_wide(&plan.samples)], sample_rate),
+                index: plan.index,
                 name: plan.name,
                 range_text: plan.range_text,
             })
@@ -1316,7 +1345,7 @@ mod tests {
         let counted = Arc::clone(&requests);
 
         drop(tokio::spawn(async move {
-            for _attempt in 0..RETRY_ATTEMPTS_MAX {
+            for _attempt in 0..CHUNK_RETRY_BUDGET.attempts_max {
                 let (mut stream, _peer) = listener.accept().await.unwrap();
 
                 request_answer(&mut stream, status).await;
@@ -1342,8 +1371,18 @@ mod tests {
         let timelines = timelines_build(&samples, sample_rate, seconds_of(2));
         let source = ChunkSource { path, sample_rate };
 
-        let upload =
-            ChunkUpload { url, api_key: "", model: "m", spelling_hint: "", verbose_wanted: false };
+        let upload = ChunkUpload {
+            api_key: "",
+            job_id: None,
+            model: "m",
+            retry: RetryBudget {
+                attempts_max: CHUNK_RETRY_BUDGET.attempts_max,
+                backoff_ms_base: 1,
+            },
+            spelling_hint: "",
+            url,
+            verbose_wanted: false,
+        };
 
         let outcome =
             transcribe_chunked_collect(&source, plans, &silent, &upload, &timelines, None, None)
@@ -1353,21 +1392,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refused_part_reports_the_one_attempt_it_made() {
+    async fn a_refused_part_is_sent_once_and_fails_with_the_refusal_of_the_service() {
         let (url, requests) = service_answering(401).await;
         let message = upload_failure_message(&url).await;
 
         assert_eq!(requests.load(Ordering::SeqCst), 1);
-        assert!(message.contains("0:00 to 0:02 did not come back after 1 attempt:"), "{message}");
+
+        assert_eq!(
+            message,
+            format!(
+                "api error: 401 {LABEL_TRANSCRIBE}: The server refused the request (unauthorized)."
+            ),
+        );
     }
 
     #[tokio::test]
-    async fn a_part_that_keeps_failing_reports_each_attempt_it_made() {
+    async fn a_part_that_keeps_failing_is_sent_each_attempt_and_fails_with_the_last_answer() {
         let (url, requests) = service_answering(503).await;
         let message = upload_failure_message(&url).await;
 
-        assert_eq!(requests.load(Ordering::SeqCst), RETRY_ATTEMPTS_MAX);
-        assert!(message.contains("did not come back after 3 attempts:"), "{message}");
+        assert_eq!(requests.load(Ordering::SeqCst), CHUNK_RETRY_BUDGET.attempts_max);
+
+        assert_eq!(
+            message,
+            format!(
+                "api error: 503 {LABEL_TRANSCRIBE}: The server ran into a problem (service \
+                 unavailable). Try again in a few minutes."
+            ),
+        );
     }
 
     #[test]

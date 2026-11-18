@@ -21,14 +21,15 @@ const font_faces = Object.freeze([
 ]);
 
 const agent = navigator.userAgent;
-const code_pattern = /^[A-Za-z0-9-]{1,64}$/;
-const mac_touch = /Macintosh/.test(agent) && navigator.maxTouchPoints > 1;
-const mobile = mac_touch || /Android|iPhone|iPad|iPod/.test(agent);
+const code_pattern = /^[A-Za-z0-9-]{1,64}$/u;
+const mac_touch = /Macintosh/u.test(agent) && navigator.maxTouchPoints > 1;
+const mobile = mac_touch || /Android|iPhone|iPad|iPod/u.test(agent);
 const megabyte_bytes = 1048576;
-const youtube_id_pattern = /^[\w-]{11}$/;
+const youtube_id_pattern = /^[\w-]{11}$/u;
 
 code_show();
 copy_wire();
+launch_first_show();
 notice_show();
 page_reveal();
 video_embed();
@@ -100,16 +101,41 @@ function element_make(tag, class_name, text) {
     return element;
 }
 
+function launch_first_show() {
+    const detected = platform_detect();
+    const hints = document.querySelectorAll('[data-first-launch]');
+
+    assert(hints.length <= platforms.length, 'each platform has at most one first launch hint');
+
+    for (const hint of hints) {
+        const key = hint.dataset.firstLaunch;
+
+        assert(hint.hidden, 'a first launch hint starts hidden');
+        assert(platforms.some((platform) => platform.key === key), `${key} is not a platform`);
+
+        hint.hidden = key !== detected;
+    }
+}
+
 function notice_show() {
     const notice = document.getElementById('mobile');
-    const button = document.getElementById('share');
 
     if (notice === null) return;
     if (!mobile) return;
 
     assert(notice.hidden, 'the phone notice starts hidden');
 
+    const mail = notice.querySelector('a[href^="mailto:"]');
+
     notice.hidden = false;
+
+    if (mail !== null) {
+        const page_address = encodeURIComponent(location.origin + location.pathname);
+
+        mail.href = mail.href.replace(page_address, encodeURIComponent(location.href));
+    }
+
+    const button = document.getElementById('share');
 
     if (button === null) return;
     if (navigator.share === undefined) return;
@@ -119,7 +145,7 @@ function notice_show() {
     button.hidden = false;
 
     button.addEventListener('click', () => {
-        const page = { title: document.title, url: location.origin + location.pathname };
+        const page = { title: document.title, url: location.href };
 
         navigator.share(page).catch((error) => {
             if (error.name !== 'AbortError') button.hidden = true;
@@ -152,10 +178,10 @@ function platform_detect() {
     assert(typeof agent === 'string', 'the browser reports no user agent');
 
     if (mobile) return null;
-    if (/Windows/.test(agent)) return 'windows';
-    if (/Macintosh/.test(agent)) return 'macos';
-    if (/Fedora/.test(agent)) return 'fedora';
-    if (/Linux/.test(agent)) return 'ubuntu';
+    if (/Windows/u.test(agent)) return 'windows';
+    if (/Macintosh/u.test(agent)) return 'macos';
+    if (/Fedora/u.test(agent)) return 'fedora';
+    if (/Linux/u.test(agent)) return 'ubuntu';
 
     return null;
 }
@@ -194,7 +220,7 @@ function release_render(listing) {
 
     const others = document.getElementById('others');
     const detected = platform_detect();
-    const version = listing.tag_name.replace(/^v/, '');
+    const version = listing.tag_name.replace(/^v/u, '');
 
     assert(others !== null, 'the page has no installer list');
 
@@ -203,9 +229,11 @@ function release_render(listing) {
 
         if (asset === undefined) continue;
 
-        others.append(release_row(platform, asset));
-
-        if (platform.key === detected) release_point(platform, asset);
+        if (platform.key === detected) {
+            release_point(platform, asset);
+        } else {
+            others.append(release_row(platform, asset));
+        }
     }
 
     const date = new Date(listing.published_at).toLocaleDateString(undefined, {

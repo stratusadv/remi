@@ -1,8 +1,8 @@
+pub(crate) mod commands;
+
 use crate::error::{AppError, AppResult};
 use crate::workspace;
 use serde::{Deserialize, Serialize};
-
-pub(crate) mod commands;
 
 const SETTINGS_BYTES_MAX: u32 = 64 << 10;
 const SETTINGS_FILE: &str = "settings.json";
@@ -10,25 +10,17 @@ const SETTINGS_FILE: &str = "settings.json";
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Settings {
     #[serde(default)]
-    pub(crate) notes_template_id_default: Option<String>,
+    pub(crate) jobs_view: Option<String>,
     #[serde(default)]
-    pub(crate) theme: Option<String>,
+    pub(crate) mode: Option<String>,
+    #[serde(default)]
+    pub(crate) notes_template_id_default: Option<String>,
     #[serde(default)]
     pub(crate) palette: Option<String>,
     #[serde(default)]
     pub(crate) recordings_directory: Option<String>,
     #[serde(default)]
-    pub(crate) notes_model: Option<String>,
-    #[serde(default)]
-    pub(crate) notes_thinking: Option<String>,
-    #[serde(default)]
-    pub(crate) api_host: Option<String>,
-    #[serde(default)]
-    pub(crate) jobs_view: Option<String>,
-    #[serde(default)]
-    pub(crate) embeddings_host: Option<String>,
-    #[serde(default)]
-    pub(crate) embeddings_model: Option<String>,
+    pub(crate) theme: Option<String>,
 }
 
 impl Settings {
@@ -87,8 +79,9 @@ mod tests {
         let _root = root_scoped();
 
         let settings = Settings {
-            theme: Some("th\u{e8}me".to_owned()),
             jobs_view: Some("grid".to_owned()),
+            mode: Some("dark".to_owned()),
+            theme: Some("th\u{e8}me".to_owned()),
             ..Settings::initial()
         };
 
@@ -98,9 +91,10 @@ mod tests {
 
         let loaded = settings_load().unwrap();
 
+        assert_eq!(loaded.mode.as_deref(), Some("dark"));
         assert_eq!(loaded.theme.as_deref(), Some("th\u{e8}me"));
         assert_eq!(loaded.jobs_view.as_deref(), Some("grid"));
-        assert!(loaded.api_host.is_none());
+        assert!(loaded.palette.is_none());
     }
 
     #[test]
@@ -131,22 +125,20 @@ mod tests {
     #[test]
     fn settings_survive_a_round_trip_through_json() {
         let settings = Settings {
-            notes_template_id_default: Some("default-standup".to_owned()),
-            theme: Some("light".to_owned()),
-            palette: None,
-            recordings_directory: None,
-            notes_model: None,
-            notes_thinking: None,
-            api_host: None,
             jobs_view: None,
-            embeddings_host: None,
-            embeddings_model: None,
+            mode: Some("light".to_owned()),
+            notes_template_id_default: Some("default-standup".to_owned()),
+            palette: Some("graphite".to_owned()),
+            recordings_directory: None,
+            theme: Some("standard".to_owned()),
         };
 
         let raw = serde_json::to_string(&settings).expect("serialize");
         let restored: Settings = serde_json::from_str(&raw).expect("deserialize");
 
-        assert_eq!(restored.theme.as_deref(), Some("light"));
+        assert_eq!(restored.mode.as_deref(), Some("light"));
+        assert_eq!(restored.theme.as_deref(), Some("standard"));
+        assert_eq!(restored.palette.as_deref(), Some("graphite"));
         assert_eq!(restored.notes_template_id_default.as_deref(), Some("default-standup"));
     }
 
@@ -154,7 +146,21 @@ mod tests {
     fn a_settings_file_written_by_an_older_build_still_reads() {
         let restored: Settings = serde_json::from_str("{}").expect("deserialize");
 
+        assert!(restored.mode.is_none());
         assert!(restored.theme.is_none());
         assert!(restored.notes_template_id_default.is_none());
+
+        let raw = concat!(
+            r#"{"api_host": "https://api.example.test", "embeddings_host": null, "#,
+            r#""embeddings_model": "", "notes_model": "custom", "#,
+            r#""notes_thinking": "xhigh", "theme": "standard"}"#,
+        );
+
+        let carried: Settings = serde_json::from_str(raw).expect("deserialize");
+        let rewritten = serde_json::to_string(&carried).expect("serialize");
+
+        assert_eq!(carried.theme.as_deref(), Some("standard"));
+        assert!(!rewritten.contains("api_host"));
+        assert!(!rewritten.contains("notes_thinking"));
     }
 }

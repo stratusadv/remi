@@ -1,8 +1,12 @@
 import { ref } from 'vue'
 import { assert } from '../lib/assert'
+import { error_shown } from '../lib/errors'
 import { ipc } from '../lib/ipc'
 import type { APIEndpoint, APIEndpointPurpose } from '../types'
 
+
+export const MESSAGE_ENDPOINT_MISSING = 'remi could not load its AI service. Restart remi and '
+    + 'try again.'
 
 const endpoints = ref<APIEndpoint[]>([])
 const error_message = ref<string | null>(null)
@@ -10,7 +14,7 @@ const api = Object.freeze({ endpoints, error_message, refresh, endpoints_by_purp
 
 
 export function use_endpoints(): typeof api {
-    assert(Object.isFrozen(api))
+    assert(endpoints.value.every((endpoint) => endpoint.api_key.length === 0))
     assert(Array.isArray(endpoints.value))
 
     return api
@@ -38,6 +42,6 @@ async function refresh(): Promise<void> {
 
         assert(endpoints.value.length === fetched.length)
     } catch (error) {
-        error_message.value = String(error)
+        error_message.value = error_shown(error)
     }
 }

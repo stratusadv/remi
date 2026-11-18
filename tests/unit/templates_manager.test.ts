@@ -1,12 +1,12 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import TemplatesManager from '../../src/components/templates_manager.vue'
 import { use_context_menu } from '../../src/composables/use_context_menu'
 import { use_notes_templates } from '../../src/composables/use_notes_templates'
 import { use_pipeline } from '../../src/composables/use_pipeline'
 import { use_settings } from '../../src/composables/use_settings'
 import { assert } from '../../src/lib/assert'
-import { ATTACH_TO } from './fixtures'
+import { ATTACH_TO, mount_auto_unmount } from './fixtures'
 import type { VueWrapper } from '@vue/test-utils'
 import type { NotesTemplate } from '../../src/types'
 
@@ -24,7 +24,6 @@ const STANDUP = Object.freeze<NotesTemplate>({
 })
 
 const context_menu = use_context_menu()
-const mounted = new Set<VueWrapper>()
 const pipeline = use_pipeline()
 const settings_state = use_settings()
 const templates_state = use_notes_templates()
@@ -50,11 +49,10 @@ function menu_ids(): string[] {
 }
 
 async function mount_templates(): Promise<VueWrapper> {
-    assert(mounted.size === 0)
+    assert(document.body.childElementCount === 0)
 
-    const wrapper = mount(TemplatesManager, { [ATTACH_TO]: document.body })
+    const wrapper = mount_auto_unmount(TemplatesManager, { [ATTACH_TO]: document.body })
 
-    mounted.add(wrapper)
     await flushPromises()
 
     assert(wrapper.element instanceof Node)
@@ -64,7 +62,7 @@ async function mount_templates(): Promise<VueWrapper> {
 }
 
 function name_shown(wrapper: VueWrapper): string | null {
-    assert(mounted.has(wrapper))
+    assert(!wrapper.vm.$.isUnmounted)
 
     const input = wrapper.find<HTMLInputElement>(NAME_INPUT)
 
@@ -74,18 +72,15 @@ function name_shown(wrapper: VueWrapper): string | null {
 }
 
 beforeEach(() => {
+    onTestFinished(() => {
+        context_menu.close()
+        templates_state.templates.value = []
+        document.body.innerHTML = ''
+    })
+
     pipeline.pipeline_reset()
     templates_state.templates.value = [{ ...STANDUP }]
     default_set(null)
-})
-
-afterEach(() => {
-    for (const wrapper of mounted) wrapper.unmount()
-
-    mounted.clear()
-    context_menu.close()
-    templates_state.templates.value = []
-    document.body.innerHTML = ''
 })
 
 describe('TemplatesManager', () => {

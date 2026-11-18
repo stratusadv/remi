@@ -25,12 +25,16 @@ const ATTRIBUTE_TARGET = 'data-drop-target'
 const CURSOR_BLOCKED = 'not-allowed'
 const DRAG_NUDGE_PX = 30
 const DRAG_STEPS = 8
+const FOLDER_COUNT_OVERFLOW = 16
+const FOLDER_LONG = 'Northwind Logistics quarterly planning with the regional operations leads'
 const FOLDER_NEW = 'Acme Mining'
 const FOLDER_RENAMED = 'Acme Corp'
 const FOLDER_SEEDED = 'Remi'
 const PROMPT_LABEL = 'Folder name'
+const SELECTOR_COUNT = '.sidebar-folder-count'
 const SELECTOR_GHOST = '.job-drag-ghost'
 const SELECTOR_ROW = '.recording-table-row'
+const WHEEL_DELTA_PX = 120
 
 
 test.beforeEach(async ({ page }) => {
@@ -77,6 +81,31 @@ async function folder_create(page: Page, name: string): Promise<void> {
     await expect(folder_item(page, name)).toBeVisible()
 }
 
+async function folder_under(page: Page, point: ScreenPoint): Promise<string> {
+    assert(!page.isClosed())
+    assert(Number.isFinite(point.x_px))
+    assert(Number.isFinite(point.y_px))
+
+    const name = await page.evaluate(
+        ({ x_px, y_px }) => {
+            const buttons = [...document.querySelectorAll('aside .sidebar-folders li button')]
+
+            const under = buttons.find((button) => {
+                const box = button.getBoundingClientRect()
+
+                return box.left <= x_px && x_px < box.right && box.top <= y_px && y_px < box.bottom
+            })
+
+            return under?.getAttribute('data-folder-drop') ?? ''
+        },
+        point,
+    )
+
+    assert(name.length > 0, 'no folder lies under the pointer')
+
+    return name
+}
+
 async function prompt_focused(page: Page, title: string): Promise<void> {
     assert(!page.isClosed())
     assert(title.length > 0)
@@ -84,6 +113,19 @@ async function prompt_focused(page: Page, title: string): Promise<void> {
     const field = dialog(page, title).getByRole('textbox', { name: PROMPT_LABEL })
 
     await expect(field).toBeFocused()
+}
+
+async function width_overflows(element: Locator): Promise<boolean> {
+    assert(!element.page().isClosed())
+
+    const widths = await element.evaluate((node) => ({
+        width_client: node.clientWidth,
+        width_scroll: node.scrollWidth,
+    }))
+
+    assert(widths.width_client > 0, 'the element has no width to overflow')
+
+    return widths.width_scroll > widths.width_client
 }
 
 test('a folder is created, refused when repeated, renamed, and opened', async ({ page }) => {
@@ -126,6 +168,18 @@ test('a folder is created, refused when repeated, renamed, and opened', async ({
     await expect(page.locator('main').getByRole('button', { name: 'New recording' })).toHaveCount(0)
 })
 
+test('a long folder name is shortened and leaves every folder count in view', async ({ page }) => {
+    const long = folder_item(page, FOLDER_LONG)
+    const seeded = folder_item(page, FOLDER_SEEDED)
+
+    await folder_create(page, FOLDER_LONG)
+
+    await expect(long.locator(SELECTOR_COUNT)).toBeInViewport({ ratio: 1 })
+    await expect(seeded.locator(SELECTOR_COUNT)).toBeInViewport({ ratio: 1 })
+    await expect.poll(async () => width_overflows(page.locator('aside nav'))).toBe(false)
+    await expect.poll(async () => width_overflows(long.locator('.sidebar-folder-name'))).toBe(true)
+})
+
 test('a recording moves into a new folder and the folder shows only it', async ({ page }) => {
     const mover = dialog(page, 'Move to folder')
     const tile = tiles(page).filter({ [HAS_TEXT]: RECORDING_UNTITLED })
@@ -157,6 +211,41 @@ test('a recording moves into a new folder and the folder shows only it', async (
 
     await expect(main.getByRole('heading', { level: 2, name: 'Home' })).toBeVisible()
     await expect(tiles(page)).toHaveCount(2)
+})
+
+test('the move dialog cuts a long folder name short instead of widening', async ({ page }) => {
+    const mover = dialog(page, 'Move to folder')
+
+    await folder_create(page, FOLDER_LONG)
+    await tiles(page).filter({ [HAS_TEXT]: RECORDING_TITLED }).click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Move to folder' }).click()
+
+    await expect(mover.locator('.folder-move-check')).toBeInViewport({ ratio: 1 })
+    await expect.poll(async () => width_overflows(mover.locator('.folder-move-list'))).toBe(false)
+
+    await expect
+        .poll(async () => width_overflows(mover.getByText(FOLDER_LONG, { exact: true })))
+        .toBe(true)
+})
+
+test('a recording leaves its folder in one step from its menu', async ({ page }) => {
+    const seeded = folder_item(page, FOLDER_SEEDED)
+    const tile = tiles(page).filter({ [HAS_TEXT]: RECORDING_TITLED })
+    const leave = page.getByRole('menuitem', { name: 'Remove from folder' })
+
+    await seeded.click()
+    await tile.click({ button: 'right' })
+    await leave.click()
+
+    await expect(seeded).toHaveCount(0)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(page.getByRole('heading', { level: 2, name: 'Home' })).toBeVisible()
+    await expect(tile).toHaveCount(1)
+
+    await tile.click({ button: 'right' })
+
+    await expect(page.getByRole('menuitem', { name: 'Move to folder' })).toBeVisible()
+    await expect(leave).toHaveCount(0)
 })
 
 test('a recording dragged onto a folder moves into it and stays closed', async ({ page }) => {
@@ -236,6 +325,44 @@ test('a drag released off every folder moves nothing and opens nothing', async (
     await expect(seeded).toContainText('1')
 
     await recording_open(page, RECORDING_TITLED)
+})
+
+test('a drop after the sidebar scrolls lands in the folder under the pointer', async ({ page }) => {
+    const names = [...Array(FOLDER_COUNT_OVERFLOW).keys()].map(
+        (index) => `Client ${String(index).padStart(2, '0')}`,
+    )
+
+    await names.reduce(
+        async (created, name) => {
+            await created
+            await folder_create(page, name)
+        },
+        Promise.resolve(),
+    )
+
+    const first = folder_item(page, 'Client 00')
+    const nav = page.locator('aside nav')
+
+    await tiles(page).filter({ [HAS_TEXT]: RECORDING_UNTITLED }).hover()
+    await page.mouse.down()
+
+    const point = await drag_over(page, first)
+
+    await expect(first).toHaveAttribute(ATTRIBUTE_TARGET, 'true')
+
+    await page.mouse.wheel(0, WHEEL_DELTA_PX)
+
+    await expect.poll(async () => nav.evaluate((node) => node.scrollTop)).toBe(WHEEL_DELTA_PX)
+
+    const under = folder_item(page, await folder_under(page, point))
+
+    await expect(under).toHaveAttribute(ATTRIBUTE_TARGET, 'true')
+    await expect(first).toHaveAttribute(ATTRIBUTE_TARGET, 'false')
+
+    await page.mouse.up()
+
+    await expect(under.locator(SELECTOR_COUNT)).toHaveText('1')
+    await expect(first.locator(SELECTOR_COUNT)).toHaveText('0')
 })
 
 test('deleting a folder keeps its recording and clears its Ask scope', async ({ page }) => {

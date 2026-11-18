@@ -40,7 +40,7 @@ use account::{
 use cancellation::task_cancel;
 use chrono::Local;
 use contract::Markdown;
-use endpoints::commands::{endpoints_list, service_api_key_set, service_status};
+use endpoints::commands::endpoints_list;
 use error::AppResult;
 use export::{notes_export, notes_print};
 use jobs::commands::{
@@ -51,6 +51,7 @@ use jobs::commands::{
     job_meta_update,
     job_transcript_engines_list,
     job_transcript_load,
+    job_transcript_range_find,
     job_transcript_save,
     job_waveform_get,
     jobs_list,
@@ -62,7 +63,6 @@ use notes::chats::{chat_get, chat_remove, chat_save, chats_list};
 use notes::commands::{
     notes_generate_remote_streaming,
     notes_load,
-    notes_models_list,
     notes_save,
     notes_template_delete,
     notes_template_generate,
@@ -89,6 +89,7 @@ use recording::{
 };
 use resize::window_resize_rendered;
 use search::vector::{search_status, search_vectors_refresh};
+use serde::Deserialize;
 use settings::commands::{settings_get, settings_update};
 use state::AppState;
 use std::fs::OpenOptions;
@@ -118,12 +119,15 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 pub(crate) const APP_DATA_FOLDER: &str = "com.stratusadv.remi";
 
 const APP_DATA_FOLDER_LEGACY: &str = "com.stratusadv.scribe";
+const COMMAND_LOG_WRITE: &str = "log_write";
 const DATA_FOLDER_MOVE_ATTEMPTS_MAX: u32 = 10;
 const DATA_FOLDER_MOVE_RETRY_DELAY: Duration = Duration::from_millis(250);
 const LOG_FILE_PREFIX: &str = "remi";
 const LOG_FILES_MAX: u8 = 14;
 const LOG_FILTER_VARIABLE: &str = "RUST_LOG";
 const LOG_LEVEL_DEFAULT: LevelFilter = LevelFilter::INFO;
+const LOG_MESSAGE_BYTES_MAX: usize = 16 << 10;
+const LOG_TARGET_FRONTEND: &str = "remi_frontend";
 const LOGS_FOLDER: &str = "logs";
 
 #[cfg(any(windows, test))]
@@ -135,6 +139,14 @@ const MENU_ENTRIES_MAX: u32 = 64;
 const PANIC_LOG_FILE: &str = "panic.log";
 const WINDOW_LABEL_MAIN: &str = "main";
 const WINDOW_SHOW_FALLBACK_SECONDS: u64 = 3;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum LogLevel {
+    Error,
+    Information,
+    Warning,
+}
 
 #[derive(Debug)]
 enum DataFolderMove {
@@ -513,6 +525,12 @@ fn context_check(context: &tauri::Context<tauri::Wry>) {
 fn invoke_handler(invoke: Invoke) -> bool {
     assert_ne!(invoke.message.command(), "");
 
+    if invoke.message.command() == COMMAND_LOG_WRITE {
+        return invoke_handler_log()(invoke);
+    }
+
+    tracing::debug!(target: "remi_lib::ipc", "command {}", invoke.message.command());
+
     if invoke.message.command().starts_with(desktop::COMMAND_PREFIX) {
         return desktop::invoke_handler()(invoke);
     }
@@ -531,8 +549,6 @@ fn invoke_handler_general() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
         recording_discard,
         recordings_directory_default,
         endpoints_list,
-        service_status,
-        service_api_key_set,
         account_status,
         account_get,
         account_code_get,
@@ -545,7 +561,6 @@ fn invoke_handler_general() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
         notes_template_save,
         notes_template_delete,
         notes_template_generate,
-        notes_models_list,
         people_list,
         person_save,
         person_remove,
@@ -578,6 +593,7 @@ fn invoke_handler_general() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
         job_delete,
         job_transcript_engines_list,
         job_transcript_load,
+        job_transcript_range_find,
         job_transcript_save,
         job_waveform_get,
         job_audio_clip_get,
@@ -590,6 +606,10 @@ fn invoke_handler_general() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
     ]
 }
 
+fn invoke_handler_log() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![log_write]
+}
+
 fn log_filter_of(requested: Option<&str>) -> Targets {
     let directives = requested.map(str::trim).filter(|text| !text.is_empty());
     let fallback = Targets::new().with_default(LOG_LEVEL_DEFAULT);
@@ -599,6 +619,29 @@ fn log_filter_of(requested: Option<&str>) -> Targets {
     assert!(directives.is_some() || filter.would_enable("remi_lib", &tracing::Level::ERROR));
 
     filter
+}
+
+fn log_message_bounded(message: &str) -> &str {
+    let end = message.floor_char_boundary(LOG_MESSAGE_BYTES_MAX);
+    let bounded = message.get(..end).unwrap_or_default();
+
+    assert!(bounded.len() <= LOG_MESSAGE_BYTES_MAX);
+    assert!(message.starts_with(bounded));
+
+    bounded
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn log_write(level: LogLevel, message: String) {
+    assert_ne!(message, "");
+
+    let text = log_message_bounded(&message);
+
+    match level {
+        LogLevel::Error => tracing::error!(target: LOG_TARGET_FRONTEND, "{text}"),
+        LogLevel::Information => tracing::info!(target: LOG_TARGET_FRONTEND, "{text}"),
+        LogLevel::Warning => tracing::warn!(target: LOG_TARGET_FRONTEND, "{text}"),
+    }
 }
 
 fn logs_directory_resolve() -> PathBuf {
@@ -730,7 +773,10 @@ fn tracing_start() -> Option<WorkerGuard> {
 
     tracing::info!(
         target: "remi_lib",
-        "logging started, log folder = {}, writing a file = {}",
+        "logging started, remi {} on {} {}, log folder = {}, writing a file = {}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
         logs_directory.display(),
         guard.is_some(),
     );
@@ -917,6 +963,18 @@ mod tests {
         assert!(matches!(outcome, DataFolderMove::Failed(_)));
         assert_eq!(settings_legacy, "legacy");
         assert!(!created_current);
+    }
+
+    #[test]
+    fn a_frontend_log_message_is_cut_at_the_last_whole_character_within_the_bound() {
+        let short = "the sign-in code was refused";
+        let long = format!("{}\u{e9}tude", "a".repeat(LOG_MESSAGE_BYTES_MAX - 1));
+        let bounded = log_message_bounded(&long);
+
+        assert_eq!(log_message_bounded(short), short);
+        assert_eq!(bounded.len(), LOG_MESSAGE_BYTES_MAX - 1);
+        assert!(long.starts_with(bounded));
+        assert!(!bounded.ends_with('\u{e9}'));
     }
 
     #[test]

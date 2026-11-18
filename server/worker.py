@@ -25,7 +25,7 @@ robit.set_timezone('America/Edmonton')
 robit.set_database_logging(True)
 robit.set_controls(True)
 
-wo = robit.Worker(
+worker = robit.Worker(
     name='remi',
     web_server=True,
     web_server_address='0.0.0.0',
@@ -41,9 +41,9 @@ def complimentary_topup_job() -> None:
     _ = Account.services.automation.complimentary_topup()
 
 
-# wo.add_group('Accounts')
+# worker.add_group('Accounts')
 
-# wo.add_job(
+# worker.add_job(
 #     name='Top up complimentary accounts',
 #     method=complimentary_topup_job,
 #     group='Accounts',
@@ -52,4 +52,4 @@ def complimentary_topup_job() -> None:
 
 
 if __name__ == '__main__':
-    wo.start()
+    worker.start()

@@ -1,12 +1,19 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import TasksPanel from '../../src/components/tasks_panel.vue'
+import { use_batch_transcribe } from '../../src/composables/use_batch_transcribe'
 import { use_context_menu } from '../../src/composables/use_context_menu'
 import { use_pipeline } from '../../src/composables/use_pipeline'
 import { use_tasks } from '../../src/composables/use_tasks'
 import { assert } from '../../src/lib/assert'
 import { ipc } from '../../src/lib/ipc'
-import { ATTACH_TO, deferred_new, job_meta_build, transcript_build } from './fixtures'
+import {
+    ATTACH_TO,
+    deferred_new,
+    job_meta_build,
+    mount_auto_unmount,
+    transcript_build,
+} from './fixtures'
 import type { VueWrapper } from '@vue/test-utils'
 import type { Deferred } from './fixtures'
 
@@ -19,10 +26,10 @@ const LABEL_FAILED = 'Notes for the retro'
 const LABEL_FINISHED = 'Notes for the sync'
 const LABEL_RUNNING = 'Notes for the standup'
 const LABEL_STREAMLESS = 'Notes for the planning session'
+const SOURCE_PATH = '/home/you/recordings/board-meeting.wav'
 const STREAM_ID = 'stream-1'
+const batch = use_batch_transcribe()
 const context_menu = use_context_menu()
-const finishers = new Set<Deferred<string>>()
-const mounted = new Set<VueWrapper>()
 const pipeline = use_pipeline()
 const tasks_state = use_tasks()
 
@@ -39,11 +46,10 @@ function job_id_of(job_id: string): string {
 }
 
 async function mount_panel(): Promise<VueWrapper> {
-    assert(mounted.size === 0)
+    assert(document.body.querySelector('.sidebar-tasks') === null)
 
-    const wrapper = mount(TasksPanel, { [ATTACH_TO]: document.body })
+    const wrapper = mount_auto_unmount(TasksPanel, { [ATTACH_TO]: document.body })
 
-    mounted.add(wrapper)
     await flushPromises()
 
     assert(wrapper.findAll('.sidebar-task').length === tasks_state.tasks.value.length)
@@ -78,7 +84,7 @@ async function task_finished(label: string): Promise<void> {
 }
 
 async function task_menu(wrapper: VueWrapper, label: string): Promise<string[] | null> {
-    assert(mounted.has(wrapper))
+    assert(!wrapper.vm.$.isUnmounted)
     assert(label.length > 0)
 
     const rows = wrapper.findAll('.sidebar-task')
@@ -113,30 +119,26 @@ function task_running(label: string, stream_id: string | null): TaskRunning {
         stream_id,
     })
 
-    finishers.add(finish)
+    onTestFinished(() => {
+        finish.resolve(JOB_ID)
+    })
 
     return { finish, run }
 }
 
 beforeEach(() => {
+    onTestFinished(async () => {
+        context_menu.close()
+        await flushPromises()
+        tasks_state.tasks_clear_finished()
+        document.body.innerHTML = ''
+    })
+
     vi.resetAllMocks()
     vi.mocked(ipc.task_cancel).mockResolvedValue(undefined)
     vi.mocked(ipc.desktop_notification_show).mockResolvedValue(undefined)
     pipeline.pipeline_reset()
     pipeline.job_open_busy.value = false
-})
-
-afterEach(async () => {
-    for (const wrapper of mounted) wrapper.unmount()
-
-    for (const finish of finishers) finish.resolve(JOB_ID)
-
-    finishers.clear()
-    mounted.clear()
-    context_menu.close()
-    await flushPromises()
-    tasks_state.tasks_clear_finished()
-    document.body.innerHTML = ''
 })
 
 describe('TasksPanel menu', () => {
@@ -220,5 +222,24 @@ describe('TasksPanel menu', () => {
         expect(before).toEqual(['Cancel'])
         expect(ipc.task_cancel).not.toHaveBeenCalled()
         expect(after).toEqual(['Dismiss'])
+    })
+})
+
+describe('TasksPanel batch error', () => {
+    it('dismisses the batch error from its close button', async () => {
+        await batch.enqueue([SOURCE_PATH])
+
+        const message = batch.error_message_last.value
+
+        expect(message).not.toBeNull()
+
+        const wrapper = await mount_panel()
+
+        expect(wrapper.get('[role="alert"]').text()).toBe(message)
+
+        await wrapper.get('[aria-label="Dismiss"]').trigger('click')
+
+        expect(batch.error_message_last.value).toBeNull()
+        expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     })
 })

@@ -23,15 +23,26 @@ describe('NoticeBanner', () => {
         expect(warning.get('.banner').attributes('role')).toBe('status')
     })
 
-    it('renders the actions slot before the dismiss button', () => {
+    it('keeps the dismiss button after the actions and outside the wrapping body', () => {
         const wrapper = mount(NoticeBanner, {
             slots: { actions: '<button class="retry">Retry</button>' },
         })
 
-        const buttons = wrapper.findAll('.banner-actions button')
+        const banner = wrapper.get('.banner')
+        const buttons = banner.findAll('button')
 
+        expect(buttons).toHaveLength(2)
         expect(buttons[0]?.classes()).toContain('retry')
         expect(buttons[1]?.attributes('aria-label')).toBe('Dismiss')
+        expect(banner.element.lastElementChild).toBe(buttons[1]?.element)
+        expect(wrapper.get('.banner-body').find('[aria-label="Dismiss"]').exists()).toBe(false)
+    })
+
+    it('renders no empty actions group when it has no actions', () => {
+        const wrapper = mount(NoticeBanner, { slots: { default: 'Saved' } })
+
+        expect(wrapper.find('.banner-actions').exists()).toBe(false)
+        expect(wrapper.findAll('button')).toHaveLength(1)
     })
 
     it('emits dismiss when the close button is clicked', async () => {

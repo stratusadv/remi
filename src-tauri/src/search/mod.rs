@@ -18,6 +18,7 @@ use chrono::{DateTime, Local};
 use chunk::{ChunkDraft, ChunkSource, chars_count};
 use rusqlite::{
     Connection,
+    ErrorCode,
     OptionalExtension as _,
     Row,
     Rows,
@@ -35,7 +36,7 @@ use when::TimeWindow;
 
 const BUSY_TIMEOUT_MS: u64 = 10_000;
 const EXCERPT_NEIGHBOURS_MAX: u32 = 2;
-const EXCERPTS_RANKED_CHARS_MAX: u32 = 60_000;
+pub(crate) const EXCERPTS_RANKED_CHARS_MAX: u32 = 60_000;
 const EXCERPTS_RANKED_MAX: u32 = 40;
 const EXCERPTS_WHOLE_CHARS_MAX: u32 = 120_000;
 pub(crate) const EXCERPTS_WHOLE_MAX: u32 = 400;
@@ -43,6 +44,7 @@ const HITS_CHUNKS_MAX: u32 = 20_000;
 const HITS_MAX: u32 = 1000;
 const INDEX_FILE_NAME: &str = "search.sqlite";
 const INDEX_VERSION: i32 = 3;
+const JOURNAL_RETRY_MS: u64 = 20;
 const LIST_CHUNKS_MAX: u32 = 200;
 const MEETINGS_MAX: u32 = 65_536;
 pub(crate) const PROJECT_CHARS_MAX: u32 = 200;
@@ -58,6 +60,7 @@ const WEIGHT_HEADER_NAMES: f64 = 1.0;
 const WEIGHT_HEADER_TOPIC: f64 = 0.4;
 
 const _: () = assert!(EXCERPTS_RANKED_MAX < EXCERPTS_WHOLE_MAX);
+const _: () = assert!(JOURNAL_RETRY_MS < BUSY_TIMEOUT_MS);
 const _: () = assert!(EXCERPTS_RANKED_MAX * (1 + EXCERPT_NEIGHBOURS_MAX) <= EXCERPTS_WHOLE_MAX);
 const _: () = assert!(EXCERPTS_RANKED_CHARS_MAX < EXCERPTS_WHOLE_CHARS_MAX);
 const _: () = assert!(EXCERPTS_RANKED_MAX <= LIST_CHUNKS_MAX);
@@ -225,6 +228,14 @@ const SQL_RANK_MATCH: &str = "
     LIMIT :limit
 ";
 
+const SQL_RANK_MATCH_ALL: &str = "
+    SELECT rowid
+    FROM chunk_text
+    WHERE chunk_text MATCH :expression
+    ORDER BY bm25(chunk_text, :weight_header, :weight_body), rowid
+    LIMIT :limit
+";
+
 const SQL_RANK_WINDOW: &str = "
     SELECT chunk.chunk_id
     FROM chunk
@@ -303,6 +314,19 @@ const SQL_SCOPE_SIZE: &str = "
 const SQL_TEXT_INSERT: &str =
     "INSERT INTO chunk_text (rowid, header, body) VALUES (:chunk_id, :header, :body)";
 
+const SQL_TRANSCRIPT_RANGE: &str = "
+    SELECT chunk.segment_index_first, chunk.segment_index_last
+    FROM chunk_text
+    JOIN chunk ON chunk.chunk_id = chunk_text.rowid
+    WHERE chunk_text MATCH :expression
+        AND chunk.job_id = :job_id
+        AND chunk.source = 'transcript'
+        AND chunk.segment_index_first IS NOT NULL
+        AND chunk.segment_index_last IS NOT NULL
+    ORDER BY bm25(chunk_text, 0.0, 1.0), chunk.chunk_id
+    LIMIT 1
+";
+
 #[derive(Clone, Debug)]
 pub(crate) struct Excerpt {
     pub(crate) body: String,
@@ -358,6 +382,18 @@ pub(crate) struct SearchHit {
     pub(crate) snippet: String,
     pub(crate) source: ChunkSource,
     pub(crate) start_seconds: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct SegmentRange {
+    pub(crate) segment_index_first: u32,
+    pub(crate) segment_index_last: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TranscriptClaim<'text> {
+    pub(crate) job_id: &'text str,
+    pub(crate) text: &'text str,
 }
 
 #[derive(Debug)]
@@ -631,6 +667,33 @@ pub(crate) fn reconcile_spawn() {
     });
 }
 
+pub(crate) fn transcript_range_find(
+    claim: &TranscriptClaim<'_>,
+) -> AppResult<Option<SegmentRange>> {
+    assert!(workspace::job_id_is_valid(claim.job_id));
+
+    let Some(any) = query::match_any(&query::terms_of(claim.text)) else {
+        return Ok(None);
+    };
+
+    let expression = format!("body : ({any})");
+    let connection = index_open()?;
+    let mut statement = connection.prepare_cached(SQL_TRANSCRIPT_RANGE)?;
+
+    let range = statement
+        .query_row(named_params! { ":expression": expression, ":job_id": claim.job_id }, |row| {
+            Ok(SegmentRange {
+                segment_index_first: row.get("segment_index_first")?,
+                segment_index_last: row.get("segment_index_last")?,
+            })
+        })
+        .optional()?;
+
+    assert!(range.is_none_or(|found| found.segment_index_first <= found.segment_index_last));
+
+    Ok(range)
+}
+
 fn chunks_insert(
     transaction: &Transaction<'_>,
     meta: &JobMeta,
@@ -875,8 +938,7 @@ fn index_open() -> AppResult<Connection> {
     connection.pragma_update(None, "foreign_keys", true)?;
     connection.pragma_update(None, "synchronous", "NORMAL")?;
 
-    let journal: String =
-        connection.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
+    let journal = index_open_journal(&connection)?;
 
     if !journal.eq_ignore_ascii_case("wal") {
         tracing::debug!("the search index runs in {journal} journal mode");
@@ -885,6 +947,25 @@ fn index_open() -> AppResult<Connection> {
     schema_ensure(&mut connection)?;
 
     Ok(connection)
+}
+
+fn index_open_journal(connection: &Connection) -> AppResult<String> {
+    let attempts_max = BUSY_TIMEOUT_MS.div_euclid(JOURNAL_RETRY_MS);
+
+    assert!(attempts_max > 1);
+    assert!(connection.is_autocommit());
+
+    for attempt_index in 1..attempts_max {
+        match connection.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0)) {
+            Err(error) if error.sqlite_error_code() == Some(ErrorCode::DatabaseBusy) => {
+                tracing::debug!("the search index journal was busy on attempt {attempt_index}");
+                std::thread::sleep(Duration::from_millis(JOURNAL_RETRY_MS));
+            }
+            outcome => return Ok(outcome?),
+        }
+    }
+
+    Ok(connection.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?)
 }
 
 fn job_digest(files: &JobFiles, names: &[String]) -> Vec<u8> {
@@ -1087,6 +1168,19 @@ fn rank_by_match(
     assert_ne!(expression, "");
     assert!(weight_header >= 0.0_f64);
 
+    if *scope == Scope::All {
+        let mut statement = connection.prepare_cached(SQL_RANK_MATCH_ALL)?;
+
+        let mut rows = statement.query(named_params! {
+            ":expression": expression,
+            ":limit": LIST_CHUNKS_MAX,
+            ":weight_body": WEIGHT_BODY,
+            ":weight_header": weight_header,
+        })?;
+
+        return ids_collect(&mut rows);
+    }
+
     let (kind, value) = scope.binding();
     let mut statement = connection.prepare_cached(SQL_RANK_MATCH)?;
 
@@ -1271,13 +1365,13 @@ pub(crate) mod test_support {
         let segments: Vec<TranscriptSegment> = (0_u32..)
             .zip(lines)
             .map(|(index, line)| TranscriptSegment {
-                text: (*line).to_owned(),
-                start_seconds: f64::from(index) * 30.0,
                 end_seconds: f64::from(index + 1) * 30.0,
+                start_seconds: f64::from(index) * 30.0,
+                text: (*line).to_owned(),
             })
             .collect();
 
-        let transcript = Transcript { text: lines.join(" "), segments };
+        let transcript = Transcript { segments, text: lines.join(" ") };
         let slot = TranscriptSlot { engine_id: "imported", job_id: id };
 
         workspace::transcript_save(&slot, &transcript).unwrap();
@@ -1288,7 +1382,9 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{job_saved, ranked_jobs, transcript_saved};
     use super::*;
-    use crate::workspace::test_support::{meta_with, root_scoped};
+    use crate::workspace::test_support::{meta_with, root_adopt, root_override, root_scoped};
+    use std::sync::Barrier;
+    use std::thread;
 
     fn generator_next(state: &mut u64) -> u64 {
         *state ^= *state << 13_u32;
@@ -1482,11 +1578,11 @@ mod tests {
         let mut meta = meta_with(&id, 1);
 
         let mut person = Person {
+            description: String::new(),
             id: "p1".to_owned(),
             name_first: "Jordan".to_owned(),
             name_last: "Reyes".to_owned(),
             role: String::new(),
-            description: String::new(),
         };
 
         crate::people::storage::person_upsert(&person).unwrap();
@@ -1542,6 +1638,46 @@ mod tests {
         workspace::meta_save(&meta_newer).unwrap();
 
         assert_eq!(names_recent(10).unwrap(), ["Dana Kim", "Ana Lopez", "Ben Ng"]);
+    }
+
+    #[test]
+    fn a_fresh_index_opened_by_many_threads_at_once_opens_on_every_thread() {
+        let _root = root_scoped();
+        let root_inherited = root_override();
+        let index_path = workspace::root_file_path(INDEX_FILE_NAME).unwrap();
+        let openers: u32 = 16;
+        let rounds: u32 = 40;
+
+        for _round_index in 0..rounds {
+            for suffix in ["", "-shm", "-wal"] {
+                drop(std::fs::remove_file(format!("{}{suffix}", index_path.display())));
+            }
+
+            let start = Barrier::new(usize_of!(openers));
+
+            let opened: Vec<AppResult<()>> = thread::scope(|scope| {
+                let handles: Vec<_> = std::iter::repeat_with(|| {
+                    let root_opener = root_inherited.clone();
+                    let start_shared = &start;
+
+                    scope.spawn(move || {
+                        root_adopt(root_opener);
+                        let _released = start_shared.wait();
+
+                        index_open().map(drop)
+                    })
+                })
+                .take(usize_of!(openers))
+                .collect();
+
+                handles.into_iter().map(|handle| handle.join().unwrap()).collect()
+            });
+
+            assert_eq!(opened.len(), usize_of!(openers));
+            assert!(opened.iter().all(Result::is_ok), "{opened:?}");
+        }
+
+        assert_eq!(meeting_count(), 0);
     }
 
     #[test]
@@ -1667,6 +1803,57 @@ mod tests {
         assert!(long.to_string().contains("at most"));
 
         project.validate().unwrap();
+    }
+
+    #[test]
+    fn the_whole_library_keyword_ranking_matches_the_scoped_ranking_over_every_meeting() {
+        let _root = root_scoped();
+        let words = ["alpha", "bravo", "charlie", "delta"];
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+
+        for meeting in 0..24_u32 {
+            let id = job_saved(&format!("Meeting {meeting}"), i64::from(meeting) + 1);
+
+            let lines: Vec<String> =
+                std::iter::repeat_with(|| line_random(&mut state, &words)).take(30).collect();
+
+            let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
+
+            transcript_saved(&id, &borrowed);
+            workspace::notes_save(&id, b"alpha bravo notes").unwrap();
+        }
+
+        let connection = index_open().unwrap();
+        let mut reference = connection.prepare(SQL_RANK_MATCH).unwrap();
+        let mut limited = false;
+
+        for expression in ["\"alpha\"", "\"bravo\" OR \"delta\"", "\"meeting\"", "\"absent\""] {
+            for weight_header in [WEIGHT_HEADER_TOPIC, WEIGHT_HEADER_NAMES] {
+                let expected: Vec<i64> = reference
+                    .query_map(
+                        named_params! {
+                            ":expression": expression,
+                            ":limit": LIST_CHUNKS_MAX,
+                            ":scope_kind": SCOPE_ALL,
+                            ":scope_value": "",
+                            ":weight_body": WEIGHT_BODY,
+                            ":weight_header": weight_header,
+                        },
+                        |row| row.get(0),
+                    )
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap();
+
+                let ranked = rank_by_match(&connection, expression, &Scope::All, weight_header);
+
+                assert_eq!(ranked.unwrap(), expected, "{expression} at {weight_header}");
+
+                limited |= expected.len() == usize_of!(LIST_CHUNKS_MAX);
+            }
+        }
+
+        assert!(limited);
     }
 
     #[test]
@@ -1859,6 +2046,48 @@ mod tests {
         let tied = ranks_fuse(&[RankedList::even(vec![2]), RankedList::even(vec![1])]);
 
         assert_eq!(tied.iter().map(|(chunk_id, _score)| *chunk_id).collect::<Vec<_>>(), [1, 2]);
+    }
+
+    #[test]
+    fn a_claim_finds_the_transcript_passage_of_its_own_meeting_and_never_the_notes() {
+        let _root = root_scoped();
+        let planning = job_saved("Planning", 2);
+        let review = job_saved("Review", 1);
+
+        let lines = [
+            "hello all, the radios are here",
+            "the budget is fine",
+            "the vendor called about pricing",
+            "nothing else on that",
+            "the radios ship on friday",
+            "bye now",
+        ];
+
+        workspace::notes_save(&planning, b"# Decisions\nThe warehouse lease renews in March.\n")
+            .unwrap();
+        transcript_saved(&planning, &lines);
+        transcript_saved(&review, &["the forklift broke again"]);
+
+        let claim =
+            TranscriptClaim { job_id: &planning, text: "Sam says the radios ship on Friday." };
+
+        let range = transcript_range_find(&claim).unwrap().unwrap();
+        let first = usize_of!(range.segment_index_first);
+        let last = usize_of!(range.segment_index_last);
+
+        assert!(first <= last);
+        assert!(last < lines.len());
+        assert!(lines[first..=last].iter().any(|line| line.contains("ship on friday")));
+
+        let lease = TranscriptClaim { job_id: &planning, text: "the warehouse lease" };
+        let forklift_planning = TranscriptClaim { job_id: &planning, text: "the forklift" };
+        let question = TranscriptClaim { job_id: &planning, text: "What did we say?" };
+        let forklift_review = TranscriptClaim { job_id: &review, text: "forklift" };
+
+        assert_eq!(transcript_range_find(&lease).unwrap(), None);
+        assert_eq!(transcript_range_find(&forklift_planning).unwrap(), None);
+        assert_eq!(transcript_range_find(&question).unwrap(), None);
+        assert!(transcript_range_find(&forklift_review).unwrap().is_some());
     }
 
     #[test]

@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, useTemplateRef } from 'vue'
+import { use_modal } from '../composables/use_modal'
 import { person_label, person_name_full, use_people } from '../composables/use_people'
-import { error_dialog_show } from '../lib/errors'
+import { assert } from '../lib/assert'
+import { error_dialog_sentence_show, error_dialog_show } from '../lib/errors'
 import PersonForm from './person_form.vue'
 import type { Group, Person } from '../types'
 
 
-const props = defineProps<{
+const properties = defineProps<{
     title: string
     hint: string
     groups_hidden?: boolean
@@ -21,7 +23,8 @@ const ids_selected = defineModel<string[]>('ids_selected', { required: true })
 const { people_sorted, groups_sorted, error_message, group_members, refresh, save } = use_people()
 const filter_text = ref('')
 const adding = ref(false)
-const filter_input_ref = ref<HTMLInputElement | null>(null)
+const filter_input_element = useTemplateRef<HTMLInputElement>('filter_input_element')
+const covered = use_modal('dialog', () => true)
 
 const people_filtered = computed(() => {
     const needle = filter_text.value.trim().toLowerCase()
@@ -33,7 +36,7 @@ const people_filtered = computed(() => {
 })
 
 const groups_shown = computed(() => {
-    if (props.groups_hidden) return []
+    if (properties.groups_hidden) return []
 
     const needle = filter_text.value.trim().toLowerCase()
 
@@ -49,58 +52,85 @@ const empty_text = computed(() =>
 
 
 function group_count_text(group: Group): string {
+    assert(!properties.groups_hidden)
+
     const count = group_members(group).length
+
+    assert(count > 0)
 
     return `${String(count)} ${count === 1 ? 'person' : 'people'}`
 }
 
 function group_is_selected(group: Group): boolean {
-    return group_members(group).every((person) => is_selected(person.id))
+    assert(!properties.groups_hidden)
+
+    const members = group_members(group)
+
+    assert(members.length > 0)
+
+    return members.every((person) => is_selected(person.id))
 }
 
 function group_toggle(group: Group): void {
-    const member_ids = group_members(group).map((person) => person.id)
+    assert(!properties.groups_hidden)
 
-    const next = group_is_selected(group)
+    const member_ids = group_members(group).map((person) => person.id)
+    const selected_before = group_is_selected(group)
+
+    assert(member_ids.length > 0)
+
+    const next = selected_before
         ? ids_selected.value.filter((selected) => !member_ids.includes(selected))
         : [...ids_selected.value, ...member_ids.filter((id) => !is_selected(id))]
+
+    assert(member_ids.every((id) => next.includes(id)) !== selected_before)
 
     ids_selected.value = next
 }
 
 function is_selected(id: string): boolean {
+    assert(id.length > 0)
+
     return ids_selected.value.includes(id)
 }
 
 async function person_create(person: Person): Promise<void> {
-    try {
-        await save(person)
+    assert(person.id.length > 0)
+    assert(!ids_selected.value.includes(person.id))
 
-        if (error_message.value !== null) {
-            await error_dialog_show(error_message.value)
+    return save(person)
+        .then(async () => {
+            if (error_message.value !== null) {
+                await error_dialog_sentence_show(error_message.value)
 
-            return
-        }
+                return
+            }
 
-        adding.value = false
-        filter_text.value = ''
-        ids_selected.value = [...ids_selected.value, person.id]
-    } catch (error) {
-        await error_dialog_show(error)
-    }
+            adding.value = false
+            filter_text.value = ''
+            ids_selected.value = [...ids_selected.value, person.id]
+        })
+        .catch(error_dialog_show)
 }
 
 function toggle(id: string): void {
-    const next = is_selected(id)
+    assert(id.length > 0)
+    assert(people_sorted.value.some((person) => person.id === id))
+
+    const selected_before = is_selected(id)
+
+    const next = selected_before
         ? ids_selected.value.filter((selected) => selected !== id)
         : [...ids_selected.value, id]
+
+    assert(next.includes(id) !== selected_before)
 
     ids_selected.value = next
 }
 
 onMounted(async () => {
+    filter_input_element.value?.focus()
     await refresh()
-    filter_input_ref.value?.focus()
 })
 </script>
 
@@ -110,6 +140,8 @@ onMounted(async () => {
             class="app-dialog-backdrop"
             role="dialog"
             aria-modal="true"
+            tabindex="-1"
+            :inert="covered"
             @mousedown.left.self.prevent="emit('close')"
             @keydown.esc="emit('close')"
         >
@@ -133,12 +165,19 @@ onMounted(async () => {
                         <path d="M18 6L6 18" />
                     </svg>
                 </button>
-                <h3 class="app-dialog-title">{{ props.title }}</h3>
-                <p class="app-dialog-message">{{ props.hint }}</p>
+                <h3 class="app-dialog-title">{{ properties.title }}</h3>
+                <p class="app-dialog-message">{{ properties.hint }}</p>
 
-                <div v-if="!adding" class="people-picker-body">
+                <PersonForm
+                    v-if="adding"
+                    :person="null"
+                    @cancel="adding = false"
+                    @save="person_create"
+                />
+
+                <div v-else class="people-picker-body">
                     <input
-                        ref="filter_input_ref"
+                        ref="filter_input_element"
                         v-model="filter_text"
                         type="search"
                         class="input"
@@ -192,9 +231,13 @@ onMounted(async () => {
                         </button>
                     </div>
                 </div>
-
-                <PersonForm v-else :person="null" @cancel="adding = false" @save="person_create" />
             </div>
         </div>
     </Teleport>
 </template>
+
+<style scoped>
+.app-dialog-backdrop:focus {
+    outline: none;
+}
+</style>
