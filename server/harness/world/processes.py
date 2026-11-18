@@ -516,6 +516,8 @@ def remi_start(
         '1',
         '--threads',
         '32',
+        '--keep-alive',
+        '3700',
         '--access-logfile',
         '-',
     ]
