@@ -447,6 +447,7 @@ pub(crate) fn job_files_load(id: &str) -> AppResult<Option<JobFiles>> {
     let directory = jobs_directory()?.join(id);
     let meta_path = directory.join(META_FILE_NAME);
     let notes_path = directory.join(NOTES_FILE_NAME);
+    let _lock = jobs_lock()?;
 
     let Some(meta) = file_read_if_present(&meta_path, META_BYTES_MAX)? else {
         return Ok(None);
