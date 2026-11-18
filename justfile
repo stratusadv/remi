@@ -101,12 +101,43 @@ lint-windows:
 list:
     @just --list
 
+[doc('Register the development build with the desktop so its window shows the remi icon')]
+[linux]
+register:
+    #!/bin/sh
+    set -eu
+    data="${XDG_DATA_HOME:-$HOME/.local/share}"
+
+    install -D -m 644 src-tauri/icons/32x32.png "$data/icons/hicolor/32x32/apps/remi-development.png"
+    install -D -m 644 src-tauri/icons/128x128.png "$data/icons/hicolor/128x128/apps/remi-development.png"
+    install -D -m 644 src-tauri/icons/128x128@2x.png "$data/icons/hicolor/256x256/apps/remi-development.png"
+    touch "$data/icons/hicolor"
+
+    mkdir -p "$data/applications"
+    cat > "$data/applications/remi-development.desktop" <<EOF
+    [Desktop Entry]
+    Type=Application
+    Name=remi
+    Exec=sh -c "exec '{{ justfile_directory() }}/src-tauri/target/debug/remi'"
+    Icon=remi-development
+    NoDisplay=true
+    StartupWMClass=remi
+    EOF
+
 [doc('Run the app with hot reload')]
+[linux]
+run: register
+    bun run tauri dev
+
+[doc('Run the app with hot reload')]
+[macos]
+[windows]
 run:
     bun run tauri dev
 
 [doc('Run the app with hot reload on the software renderer')]
-run-software:
+[linux]
+run-software: register
     {{ webview_software }} bun run tauri dev
 
 [doc('Start the PostgreSQL container the server runs and tests against')]
