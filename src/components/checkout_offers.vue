@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, shallowRef } from 'vue'
 import { offer_cards, offer_hours } from '../composables/use_account'
 import { assert } from '../lib/assert'
 import type { AccountOffer } from '../types'
 
 
-const props = defineProps<{
+const properties = defineProps<{
     balance_seconds: number
     offers: readonly AccountOffer[]
 }>()
@@ -17,12 +17,12 @@ const emit = defineEmits<{
 
 const CONSIDER_DELAY_MS = 200
 
-const cards = computed(() => offer_cards(props.offers, props.balance_seconds))
-let consider_timer: ReturnType<typeof setTimeout> | null = null
-let considered: AccountOffer | null = null
+const cards = computed(() => offer_cards(properties.offers, properties.balance_seconds))
+const consider_timer = shallowRef<ReturnType<typeof setTimeout> | null>(null)
+const considered = shallowRef<AccountOffer | null>(null)
 
 function choose(offer: AccountOffer): void {
-    assert(props.offers.includes(offer))
+    assert(properties.offers.includes(offer))
     assert(offer.hours > 0)
 
     consider_cancel()
@@ -30,33 +30,34 @@ function choose(offer: AccountOffer): void {
 }
 
 function consider_cancel(): void {
-    if (consider_timer !== null) clearTimeout(consider_timer)
+    assert(consider_timer.value === null || considered.value !== null)
+    assert(considered.value === null || considered.value.hours > 0)
 
-    consider_timer = null
-    considered = null
+    if (consider_timer.value !== null) clearTimeout(consider_timer.value)
+
+    consider_timer.value = null
+    considered.value = null
 }
 
 function consider_emit(): void {
-    const offer = considered
+    assert(considered.value !== null)
+    assert(consider_timer.value !== null)
 
-    assert(offer !== null)
-    assert(consider_timer !== null)
+    consider_timer.value = null
 
-    consider_timer = null
-
-    emit('consider', offer)
+    emit('consider', considered.value)
 }
 
 function consider_start(offer: AccountOffer): void {
-    assert(props.offers.includes(offer))
+    assert(properties.offers.includes(offer))
     assert(offer.hours > 0)
 
-    if (considered === offer) return
+    if (considered.value === offer) return
 
     consider_cancel()
 
-    consider_timer = setTimeout(consider_emit, CONSIDER_DELAY_MS)
-    considered = offer
+    consider_timer.value = setTimeout(consider_emit, CONSIDER_DELAY_MS)
+    considered.value = offer
 }
 </script>
 

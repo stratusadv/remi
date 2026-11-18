@@ -8,6 +8,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
+METRIC_DISPATCH_ARGUMENT_COUNT = 4
+
+
 class MetricDispatch(NamedTuple):
     reference: str
     statistic_key: str
@@ -27,6 +30,15 @@ class MetricExecutorFake:
 
     def submit(self, function: Callable[..., None], *arguments: object) -> Future[None]:
         _ = function
+
+        if len(arguments) != METRIC_DISPATCH_ARGUMENT_COUNT:
+            message = (
+                f'a metric dispatch carries {METRIC_DISPATCH_ARGUMENT_COUNT} arguments, '
+                f'not {len(arguments)}'
+            )
+
+            raise ValueError(message)
+
         statistic_key, sub_domain_key, reference, value = arguments
 
         if not isinstance(value, Decimal):

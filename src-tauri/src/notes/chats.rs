@@ -1,4 +1,10 @@
-use super::ask::{AskSource, QUESTION_CHARS_MAX, meeting_load, question_validate};
+use super::ask::{
+    AskSource,
+    QUESTION_CHARS_MAX,
+    citation_marker_is,
+    meeting_load,
+    question_validate,
+};
 use crate::blocking;
 use crate::contract::ChatID;
 use crate::error::{AppError, AppResult};
@@ -74,7 +80,7 @@ impl TryFrom<Vec<ChatExchange>> for ChatExchanges {
 
     fn try_from(exchanges: Vec<ChatExchange>) -> AppResult<Self> {
         if exchanges.is_empty() {
-            return Err(AppError::Config("a chat holds at least one question".into()));
+            return Err(AppError::Internal("a chat holds at least one question".into()));
         }
 
         if exchanges.len() > usize_of!(CHAT_EXCHANGES_MAX) {
@@ -90,7 +96,10 @@ impl TryFrom<Vec<ChatExchange>> for ChatExchanges {
             exchange_validate(exchange)?;
 
             if !ids.insert(&exchange.id) {
-                return Err(AppError::Config(format!("the chat repeats exchange {}", exchange.id)));
+                return Err(AppError::Internal(format!(
+                    "the chat repeats exchange {}",
+                    exchange.id,
+                )));
             }
         }
 
@@ -156,7 +165,7 @@ fn chat_delete(id: &str) -> AppResult<()> {
 }
 
 fn chat_id_refused(id: &str) -> AppError {
-    AppError::Config(format!(
+    AppError::Internal(format!(
         "a chat id is {CHAT_ID_LENGTH} lowercase hex digits and hyphens, not {} bytes of other \
          text",
         id.len(),
@@ -169,13 +178,15 @@ fn chat_load(path: &Path) -> AppResult<ChatStored> {
     let raw = workspace::file_read_bounded(path, CHAT_BYTES_MAX)?;
 
     let chat: ChatStored = serde_json::from_str(&raw).map_err(|error| {
-        AppError::Config(format!("the saved chat {} could not be read: {error}", path.display()))
+        tracing::warn!("the saved chat {} could not be read: {error}", path.display());
+
+        AppError::Config("this saved chat could not be read".into())
     })?;
 
     chat_id_validate(&chat.id)?;
 
     if chat.updated_at_unix_ms <= 0 {
-        return Err(AppError::Config(format!(
+        return Err(AppError::Internal(format!(
             "the saved chat {} carries no time it was last used",
             path.display(),
         )));
@@ -197,7 +208,7 @@ fn chat_open(id: &str) -> AppResult<ChatOpened> {
     let chat = chat_load(&path)?;
 
     if chat.id != id {
-        return Err(AppError::Config(format!("the file of chat {id} holds chat {}", chat.id)));
+        return Err(AppError::Internal(format!("the file of chat {id} holds chat {}", chat.id)));
     }
 
     let meetings = meetings_cited(&chat.exchanges.0);
@@ -340,30 +351,48 @@ fn exchange_validate(exchange: &ChatExchange) -> AppResult<()> {
     assert!(question.len() <= exchange.question.len());
 
     if question.len() != exchange.question.len() {
-        return Err(AppError::Config("a saved question is stored trimmed".into()));
+        return Err(AppError::Internal("a saved question is stored trimmed".into()));
     }
 
     exchange.scope.validate()?;
 
     if exchange.id.is_empty() {
-        return Err(AppError::Config("each question in a chat carries an id".into()));
+        return Err(AppError::Internal("each question in a chat carries an id".into()));
     }
 
     if exchange.id.len() > EXCHANGE_ID_BYTES_MAX {
-        return Err(AppError::Config(format!(
+        return Err(AppError::Internal(format!(
             "a question id is at most {EXCHANGE_ID_BYTES_MAX} bytes",
         )));
     }
 
     if exchange.sources.len() > usize_of!(EXCERPTS_WHOLE_MAX) {
-        return Err(AppError::Config(format!(
+        return Err(AppError::Internal(format!(
             "an answer cites at most {EXCERPTS_WHOLE_MAX} passages",
         )));
     }
 
+    let mut markers: BTreeSet<&str> = BTreeSet::new();
+
     for source in &exchange.sources {
+        let marker = source.marker();
+
+        if !citation_marker_is(marker) {
+            return Err(AppError::Internal(format!(
+                "a cited passage is marked {marker:?} rather than M and a number",
+            )));
+        }
+
+        if !markers.insert(marker) {
+            return Err(AppError::Internal(format!(
+                "an answer cites marker {marker} more than once",
+            )));
+        }
+
         workspace::job_id_validate(source.job_id())?;
     }
+
+    assert_eq!(markers.len(), exchange.sources.len());
 
     Ok(())
 }
@@ -454,6 +483,23 @@ mod tests {
         .unwrap();
 
         assert_eq!(built.sources.len(), job_ids.len());
+
+        built
+    }
+
+    fn exchange_marked(question: &str, markers: &[&str]) -> ChatExchange {
+        assert!(markers.len() <= usize_of!(EXCERPTS_WHOLE_MAX));
+
+        let job_ids = vec![JOB_KEPT; markers.len()];
+        let mut raw = json!(exchange(question, &job_ids));
+
+        for (index, marker) in markers.iter().enumerate() {
+            raw["sources"][index]["marker"] = json!(marker);
+        }
+
+        let built: ChatExchange = serde_json::from_value(raw).unwrap();
+
+        assert_eq!(built.sources.len(), markers.len());
 
         built
     }
@@ -584,6 +630,27 @@ mod tests {
     }
 
     #[test]
+    fn a_chat_whose_answer_repeats_a_citation_marker_is_refused_on_arrival() {
+        let repeated = vec![exchange_marked("Twice?", &["M1", "M2", "M1"])];
+        let distinct = vec![exchange_marked("Distinct?", &["M1", "M2", "M10"])];
+        let error = serde_json::from_value::<ChatExchanges>(json!(repeated)).unwrap_err();
+        let parsed: ChatExchanges = serde_json::from_value(json!(distinct)).unwrap();
+
+        assert!(error.to_string().contains("cites marker M1 more than once"), "{error}");
+        assert_eq!(parsed.0, distinct);
+    }
+
+    #[test]
+    fn a_chat_whose_answer_carries_a_malformed_citation_marker_is_refused_on_arrival() {
+        for marker in ["", "X1", "M", "M1a"] {
+            let malformed = vec![exchange_marked("Malformed?", &[marker])];
+            let error = serde_json::from_value::<ChatExchanges>(json!(malformed)).unwrap_err();
+
+            assert!(error.to_string().contains("rather than M and a number"), "{error}");
+        }
+    }
+
+    #[test]
     fn a_saved_chat_edited_out_of_shape_is_left_out_and_will_not_open() {
         let _root = root_scoped();
         let kept = exchanges_of(vec![exchange("Kept?", &[])]);
@@ -599,7 +666,7 @@ mod tests {
         let error = chat_open(CHAT_SECOND).unwrap_err();
 
         assert_eq!(titles(&summaries), ["Kept?"]);
-        assert!(error.to_string().contains("at least one question"), "{error}");
+        assert_eq!(error.to_string(), "config error: this saved chat could not be read");
     }
 
     #[test]

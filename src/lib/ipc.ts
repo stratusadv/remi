@@ -1,10 +1,12 @@
-import { invoke } from '@tauri-apps/api/core'
+import { invoke as tauri_invoke } from '@tauri-apps/api/core'
+import { shallowRef } from 'vue'
 import { assert } from './assert'
+import { IPCError, error_text_extract } from './errors'
+import { log_warn } from './log'
+import { region_is_known } from './regions'
 import type { InvokeArgs } from '@tauri-apps/api/core'
 import type {
     APIEndpoint,
-    APIEndpointPurpose,
-    APIKey,
     Account,
     AccountSignUp,
     AccountStatus,
@@ -31,7 +33,6 @@ import type {
     JobSearchHit,
     LineCorrection,
     Markdown,
-    NotesModels,
     NotesTemplate,
     Person,
     PromoCode,
@@ -39,7 +40,7 @@ import type {
     SearchStatus,
     SecondsEnd,
     SecondsStart,
-    ServiceStatus,
+    SegmentRange,
     Settings,
     SignInCode,
     StreamID,
@@ -54,11 +55,39 @@ import type {
 } from '../types'
 
 
+const notes_reply_last = shallowRef<Promise<unknown>>(Promise.resolve())
+
+
+async function invoke<Reply>(command: string, call?: InvokeArgs): Promise<Reply> {
+    assert(command.length > 0)
+    assert(call === undefined || typeof call === 'object')
+
+    return tauri_invoke<Reply>(command, call).catch((error: unknown) => {
+        const raw = error_text_extract(error)
+
+        log_warn(`[ipc] ${command} failed: ${raw}`)
+
+        throw new IPCError({ command, raw })
+    })
+}
+
 async function invoke_void(command: string, call?: InvokeArgs): Promise<void> {
     assert(command.length > 0)
     assert(call === undefined || typeof call === 'object')
 
     return invoke(command, call)
+}
+
+async function notes_invoke<Reply>(command: string, call: InvokeArgs): Promise<Reply> {
+    assert(command.startsWith('notes_'))
+    assert(typeof call === 'object')
+
+    const reply = Promise.allSettled([notes_reply_last.value])
+        .then(async () => invoke<Reply>(command, call))
+
+    notes_reply_last.value = reply
+
+    return reply
 }
 
 function query<Reply>(command: string): () => Promise<Reply> {
@@ -85,6 +114,7 @@ export const ipc = Object.freeze({
     async account_create(sign_up: AccountSignUp): Promise<Account> {
         assert(sign_up.name.trim().length > 0)
         assert(sign_up.email.trim().length > 0)
+        assert(region_is_known(sign_up.region))
 
         return invoke<Account>('account_create', { sign_up })
     },
@@ -208,6 +238,12 @@ export const ipc = Object.freeze({
 
         return invoke<Transcript | null>('job_transcript_load', { job_id, engine_id })
     },
+    async job_transcript_range_find(job_id: JobID, text: string): Promise<SegmentRange | null> {
+        assert(job_id.length > 0)
+        assert(typeof text === 'string')
+
+        return invoke<SegmentRange | null>('job_transcript_range_find', { job_id, text })
+    },
     async job_transcript_save(job_id: JobID, transcript: Transcript): Promise<void> {
         assert(job_id.length > 0)
         assert(Array.isArray(transcript.segments))
@@ -228,7 +264,7 @@ export const ipc = Object.freeze({
     },
     async markdown_render_html(markdown: Markdown): Promise<string> {
         assert(typeof markdown === 'string')
-        assert(markdown.length >= 0)
+        assert(markdown.length > 0)
 
         return invoke<string>('markdown_render_html', { markdown })
     },
@@ -258,7 +294,7 @@ export const ipc = Object.freeze({
         assert(job_id.length > 0)
         assert(target_path.length > 0)
 
-        return invoke<string>('notes_export', { job_id, target_path })
+        return notes_invoke<string>('notes_export', { job_id, target_path })
     },
     async notes_generate_remote_streaming(
         stream_id: StreamID,
@@ -285,20 +321,19 @@ export const ipc = Object.freeze({
         assert(typeof job_id === 'string')
         assert(job_id.length > 0)
 
-        return invoke<string | null>('notes_load', { job_id })
+        return notes_invoke<string | null>('notes_load', { job_id })
     },
-    notes_models_list: query<NotesModels>('notes_models_list'),
     async notes_print(job_id: JobID): Promise<void> {
         assert(typeof job_id === 'string')
         assert(job_id.length > 0)
 
-        return invoke_void('notes_print', { job_id })
+        return notes_invoke('notes_print', { job_id })
     },
     async notes_save(job_id: JobID, markdown: Markdown): Promise<void> {
         assert(job_id.length > 0)
         assert(typeof markdown === 'string')
 
-        return invoke_void('notes_save', { job_id, markdown })
+        return notes_invoke('notes_save', { job_id, markdown })
     },
     async notes_template_delete(id: TemplateID): Promise<void> {
         assert(typeof id === 'string')
@@ -370,13 +405,6 @@ export const ipc = Object.freeze({
     recordings_directory_default: query<string>('recordings_directory_default'),
     search_status: query<SearchStatus>('search_status'),
     search_vectors_refresh: query<undefined>('search_vectors_refresh'),
-    async service_api_key_set(purpose: APIEndpointPurpose, api_key: APIKey): Promise<void> {
-        assert(purpose.length > 0)
-        assert(typeof api_key === 'string')
-
-        return invoke_void('service_api_key_set', { purpose, api_key })
-    },
-    service_status: query<ServiceStatus>('service_status'),
     settings_get: query<Settings>('settings_get'),
     async settings_update(settings: Settings): Promise<void> {
         assert(typeof settings === 'object')

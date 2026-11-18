@@ -1,8 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-const BUILTIN_VARIABLE_NAMES: [&str; 4] =
-    ["REMI_ACCOUNT_HOST", "REMI_API_HOST", "REMI_API_KEY_NOTES", "REMI_API_KEY_TRANSCRIPTION"];
+const BUILTIN_VARIABLE_NAMES: [&str; 1] = ["REMI_ACCOUNT_HOST"];
 
 const UPDATER_PLACEHOLDER: &str = "REPLACE_WITH_";
 const WINDOWS_MANIFEST_FILE: &str = "windows-app-manifest.xml";

@@ -11,6 +11,7 @@ from app.account.admin import ACCOUNT_ACTION_COUNT_MAX
 from app.account.constants import TOPUP_BALANCE_SECONDS
 from app.account.ledger.models import AccountLedgerEntry
 from app.account.models import Account
+from app.account.payment.tests.factories import create_test_payment
 from app.account.tests.factories import create_test_account
 from app.promo_code.models import PromoCode
 from app.promo_code.tests.factories import create_test_promo_code
@@ -44,6 +45,8 @@ def test_account_code_issue_needs_the_change_permission(
     client: Client,
     django_user_model: type[User],
 ) -> None:
+    assert django_user_model.USERNAME_FIELD == 'username'
+
     account_create(client)
 
     account = Account.objects.get()
@@ -74,9 +77,10 @@ def test_account_code_issue_refuses_more_than_one_account(admin_client: Client) 
     data = {'action': 'code_issue', '_selected_action': selected}
     response = admin_client.post(url, data, follow=True)
     notices = [str(notice) for notice in response.context['messages']]
+    email = account_get(admin_client, token)['email']
 
     assert notices == ['Select exactly one account.']
-    assert account_get(admin_client, token)['email'] == 'avery@example.com'
+    assert email == 'avery@example.com'
 
 
 def test_account_code_issued_in_the_admin_replaces_the_old_one(admin_client: Client) -> None:
@@ -90,18 +94,22 @@ def test_account_code_issued_in_the_admin_replaces_the_old_one(admin_client: Cli
     code = notices[0].split(' is now ')[1].split('. ')[0]
     headers = {'Authorization': f'Bearer {token}'}
     stale = admin_client.get(ACCOUNT_PATH, headers=headers)
+    email = account_get(admin_client, code)['email']
+    email_other = account_get(admin_client, other)['email']
 
     assert len(notices) == 1
     assert code != token
-    assert account_get(admin_client, code)['email'] == 'avery@example.com'
+    assert email == 'avery@example.com'
     assert stale.status_code == 401
-    assert account_get(admin_client, other)['email'] == 'morgan@example.com'
+    assert email_other == 'morgan@example.com'
 
 
 def test_account_complimentary_actions_need_the_change_permission(
     client: Client,
     django_user_model: type[User],
 ) -> None:
+    assert django_user_model.USERNAME_FIELD == 'username'
+
     account = create_test_account()
     viewer = django_user_model.objects.create_user(username='viewer', is_staff=True)
     permission = Permission.objects.get(codename='view_account', content_type__app_label='account')
@@ -150,13 +158,15 @@ def test_account_complimentary_start_flags_and_tops_up_each_selected_account(
     response = admin_client.post(url, data, follow=True)
     notices = [str(notice) for notice in response.context['messages']]
     notice = 'The selected accounts are complimentary, topped up to 1,000 hours.'
-    grant = empty.ledger_entries.grants().get()
 
     assert notices == [notice]
     assert Account.objects.complimentary().count() == 2
     assert empty.ledger_entries.balance_seconds() == TOPUP_BALANCE_SECONDS
     assert full.ledger_entries.balance_seconds() == TOPUP_BALANCE_SECONDS
     assert not full.ledger_entries.grants().exists()
+
+    grant = empty.ledger_entries.grants().get()
+
     assert grant.reference.startswith('topup:admin:')
 
 
@@ -184,6 +194,7 @@ def test_admin_pages_render_for_each_model(admin_client: Client) -> None:
 
     account = Account.objects.get()
     entry = AccountLedgerEntry.objects.get()
+    payment = create_test_payment(account)
 
     urls = [
         reverse(ACCOUNT_CHANGELIST),
@@ -191,13 +202,17 @@ def test_admin_pages_render_for_each_model(admin_client: Client) -> None:
         reverse('admin:account_account_change', args=[account.pk]),
         reverse('admin:account_ledger_accountledgerentry_changelist'),
         reverse('admin:account_ledger_accountledgerentry_change', args=[entry.pk]),
+        reverse('admin:account_payment_accountpayment_changelist'),
+        reverse('admin:account_payment_accountpayment_change', args=[payment.pk]),
         reverse('admin:promo_code_promocode_add'),
         reverse('admin:promo_code_promocode_change', args=[promo.pk]),
         reverse('admin:promo_code_promocode_changelist'),
     ]
 
     for url in urls:
-        assert admin_client.get(url).status_code == 200, url
+        response = admin_client.get(url)
+
+        assert response.status_code == 200, url
 
     changelist = admin_client.get(reverse(ACCOUNT_CHANGELIST))
 

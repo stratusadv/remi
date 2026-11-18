@@ -20,7 +20,13 @@ package = false
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "system.testing.settings"
+addopts = "-m 'not simulation and not system'"
 norecursedirs = [".*", ".venv", "static"]
+
+markers = [
+    "simulation: a seeded simulation of the server checked against its reference model",
+    "system: a test against live local processes, the server, the portal, and their fakes",
+]
 
 [dependency-groups]
 dev = [
@@ -30,5 +36,6 @@ dev = [
     "pytest-xdist>=3.8.0",
     "python-dotenv>=1.2.1",
     "ruff>=0.17.4",
+    "time-machine>=3.6.0",
     "ty>=0.0.100",
 ]

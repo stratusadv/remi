@@ -38,10 +38,10 @@ def account_create(request: HttpRequest, payload: AccountCreateSchema) -> Status
         email=payload.email,
         name=payload.name,
         promo_code=payload.promo_code,
+        region=payload.region,
     )
 
     created = {'account': account, 'token': token}
-
     return Status(STATUS_CREATED, created)
 
 
@@ -88,7 +88,6 @@ def account_checkout_finish(
         raise TypeError(message)
 
     paid = request.auth.services.checkout.session_finish(payload.session_id)
-
     return {'account': request.auth, 'paid': paid}
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing_extensions import TYPE_CHECKING, Self
 
-from django.db.models import Exists, OuterRef
+from django.db.models import Count
 
 from app.account.constants import ACCOUNT_EMAIL_LENGTH_MAX
 from app.core.querysets import BaseQuerySet
@@ -48,8 +48,7 @@ class PromoCodeQuerySet(BaseQuerySet['PromoCode']):
         return self.filter(downloaded_datetime__isnull=True)
 
     def unredeemed(self) -> Self:
-        from app.account.ledger.models import AccountLedgerEntry
+        return self.filter(redemption__isnull=True)
 
-        redemptions = AccountLedgerEntry.objects.promos().filter(reference=OuterRef('code'))
-
-        return self.exclude(Exists(redemptions))
+    def with_redemption_count(self) -> Self:
+        return self.annotate(redemption_count=Count('redemption'))

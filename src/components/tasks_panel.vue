@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import { use_batch_transcribe } from '../composables/use_batch_transcribe'
 import { use_context_menu } from '../composables/use_context_menu'
 import { use_pipeline } from '../composables/use_pipeline'
@@ -9,6 +9,7 @@ import { seconds_to_clock, unix_now } from '../lib/duration'
 import { error_dialog_show } from '../lib/errors'
 import { ipc } from '../lib/ipc'
 import { MENU_ITEM_OPEN_MEETING } from '../lib/menu'
+import NoticeBanner from './notice_banner.vue'
 import type { View } from '../composables/use_pipeline'
 import type { Task } from '../composables/use_tasks'
 import type { MenuItem } from '../lib/menu'
@@ -16,8 +17,14 @@ import type { MenuItem } from '../lib/menu'
 
 const TICK_INTERVAL_MS = 1000
 const MESSAGE_JOB_GONE = 'That recording is no longer saved on this computer.'
-const MENU_ITEM_CANCEL: MenuItem = { id: 'cancel', label: 'Cancel', icon: 'close' }
-const MENU_ITEM_DISMISS: MenuItem = { id: 'dismiss', label: 'Dismiss', icon: 'close' }
+const MENU_ITEM_CANCEL = Object.freeze<MenuItem>({ id: 'cancel', label: 'Cancel', icon: 'close' })
+
+const MENU_ITEM_DISMISS = Object.freeze<MenuItem>({
+    id: 'dismiss',
+    label: 'Dismiss',
+    icon: 'close',
+})
+
 const { open: context_menu_open } = use_context_menu()
 const { tasks, task_dismiss, task_cancel, tasks_clear_finished } = use_tasks()
 const { job_open, job_open_busy } = use_pipeline()
@@ -25,7 +32,7 @@ const { job_open, job_open_busy } = use_pipeline()
 const {
     pending_count: batch_pending,
     error_message_last: batch_error,
-    entries_clear_finished: batch_clear,
+    error_dismiss: batch_error_dismiss,
 } = use_batch_transcribe()
 
 const tasks_newest_first = computed(() =>
@@ -33,58 +40,75 @@ const tasks_newest_first = computed(() =>
 
 const has_finished = computed(() => tasks.value.some((task) => task.status !== 'running'))
 const now_unix = ref(unix_now())
-let ticker_id: ReturnType<typeof setInterval> | null = null
+const ticker_id = shallowRef<ReturnType<typeof setInterval> | null>(null)
 
 
 onMounted(() => {
-    ticker_id = setInterval(() => {
-        now_unix.value = unix_now()
-    }, TICK_INTERVAL_MS)
+    ticker_id.value = setInterval(now_tick, TICK_INTERVAL_MS)
 })
 
 onUnmounted(() => {
-    if (ticker_id !== null) {
-        clearInterval(ticker_id)
-        ticker_id = null
+    if (ticker_id.value !== null) {
+        clearInterval(ticker_id.value)
+        ticker_id.value = null
     }
 })
 
 function duration_label(task: Task): string {
+    assert(Number.isSafeInteger(task.started_at_unix))
+    assert((task.finished_at_unix === null) === (task.status === 'running'))
+
     const end = task.finished_at_unix ?? now_unix.value
 
     return seconds_to_clock(Math.max(0, end - task.started_at_unix))
 }
 
 function job_open_available(task: Task): boolean {
+    assert(task.id.length > 0)
+    assert(task.job_id === null || task.job_id.length > 0)
+
     if (task.status !== 'succeeded') return false
 
     return task.job_id !== null
 }
 
 async function job_open_from_task(task: Task): Promise<void> {
+    assert(task.id.length > 0)
+    assert(task.status === 'succeeded')
+
     const job_id = task.job_id
 
     if (job_id === null) return
 
-    try {
-        const meta = await ipc.job_meta_get(job_id)
+    return ipc.job_meta_get(job_id)
+        .then(async (meta) => {
+            if (meta === null) throw new Error(MESSAGE_JOB_GONE)
 
-        if (meta === null) throw new Error(MESSAGE_JOB_GONE)
-
-        await job_open(meta, job_open_view(task))
-    } catch (error) {
-        await error_dialog_show(error)
-    }
+            await job_open(meta, job_open_view(task))
+        })
+        .catch(error_dialog_show)
 }
 
 function job_open_view(task: Task): View {
+    assert(task.id.length > 0)
+    assert(task.status === 'succeeded')
+
     switch (task.kind) {
         case 'transcribe': return 'details'
         case 'generate': return 'notes'
     }
 }
 
+function now_tick(): void {
+    assert(ticker_id.value !== null)
+
+    now_unix.value = unix_now()
+}
+
 function status_text(task: Task): string {
+    assert(task.id.length > 0)
+    assert((task.status === 'failed') === (task.error_message !== null))
+
     if (task.status === 'running') {
         const verb = task.kind === 'transcribe' ? 'Transcribing' : 'Generating notes'
 
@@ -101,6 +125,9 @@ function status_text(task: Task): string {
 }
 
 function task_action(task: Task): void {
+    assert(task.id.length > 0)
+    assert(task_action_available(task))
+
     if (task.status === 'running') {
         void task_cancel(task.id)
 
@@ -111,6 +138,9 @@ function task_action(task: Task): void {
 }
 
 function task_action_available(task: Task): boolean {
+    assert(task.id.length > 0)
+    assert(task.stream_id === null || task.stream_id.length > 0)
+
     if (task.status === 'running') return task.stream_id !== null
 
     return true
@@ -124,10 +154,15 @@ function task_context_menu(event: MouseEvent, task: Task): void {
 }
 
 function task_menu_items(task: Task): MenuItem[] {
+    assert(task.id.length > 0)
+
     const items: MenuItem[] = []
     const action = task.status === 'running' ? MENU_ITEM_CANCEL : MENU_ITEM_DISMISS
 
-    if (job_open_available(task) && !job_open_busy.value) items.push(MENU_ITEM_OPEN_MEETING)
+    if (job_open_available(task)) {
+        if (!job_open_busy.value) items.push(MENU_ITEM_OPEN_MEETING)
+    }
+
     if (task_action_available(task)) items.push(action)
 
     assert(items.length <= 2)
@@ -137,6 +172,7 @@ function task_menu_items(task: Task): MenuItem[] {
 
 async function task_menu_select(task: Task, id: string): Promise<void> {
     assert(task.id.length > 0)
+    assert(id !== MENU_ITEM_OPEN_MEETING.id || job_open_available(task))
 
     if (id === MENU_ITEM_OPEN_MEETING.id) return job_open_from_task(task)
     if (id === MENU_ITEM_CANCEL.id) return task_cancel(task.id)
@@ -161,10 +197,13 @@ async function task_menu_select(task: Task, id: string): Promise<void> {
         <p v-if="batch_pending > 0" class="sidebar-tasks-note">
             {{ batch_pending }} waiting
         </p>
-        <p v-if="batch_error" class="sidebar-tasks-note error">
+        <NoticeBanner
+            v-if="batch_error"
+            class="sidebar-tasks-error"
+            @dismiss="batch_error_dismiss"
+        >
             {{ batch_error }}
-            <button type="button" @click="batch_clear">Dismiss</button>
-        </p>
+        </NoticeBanner>
         <ul class="sidebar-tasks-list">
             <li
                 v-for="task in tasks_newest_first"

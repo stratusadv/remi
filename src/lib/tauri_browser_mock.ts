@@ -1,9 +1,9 @@
 import { assert } from './assert'
-import { folder_key } from './folders'
+import { JOBS_MAX, folder_key } from './folders'
 import { log_information, log_warn } from './log'
+import { region_is_known } from './regions'
 import type {
     APIEndpoint,
-    APIEndpointPurpose,
     Account,
     AccountOffer,
     AccountStatus,
@@ -32,7 +32,7 @@ import type {
     Person,
     RecordID,
     SearchStatus,
-    ServiceStatus,
+    SegmentRange,
     Settings,
     StreamID,
     Transcript,
@@ -69,7 +69,6 @@ interface MockStore {
     checkouts_started: Map<string, number>
     promos_redeemed: Set<string>
     settings: Settings
-    service_api_keys: Record<APIEndpointPurpose, string>
     endpoints: APIEndpoint[]
     notes_templates: NotesTemplate[]
     people: Person[]
@@ -135,11 +134,11 @@ const ASK_WORD_CHARS_MIN = 3
 const CHECKOUT_PUBLISHABLE_KEY = 'pk_test_mock'
 const CHECKOUT_SESSION_PREFIX = 'cs_test_mock'
 const CHUNK_DELAY_MS = 45
-const COMMAND_FAMILY_CHAT = /^chats?_/
-const COMMAND_FAMILY_FOLDER = /^folders?_/
-const COMMAND_FAMILY_JOB = /^(?:job|transcript)/
-const COMMAND_FAMILY_NOTES = /^(?:markdown|notes)_/
-const COMMAND_FAMILY_PEOPLE = /^(?:group|people|person)/
+const COMMAND_FAMILY_CHAT = /^chats?_/u
+const COMMAND_FAMILY_FOLDER = /^folders?_/u
+const COMMAND_FAMILY_JOB = /^(?:job|transcript)/u
+const COMMAND_FAMILY_NOTES = /^(?:markdown|notes)_/u
+const COMMAND_FAMILY_PEOPLE = /^(?:group|people|person)/u
 const COMMAND_PREFIX_ACCOUNT = 'account_'
 const DURATION_SECONDS_SAMPLE = 144
 const ENDPOINT_ID_NOTES = 'builtin-notes'
@@ -151,7 +150,6 @@ const JOB_ID_SAMPLE_SECOND = '47ead100cc5cd956aa10b3c4d5e6f708'
 const KEY_LENGTH_MAX = 64
 const RECORDING_PATH_SAMPLE = 'C:\\Users\\mock\\Music\\remi\\Recording mock.wav'
 const RECORDINGS_DIRECTORY_SAMPLE = 'C:\\Users\\mock\\Music\\remi'
-const SEARCH_MODEL_DEFAULT = 'stratus.embed'
 const SECONDS_PER_HOUR = 3600
 const SECONDS_PER_LINE = 18
 const SECONDS_PER_MINUTE = 60
@@ -196,32 +194,26 @@ const NOTES_SAMPLE_LINES = Object.freeze([
 
 const NOTES_SAMPLE = NOTES_SAMPLE_LINES.join('\n')
 
-const REPLIES_FIXED: ReadonlyMap<string, unknown> = new Map<string, unknown>([
-    ['desktop_export_open', null],
-    ['desktop_notification_show', null],
-    ['job_audio_clip_get', null],
-    ['job_audio_path_get', null],
-    [
-        'notes_models_list',
-        {
-            models: ['stratus.qwen3827b', 'stratus.thinking', 'stratus.turbo'],
-            model_default: 'stratus.thinking',
-        },
-    ],
-    ['plugin:app|identifier', 'com.stratusadv.remi'],
-    ['plugin:app|name', 'remi'],
-    ['plugin:app|tauri_version', '2.11.0'],
-    ['plugin:app|version', '0.1.0-browser-mock'],
-    ['plugin:dialog|save', '/home/you/Documents/notes.docx'],
-    ['plugin:path|resolve_directory', '/home/you/Documents'],
-    ['plugin:updater|check', null],
-    ['recording_append', null],
-    ['recording_discard', null],
-    ['recording_finish', RECORDING_PATH_SAMPLE],
-    ['recording_start', RECORDING_PATH_SAMPLE],
-    ['recordings_directory_default', RECORDINGS_DIRECTORY_SAMPLE],
-    ['window_resize_rendered', null],
-])
+const REPLIES_FIXED: Readonly<Record<string, unknown>> = Object.freeze({
+    desktop_export_open: null,
+    desktop_notification_show: null,
+    job_audio_clip_get: null,
+    job_audio_path_get: null,
+    log_write: null,
+    'plugin:app|identifier': 'com.stratusadv.remi',
+    'plugin:app|name': 'remi',
+    'plugin:app|tauri_version': '2.11.0',
+    'plugin:app|version': '0.1.0-browser-mock',
+    'plugin:dialog|save': '/home/you/Documents/notes.docx',
+    'plugin:path|resolve_directory': '/home/you/Documents',
+    'plugin:updater|check': null,
+    recording_append: null,
+    recording_discard: null,
+    recording_finish: RECORDING_PATH_SAMPLE,
+    recording_start: RECORDING_PATH_SAMPLE,
+    recordings_directory_default: RECORDINGS_DIRECTORY_SAMPLE,
+    window_resize_rendered: null,
+})
 
 const SEED_ENDPOINTS: readonly APIEndpoint[] = Object.freeze([
     {
@@ -362,15 +354,11 @@ const SEED_PEOPLE: readonly Person[] = Object.freeze([
 
 const SEED_SETTINGS: Readonly<Settings> = Object.freeze({
     notes_template_id_default: 'default-meeting-notes',
-    theme: 'dark',
+    mode: 'dark',
+    theme: null,
     palette: null,
     recordings_directory: null,
-    notes_model: null,
-    notes_thinking: null,
-    api_host: null,
     jobs_view: null,
-    embeddings_host: null,
-    embeddings_model: null,
 })
 
 const store = store_new()
@@ -479,8 +467,10 @@ function account_create(call: CommandCall): Account {
     const name = text_field(sign_up, 'name').trim()
     const email = text_field(sign_up, 'email').trim()
     const promo_code = text_field(sign_up, 'promo_code').trim()
+    const region = text_field(sign_up, 'region')
 
     if (name === '') throw new Error('api error: Enter a name of 1 to 200 characters.')
+    if (!region_is_known(region)) throw new Error('api error: Choose your province or state.')
     if (!email.includes('@')) throw new Error('api error: Enter a valid email address.')
 
     const claim = { code: promo_code, email }
@@ -664,7 +654,7 @@ function ask_notes_sources(job: JobMeta): AskSourceDraft[] {
     return [
         {
             end_seconds: null,
-            heading: /^## (.+)$/m.exec(notes)?.[1] ?? null,
+            heading: /^## (?<heading>.+)$/mu.exec(notes)?.groups?.['heading'] ?? null,
             job_id: job.id,
             segment_index_first: null,
             segment_index_last: null,
@@ -690,10 +680,10 @@ function ask_snippet(text: string): string {
     assert(typeof text === 'string')
 
     const plain = text
-        .replace(/^\s*#.*$/gm, '')
-        .replace(/^\s*(?:[-+*]|\d+[.)])\s+/gm, '')
-        .replace(/[#*_`>]+/g, '')
-        .replace(/\s+/g, ' ')
+        .replace(/^\s*#.*$/gmu, '')
+        .replace(/^\s*(?:[-+*]|\d+[.)])\s+/gmu, '')
+        .replace(/[#*_`>]+/gu, '')
+        .replace(/\s+/gu, ' ')
         .trim()
 
     if (plain.length <= ASK_SNIPPET_CHARS_MAX) return plain
@@ -708,11 +698,7 @@ function ask_sources_build(
     assert(question.trim().length > 0)
     assert(scope.kind !== 'project' || scope.project.trim().length > 0)
 
-    const words = question
-        .toLowerCase()
-        .split(/[^a-z0-9]+/)
-        .filter((word) => word.length >= ASK_WORD_CHARS_MIN)
-
+    const words = ask_words(question)
     const scoped = ask_jobs_scoped(scope)
 
     const matched = scoped.filter((job) => {
@@ -773,13 +759,7 @@ function ask_transcript_sources(job: JobMeta, words: string[]): AskSourceDraft[]
     assert(words.every((word) => word.length >= ASK_WORD_CHARS_MIN))
 
     const segments = store.transcripts.get(job.id)?.segments ?? []
-
-    const scores = segments.map((segment) => {
-        const text = segment.text.toLowerCase()
-
-        return words.filter((word) => text.includes(word)).length
-    })
-
+    const scores = segment_scores(segments, words)
     const index = scores.indexOf(Math.max(0, ...scores))
     const segment = segments[index]
 
@@ -797,6 +777,19 @@ function ask_transcript_sources(job: JobMeta, words: string[]): AskSourceDraft[]
             start_seconds: segment.start_seconds,
         },
     ]
+}
+
+function ask_words(text: string): string[] {
+    assert(typeof text === 'string')
+
+    const words = text
+        .toLowerCase()
+        .split(/[^a-z0-9]+/u)
+        .filter((word) => word.length >= ASK_WORD_CHARS_MIN)
+
+    assert(words.length <= text.length)
+
+    return words
 }
 
 function callback_transform(callback: EventCallback, once: boolean): number {
@@ -824,11 +817,12 @@ function callback_unregister(id: number): void {
 
 async function chat_opened(id: ChatID): Promise<ChatOpened> {
     assert(id.length > 0)
-    assert(store.chats.size >= 0)
 
     const chat = store.chats.get(id)
 
     if (chat === undefined) return Promise.reject(new Error('config error: this chat was deleted'))
+
+    assert(chat.id === id)
 
     const sources = chat.exchanges.flatMap((exchange) => exchange.sources)
     const ids = new Set(sources.map((source) => source.job_id))
@@ -857,7 +851,7 @@ function chat_updated(chat: ChatStored): number {
 }
 
 function chats_summarized(): ChatSummary[] {
-    assert(store.chats.size >= 0)
+    assert([...store.chats.values()].every((chat) => chat.exchanges.length > 0))
 
     const summaries = [...store.chats.values()]
         .sort((left, right) => right.updated_at_unix_ms - left.updated_at_unix_ms)
@@ -876,7 +870,7 @@ function command_dispatch(command: string, call: CommandCall): unknown {
     assert(command.length > 0)
     assert(typeof call === 'object')
 
-    if (REPLIES_FIXED.has(command)) return REPLIES_FIXED.get(command)
+    if (Object.hasOwn(REPLIES_FIXED, command)) return REPLIES_FIXED[command]
     if (command.startsWith('plugin:')) return commands_plugin(command, call)
     if (command.startsWith(COMMAND_PREFIX_ACCOUNT)) return commands_account(command, call)
     if (COMMAND_FAMILY_CHAT.test(command)) return commands_chat(command, call)
@@ -890,7 +884,7 @@ function command_dispatch(command: string, call: CommandCall): unknown {
 
 function command_unknown(command: string): null {
     assert(command.length > 0)
-    assert(!REPLIES_FIXED.has(command))
+    assert(!Object.hasOwn(REPLIES_FIXED, command))
 
     log_warn(`[remi] browser mock has no handler for "${command}"`)
 
@@ -958,10 +952,6 @@ function commands_core(command: string, call: CommandCall): unknown {
             return search_status()
         case 'search_vectors_refresh':
             return null
-        case 'service_api_key_set':
-            return service_api_key_set(call)
-        case 'service_status':
-            return service_status()
         case 'settings_get':
             return { ...store.settings }
         case 'settings_update':
@@ -1006,6 +996,8 @@ function commands_job(command: string, call: CommandCall): unknown {
             return store.transcripts.has(text_field(call, 'job_id')) ? ['stratus.listen'] : []
         case 'job_transcript_load':
             return store.transcripts.get(text_field(call, 'job_id')) ?? null
+        case 'job_transcript_range_find':
+            return job_transcript_range_find(call)
         case 'job_transcript_save':
             return store.transcripts.set(
                 text_field(call, 'job_id'),
@@ -1146,15 +1138,12 @@ function endpoints_list(): APIEndpoint[] {
     assert(store.endpoints.length > 0)
     assert(store.endpoints.every((endpoint) => endpoint.purpose.length > 0))
 
-    return store.endpoints.map((endpoint) => ({
-        ...endpoint,
-        has_api_key: store.service_api_keys[endpoint.purpose].length > 0,
-    }))
+    return structuredClone(store.endpoints)
 }
 
 function event_emit(name: string, payload: unknown): void {
     assert(name.length > 0)
-    assert(store.listeners.size >= 0)
+    assert(store.listeners.size < store.listener_id_next)
 
     for (const [listener_id, listener] of store.listeners) {
         if (listener.event !== name) continue
@@ -1202,7 +1191,7 @@ function field_of(value: unknown, key: string): unknown {
 
 function file_source_convert(path: string): string {
     assert(typeof path === 'string')
-    assert(path.length >= 0)
+    assert(path.length > 0)
 
     return path
 }
@@ -1216,24 +1205,27 @@ function group_copy(group: Group): Group {
 
 function html_escape(text: string): string {
     assert(typeof text === 'string')
-    assert(text.length >= 0)
 
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
+    const escaped = text
+        .replace(/&/gu, '&amp;')
+        .replace(/</gu, '&lt;')
+        .replace(/>/gu, '&gt;')
+        .replace(/"/gu, '&quot;')
+
+    assert(!/[<>"]/u.test(escaped))
+
+    return escaped
 }
 
 function inline_html_render(text: string): string {
     assert(typeof text === 'string')
-    assert(text.length >= 0)
+    assert(!text.includes('\n'))
 
     return html_escape(text)
-        .replace(/`([^`]+)`/g, '<code>$1</code>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+        .replace(/`(?<code>[^`]+)`/gu, '<code>$<code></code>')
+        .replace(/\*\*(?<strong>[^*]+)\*\*/gu, '<strong>$<strong></strong>')
+        .replace(/(?<lead>^|[^*])\*(?<emphasis>[^*]+)\*/gu, '$<lead><em>$<emphasis></em>')
+        .replace(/\[(?<label>[^\]]+)\]\((?<href>[^)]+)\)/gu, '<a href="$<href>">$<label></a>')
 }
 
 async function invoke_mock(command: string, call?: CommandCall): Promise<unknown> {
@@ -1302,9 +1294,10 @@ function folder_rename(rename: FolderRename): null {
 function job_meta_update(call: CommandCall): JobMeta {
     assert(typeof call === 'object')
 
-    const job = job_find(text_field(call, 'job_id'))
+    const job_id = text_field(call, 'job_id')
+    const job = job_find(job_id)
 
-    if (job === null) throw new Error('job not found')
+    if (job === null) throw new Error(`config error: recording ${job_id} was deleted`)
 
     const patch = { ...record_field(call, 'patch') }
 
@@ -1316,6 +1309,22 @@ function job_meta_update(call: CommandCall): JobMeta {
     assert(job.id.length > 0)
 
     return { ...job }
+}
+
+function job_transcript_range_find(call: CommandCall): SegmentRange | null {
+    assert(typeof call === 'object')
+
+    const segments = store.transcripts.get(text_field(call, 'job_id'))?.segments ?? []
+    const scores = segment_scores(segments, ask_words(text_field(call, 'text')))
+    const best = Math.max(0, ...scores)
+
+    assert(scores.length === segments.length)
+
+    if (best === 0) return null
+
+    const index = scores.indexOf(best)
+
+    return { segment_index_first: index, segment_index_last: index }
 }
 
 function job_waveform(call: CommandCall): Waveform | null {
@@ -1334,7 +1343,7 @@ function job_waveform(call: CommandCall): Waveform | null {
 
 function jobs_list(): JobListing[] {
     assert(Array.isArray(store.jobs))
-    assert(store.transcripts.size >= 0)
+    assert(store.jobs.length <= JOBS_MAX)
 
     return store.jobs.map((job) => {
         const imported = job.source_path === SOURCE_PATH_IMPORTED
@@ -1453,7 +1462,7 @@ function markdown_html_render(markdown: Markdown): string {
 
     if (code_open) html.push('</code></pre>')
 
-    assert(html.length >= 0)
+    assert((html.length > 0) === (markdown.trim().length > 0))
 
     return html.join('\n')
 }
@@ -1467,17 +1476,17 @@ function markdown_line_render(
     assert(typeof line === 'string')
     assert(list_open === null || list_open.length > 0)
 
-    const heading = /^(#{1,6})\s+(.*)$/.exec(line)
-    const bullet = /^\s*[-*]\s+(.*)$/.exec(line)
-    const numbered = /^\s*\d+\.\s+(.*)$/.exec(line)
-    const quote = /^>\s?(.*)$/.exec(line)
+    const heading = /^(?<opening>#{1,6})\s+(?<text>.*)$/u.exec(line)
+    const bullet = /^\s*[-*]\s+(?<text>.*)$/u.exec(line)
+    const numbered = /^\s*\d+\.\s+(?<text>.*)$/u.exec(line)
+    const quote = /^>\s?(?<text>.*)$/u.exec(line)
 
     if (heading !== null) {
-        const level = String((heading[1] ?? '#').length)
+        const level = String((heading.groups?.['opening'] ?? '#').length)
 
         list_close(html, list_open)
 
-        html.push(`<h${level}>${inline_html_render(heading[2] ?? '')}</h${level}>`)
+        html.push(`<h${level}>${inline_html_render(heading.groups?.['text'] ?? '')}</h${level}>`)
 
         return null
     }
@@ -1485,7 +1494,7 @@ function markdown_line_render(
     if (bullet !== null) {
         const list = list_open_ensure(html, list_open, 'ul')
 
-        html.push(`<li>${inline_html_render(bullet[1] ?? '')}</li>`)
+        html.push(`<li>${inline_html_render(bullet.groups?.['text'] ?? '')}</li>`)
 
         return list
     }
@@ -1493,7 +1502,7 @@ function markdown_line_render(
     if (numbered !== null) {
         const list = list_open_ensure(html, list_open, 'ol')
 
-        html.push(`<li>${inline_html_render(numbered[1] ?? '')}</li>`)
+        html.push(`<li>${inline_html_render(numbered.groups?.['text'] ?? '')}</li>`)
 
         return list
     }
@@ -1501,14 +1510,14 @@ function markdown_line_render(
     list_close(html, list_open)
 
     if (quote !== null) {
-        html.push(`<blockquote>${inline_html_render(quote[1] ?? '')}</blockquote>`)
+        html.push(`<blockquote>${inline_html_render(quote.groups?.['text'] ?? '')}</blockquote>`)
 
         return null
     }
 
     if (line.trim().length === 0) return null
 
-    if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) {
+    if (/^\s*(?:-{3,}|\*{3,})\s*$/u.test(line)) {
         html.push('<hr/>')
 
         return null
@@ -1602,73 +1611,13 @@ function record_upsert<Item extends Identified>(items: Item[], item: Item): null
     return null
 }
 
-function search_model_of(saved: string | null): string | null {
-    assert(saved === null || saved.trim() === saved)
-    assert(SEARCH_MODEL_DEFAULT.length > 0)
-
-    if (saved === null) return SEARCH_MODEL_DEFAULT
-    if (saved === '') return null
-
-    return saved
-}
-
 function search_status(): SearchStatus {
-    const model = search_model_of(store.settings.embeddings_model)
     const passages = store.transcripts.size
 
-    assert(model === null || model.length > 0)
+    assert(Number.isSafeInteger(passages))
     assert(passages >= 0)
 
-    return {
-        error: null,
-        model,
-        model_default: SEARCH_MODEL_DEFAULT,
-        passages,
-        passages_embedded: model === null ? 0 : passages,
-    }
-}
-
-function service_api_key_set(call: CommandCall): null {
-    assert(typeof call === 'object')
-
-    const purpose = text_field(call, 'purpose')
-
-    assert(purpose === 'notes' || purpose === 'transcription')
-
-    store.service_api_keys[purpose] = text_field(call, 'api_key').trim()
-
-    return null
-}
-
-function service_api_keys_seed(): Record<APIEndpointPurpose, string> {
-    assert(typeof window === 'object')
-
-    const run_first = new URLSearchParams(window.location.search).has('first-run')
-
-    assert(typeof run_first === 'boolean')
-
-    if (run_first) return { notes: '', transcription: '' }
-
-    return { notes: 'mock-key', transcription: 'mock-key' }
-}
-
-function service_status(): ServiceStatus {
-    assert(typeof store.service_api_keys.notes === 'string')
-    assert(typeof store.service_api_keys.transcription === 'string')
-
-    return {
-        host: { builtin: true, user: store.settings.api_host !== null },
-        notes: {
-            builtin: false,
-            length: store.service_api_keys.notes.length,
-            user: store.service_api_keys.notes.length > 0,
-        },
-        transcription: {
-            builtin: false,
-            length: store.service_api_keys.transcription.length,
-            user: store.service_api_keys.transcription.length > 0,
-        },
-    }
+    return { error: null, passages, passages_embedded: passages }
 }
 
 async function sleep(milliseconds: number): Promise<void> {
@@ -1692,6 +1641,21 @@ function scope_field(value: unknown): AskScope {
     return { kind }
 }
 
+function segment_scores(segments: readonly Segment[], words: readonly string[]): number[] {
+    assert(segments.every((segment) => typeof segment.text === 'string'))
+    assert(words.every((word) => word.length >= ASK_WORD_CHARS_MIN))
+
+    const scores = segments.map((segment) => {
+        const text = segment.text.toLowerCase()
+
+        return words.filter((word) => text.includes(word)).length
+    })
+
+    assert(scores.every((score) => score <= words.length))
+
+    return scores
+}
+
 function snippet_around(text: string, position: number): string {
     assert(position >= 0)
     assert(position <= text.length)
@@ -1699,7 +1663,7 @@ function snippet_around(text: string, position: number): string {
     const start = Math.max(0, position - SNIPPET_CHARS_BEFORE)
     const end = Math.min(text.length, position + SNIPPET_CHARS_AFTER)
     const lead = start > 0 ? '…' : ''
-    const body = text.slice(start, end).replace(/\s+/g, ' ')
+    const body = text.slice(start, end).replace(/\s+/gu, ' ')
     const tail = end < text.length ? '…' : ''
 
     return `${lead}${body}${tail}`
@@ -1717,7 +1681,6 @@ function store_new(): MockStore {
         checkouts_started: new Map<string, number>(),
         promos_redeemed: account_redemptions_seed(),
         settings: { ...SEED_SETTINGS },
-        service_api_keys: service_api_keys_seed(),
         endpoints: [...structuredClone(SEED_ENDPOINTS)],
         notes_templates: [...structuredClone(SEED_NOTES_TEMPLATES)],
         people: [...structuredClone(SEED_PEOPLE)],
@@ -1743,7 +1706,7 @@ async function stream_text_emit(stream_id: StreamID, text: Markdown): Promise<st
 
     void store.streams_cancelled.delete(stream_id)
 
-    const words = text.split(/(\s+)/)
+    const words = text.split(/(?<space>\s+)/u)
 
     const sent = words.reduce(
         async (sent_so_far, word) => {
@@ -1793,7 +1756,7 @@ function strings_field(value: unknown, key: string): string[] {
 
 function template_layout_sample(description: string): Markdown {
     assert(typeof description === 'string')
-    assert(description.length >= 0)
+    assert(description.length > 0)
 
     return [
         '## Summary',
@@ -1818,7 +1781,7 @@ function text_clean(text: string | null): string | null {
 
     const trimmed = text?.trim() ?? ''
 
-    assert(trimmed.length >= 0)
+    assert(trimmed === trimmed.trim())
 
     return trimmed.length > 0 ? trimmed : null
 }
@@ -1866,7 +1829,7 @@ function transcript_import(text: string): TranscriptionResult {
 
     const lines = text.split('\n').filter((line) => line.trim().length > 0)
 
-    assert(lines.length >= 0)
+    assert(lines.length > 0)
 
     return { job_id: JOB_ID_SAMPLE, transcript: transcript_build(lines), cached: false }
 }
@@ -1875,15 +1838,18 @@ async function transcription_remote(call: CommandCall): Promise<TranscriptionRes
     assert(typeof call === 'object')
 
     const stream_id = field_of(call, 'stream_id')
+    const cached = new URLSearchParams(window.location.search).has('transcript-cached')
 
     assert(stream_id === null || typeof stream_id === 'string')
-
-    account_charge(JOB_ID_SAMPLE, DURATION_SECONDS_SAMPLE)
 
     const transcript = store.transcripts.get(JOB_ID_SAMPLE)
         ?? transcript_build(['No sample audio.'])
 
-    const result = { job_id: JOB_ID_SAMPLE, transcript, cached: false }
+    const result = { job_id: JOB_ID_SAMPLE, transcript, cached }
+
+    if (cached) return result
+
+    account_charge(JOB_ID_SAMPLE, DURATION_SECONDS_SAMPLE)
 
     return transcription_stream_emit(stream_id, transcript).then(() => result)
 }

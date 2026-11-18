@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from django_spire.contrib.constructor.service import BaseDjangoModelService
 
-from app.account.constants import ACCOUNT_EMAIL_LENGTH_MAX
+from app.account.constants import ACCOUNT_EMAIL_LENGTH_MAX, ACCOUNT_NAME_LENGTH_MAX
 from app.account.ledger.models import AccountLedgerEntry
 from app.core.exceptions import PromoInvalidError
 from app.funnel.choices import CampaignChoices
@@ -52,7 +52,14 @@ def _code_issue_text(campaign: str) -> str:
 class PromoCodeProcessorService(BaseDjangoModelService['PromoCode']):
     obj: PromoCode
 
-    def _issue_create(self, *, code: str, email: str) -> PromoCode:
+    def _issue_create(
+        self,
+        *,
+        code: str,
+        email: str,
+        name_first: str = '',
+        name_last: str = '',
+    ) -> PromoCode:
         if not 0 < len(code) <= PROMO_CODE_LENGTH_MAX:
             message = f'code must be 1 to {PROMO_CODE_LENGTH_MAX} characters: {code!r}'
             raise ValueError(message)
@@ -61,14 +68,44 @@ class PromoCodeProcessorService(BaseDjangoModelService['PromoCode']):
             message = 'a personal promo code is issued to an email address'
             raise ValueError(message)
 
+        if len(name_first) > ACCOUNT_NAME_LENGTH_MAX:
+            message = (
+                f'name_first has at most {ACCOUNT_NAME_LENGTH_MAX} characters: '
+                f'{len(name_first)}'
+            )
+
+            raise ValueError(message)
+
+        if len(name_last) > ACCOUNT_NAME_LENGTH_MAX:
+            message = (
+                f'name_last has at most {ACCOUNT_NAME_LENGTH_MAX} characters: '
+                f'{len(name_last)}'
+            )
+
+            raise ValueError(message)
+
         personal = self.obj_class()
-        personal.campaign = self.obj.campaign
         personal.code = code
         personal.email = email
-        personal.hours = self.obj.hours
+        personal.name_first = name_first
+        personal.name_last = name_last
         personal.redemptions_max = 1
 
         with transaction.atomic():
+            shared = self._promo_locked()
+            personal.campaign = shared.campaign
+            personal.hours = shared.hours
+
+            if shared.early_codes_issued < shared.early_codes_max:
+                personal.hours = shared.early_hours
+                shared.early_codes_issued += 1
+
+                shared.services.save_model_obj()
+
+            if personal.hours <= 0:
+                message = f'{shared.code} would issue a code worth {personal.hours} hours'
+                raise RuntimeError(message)
+
             personal.services.save_model_obj()
 
         return personal
@@ -106,7 +143,32 @@ class PromoCodeProcessorService(BaseDjangoModelService['PromoCode']):
 
                 promo.services.save_model_obj()
 
-    def issue(self, email: str) -> PromoCode:
+    def early_save(self, *, early_codes_max: int, early_hours: int) -> None:
+        if self.obj.email != '':
+            message = f'only a shared promo code has early terms, not {self.obj.code}'
+            raise ValueError(message)
+
+        if early_codes_max < 0:
+            message = f'early_codes_max must be non-negative: {early_codes_max}'
+            raise ValueError(message)
+
+        if early_hours < 0:
+            message = f'early_hours must be non-negative: {early_hours}'
+            raise ValueError(message)
+
+        if early_codes_max > 0:
+            if early_hours == 0:
+                message = f'early codes need early hours above zero: {early_codes_max} codes'
+                raise ValueError(message)
+
+        with transaction.atomic():
+            promo = self._promo_locked()
+            promo.early_codes_max = early_codes_max
+            promo.early_hours = early_hours
+
+            promo.services.save_model_obj()
+
+    def issue(self, email: str, *, name_first: str = '', name_last: str = '') -> PromoCode:
         if self.obj.pk is None:
             message = f'the promo code must be saved: {self.obj!r}'
             raise ValueError(message)
@@ -119,6 +181,22 @@ class PromoCodeProcessorService(BaseDjangoModelService['PromoCode']):
             message = f'email must be 1 to {ACCOUNT_EMAIL_LENGTH_MAX} characters: {email!r}'
             raise ValueError(message)
 
+        if len(name_first) > ACCOUNT_NAME_LENGTH_MAX:
+            message = (
+                f'name_first has at most {ACCOUNT_NAME_LENGTH_MAX} characters: '
+                f'{len(name_first)}'
+            )
+
+            raise ValueError(message)
+
+        if len(name_last) > ACCOUNT_NAME_LENGTH_MAX:
+            message = (
+                f'name_last has at most {ACCOUNT_NAME_LENGTH_MAX} characters: '
+                f'{len(name_last)}'
+            )
+
+            raise ValueError(message)
+
         issued = self.obj_class.objects.by_campaign(self.obj.campaign).by_email(email)
 
         for _ in range(PROMO_CODE_ISSUE_ATTEMPTS_MAX):
@@ -129,7 +207,13 @@ class PromoCodeProcessorService(BaseDjangoModelService['PromoCode']):
 
             try:
                 code = _code_issue_text(self.obj.campaign)
-                personal = self._issue_create(code=code, email=email)
+
+                personal = self._issue_create(
+                    code=code,
+                    email=email,
+                    name_first=name_first,
+                    name_last=name_last,
+                )
             except IntegrityError:
                 continue
             else:
@@ -161,8 +245,7 @@ class PromoCodeProcessorService(BaseDjangoModelService['PromoCode']):
         if self.obj.is_deleted:
             raise PromoInvalidError(PROMO_CODE_INVALID_MESSAGE)
 
-        promos = AccountLedgerEntry.objects.promos()
-        redemptions = promos.by_reference(self.obj.code)
+        redemptions = self.obj.redemptions.all()
 
         if redemptions.count() >= self.obj.redemptions_max:
             message = 'That promo code has been fully redeemed.'
@@ -173,6 +256,7 @@ class PromoCodeProcessorService(BaseDjangoModelService['PromoCode']):
             raise PromoInvalidError(message)
 
         if self.obj.campaign != CampaignChoices.GENERAL:
+            promos = AccountLedgerEntry.objects.promos()
             redemptions_campaign = promos.by_campaign(self.obj.campaign)
 
             if redemptions_campaign.by_email(account.email).exists():

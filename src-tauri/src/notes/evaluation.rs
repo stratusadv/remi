@@ -131,7 +131,8 @@ async fn answer_of(endpoint: &APIEndpoint, question: &str, now: DateTime<Local>)
     assert_eq!(markers.len(), built.sources.len());
     assert_ne!(answer, "");
 
-    Outcome { cited: markers_cited(&answer), answer, markers }
+    let cited = markers_cited(&answer);
+    Outcome { answer, cited, markers }
 }
 
 pub(super) fn endpoint_manual() -> APIEndpoint {
@@ -149,20 +150,20 @@ pub(super) fn endpoint_manual() -> APIEndpoint {
     assert_ne!(model.trim(), "");
 
     APIEndpoint {
-        id: "manual-notes".to_owned(),
-        name: "Notes".to_owned(),
-        purpose: APIEndpointPurpose::Notes,
-        host,
         api_key,
-        model,
-        temperature: None,
-        output_tokens_max: None,
         api_path_chat: None,
         api_path_transcribe: None,
-        transcribe_verbose: None,
-        transcribe_chunk_seconds: None,
-        reasoning_effort,
         has_api_key,
+        host,
+        id: "manual-notes".to_owned(),
+        model,
+        name: "Notes".to_owned(),
+        output_tokens_max: None,
+        purpose: APIEndpointPurpose::Notes,
+        reasoning_effort,
+        temperature: None,
+        transcribe_chunk_seconds: None,
+        transcribe_verbose: None,
     }
 }
 

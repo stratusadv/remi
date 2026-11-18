@@ -1,5 +1,15 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import {
+    computed,
+    nextTick,
+    onActivated,
+    onDeactivated,
+    onMounted,
+    onUnmounted,
+    ref,
+    useTemplateRef,
+    watch,
+} from 'vue'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { use_ask } from '../composables/use_ask'
 import { use_context_menu } from '../composables/use_context_menu'
@@ -13,7 +23,7 @@ import { log_warn } from '../lib/log'
 import { MENU_ITEM_ASK } from '../lib/menu'
 import type { ComponentPublicInstance } from 'vue'
 import type { MenuItem } from '../lib/menu'
-import type { JobID, SegmentFocus, Transcript, TranscriptSegment } from '../types'
+import type { AudioPath, JobID, SegmentFocus, Transcript, TranscriptSegment } from '../types'
 
 
 interface DisplayRow {
@@ -23,7 +33,7 @@ interface DisplayRow {
     segment_index: number
 }
 
-const props = defineProps<{
+const properties = defineProps<{
     transcript: Transcript | null
     segment_indexes_highlighted?: number[]
 }>()
@@ -32,11 +42,22 @@ const ROWS_RENDER_STEP = 60
 const ROWS_RENDER_THRESHOLD_PX = 200
 const COPIED_FLASH_MS = 1500
 const HIGHLIGHT_NAME = 'transcript-filter'
-const REGEX_ESCAPE = /[.*+?^${}()|[\]\\]/g
-const MENU_ITEM_LINE_COPY: MenuItem = { id: 'line_copy', label: 'Copy line', icon: 'copy' }
-const MENU_ITEM_LINE_EDIT: MenuItem = { id: 'line_edit', label: 'Correct line', icon: 'edit' }
-const MENU_ITEM_PAUSE: MenuItem = { id: 'pause', label: 'Pause', icon: 'pause' }
-const MENU_ITEM_PLAY: MenuItem = { id: 'play', label: 'Play segment', icon: 'play' }
+const REGEX_ESCAPE = /[.*+?^${}()|[\]\\]/gu
+
+const MENU_ITEM_LINE_COPY = Object.freeze<MenuItem>({
+    id: 'line_copy',
+    label: 'Copy line',
+    icon: 'copy',
+})
+
+const MENU_ITEM_LINE_EDIT = Object.freeze<MenuItem>({
+    id: 'line_edit',
+    label: 'Correct line',
+    icon: 'edit',
+})
+
+const MENU_ITEM_PAUSE = Object.freeze<MenuItem>({ id: 'pause', label: 'Pause', icon: 'pause' })
+const MENU_ITEM_PLAY = Object.freeze<MenuItem>({ id: 'play', label: 'Play segment', icon: 'play' })
 const { job_id_current, segment_focus, transcript_segments_text_set } = use_pipeline()
 const { meeting_ask } = use_ask()
 const { open: context_menu_open } = use_context_menu()
@@ -45,18 +66,18 @@ const filter_text = ref('')
 const index_copied = ref<number | null>(null)
 const index_editing = ref<number | null>(null)
 const text_editing = ref('')
-const list_ref = ref<HTMLElement | null>(null)
-const audio_ref = ref<HTMLAudioElement | null>(null)
+const list_element = useTemplateRef<HTMLElement>('list_element')
+const audio_element = useTemplateRef<HTMLAudioElement>('audio_element')
 const audio_path = ref<string | null>(null)
-const audio_src = ref<string | null>(null)
+const audio_source = ref<string | null>(null)
 const audio_checked = ref(false)
 const playback_index = ref<number | null>(null)
 const rows_render_limit = ref(ROWS_RENDER_STEP)
 
 const rows = computed<DisplayRow[]>(() => {
-    if (props.transcript === null) return []
+    if (properties.transcript === null) return []
 
-    return props.transcript.segments
+    return properties.transcript.segments
         .map((segment: TranscriptSegment, segment_index: number) => ({
             text: segment.text.trim(),
             start_seconds: segment.start_seconds,
@@ -71,11 +92,11 @@ const filter_regex = computed<RegExp | null>(() => {
 
     if (needle.length === 0) return null
 
-    return new RegExp(needle.replace(REGEX_ESCAPE, '\\$&'), 'i')
+    return new RegExp(needle.replace(REGEX_ESCAPE, '\\$&'), 'iu')
 })
 
 const timing_present = computed(
-    () => props.transcript?.segments.some((segment) => segment.end_seconds > 0) ?? false,
+    () => properties.transcript?.segments.some((segment) => segment.end_seconds > 0) ?? false,
 )
 
 const playback_available = computed(
@@ -105,6 +126,8 @@ const focus_current = computed<SegmentFocus | null>(() => {
 
 
 watch(rows_filtered, () => {
+    assert(rows_render_limit.value >= ROWS_RENDER_STEP)
+
     rows_render_limit.value = ROWS_RENDER_STEP
     index_editing.value = null
 })
@@ -120,35 +143,53 @@ watch([rows_rendered, filter_regex, index_editing], highlights_apply, { flush: '
 watch([focus_current, audio_checked], focus_scroll, { flush: 'post' })
 
 async function audio_clip_attach(row: DisplayRow): Promise<HTMLAudioElement | null> {
+    assert(row.text.length > 0)
+    assert(row.segment_index >= 0)
+
     const id = job_id_current.value
 
     if (id === null) return null
     if (row.end_seconds <= row.start_seconds) return null
 
-    audio_src_release()
+    assert(id.length > 0)
 
-    const path = await ipc.job_audio_clip_get(id, row.start_seconds, row.end_seconds)
+    audio_source_release()
 
-    if (path === null) return null
-
-    const response = await fetch(convertFileSrc(path))
-
-    if (!response.ok) throw new Error(`clip fetch: ${String(response.status)}`)
-
-    audio_src.value = URL.createObjectURL(await response.blob())
-
-    await nextTick()
-
-    return audio_ref.value
+    return ipc.job_audio_clip_get(id, row.start_seconds, row.end_seconds)
+        .then(async (path) => (path === null ? null : audio_clip_load(path)))
 }
 
-function audio_error_handler(): void {
+async function audio_clip_load(path: AudioPath): Promise<HTMLAudioElement | null> {
+    assert(path.length > 0)
+
+    return fetch(convertFileSrc(path))
+        .then(async (response) => {
+            if (!response.ok) throw new Error(`clip fetch: ${String(response.status)}`)
+
+            return response.blob()
+        })
+        .then(async (blob) => {
+            audio_source.value = URL.createObjectURL(blob)
+
+            assert(audio_source.value.startsWith('blob:'))
+
+            return nextTick()
+        })
+        .then(() => audio_element.value)
+}
+
+function audio_error_handler(event: Event): void {
+    assert(event.type === 'error')
+    assert(event.currentTarget instanceof HTMLAudioElement)
+
     playback_clear()
-    audio_src_release()
+    audio_source_release()
 }
 
 async function audio_path_load(): Promise<void> {
-    audio_src_release()
+    assert(playback_index.value === null)
+
+    audio_source_release()
 
     audio_path.value = null
 
@@ -160,43 +201,50 @@ async function audio_path_load(): Promise<void> {
         return
     }
 
-    try {
-        audio_path.value = await ipc.job_audio_path_get(id)
-    } catch (error) {
-        audio_path.value = null
+    assert(id.length > 0)
 
-        log_warn('[transcript] audio path unavailable', id, error)
-    } finally {
-        audio_checked.value = true
-    }
+    return ipc.job_audio_path_get(id)
+        .then((path) => {
+            audio_path.value = path
+        })
+        .catch((error: unknown) => {
+            audio_path.value = null
+
+            log_warn('[transcript] audio path unavailable', id, error)
+        })
+        .finally(() => {
+            audio_checked.value = true
+        })
 }
 
-function audio_pause_handler(): void {
-    if (audio_ref.value?.paused === true) playback_clear()
+function audio_pause_handler(event: Event): void {
+    assert(event.type === 'pause')
+    assert(event.currentTarget instanceof HTMLAudioElement)
+
+    if (audio_element.value?.paused === true) playback_clear()
 }
 
 function audio_pause_if_playing(): void {
-    if (audio_ref.value !== null && !audio_ref.value.paused) audio_ref.value.pause()
+    const audio = audio_element.value
+
+    if (audio === null) return
+    if (audio.paused) return
+
+    audio.pause()
 }
 
-function audio_src_release(): void {
-    if (audio_src.value !== null) URL.revokeObjectURL(audio_src.value)
+function audio_source_release(): void {
+    assert(audio_source.value === null || audio_source.value.startsWith('blob:'))
 
-    audio_src.value = null
+    if (audio_source.value !== null) URL.revokeObjectURL(audio_source.value)
+
+    audio_source.value = null
 }
 
-async function focus_scroll(): Promise<void> {
-    const focus = focus_current.value
-    const container = list_ref.value
-
-    if (focus === null) return
-    if (container === null) return
-
-    if (filter_text.value.length > 0) {
-        filter_text.value = ''
-
-        await nextTick()
-    }
+async function focus_row_scroll(focus: SegmentFocus, container: HTMLElement): Promise<void> {
+    assert(focus.segment_index_first <= focus.segment_index_last)
+    assert(container.classList.contains('transcript-pane-list'))
+    assert(filter_text.value.length === 0)
 
     const position = rows.value.findIndex((row) => row.segment_index >= focus.segment_index_first)
 
@@ -204,27 +252,56 @@ async function focus_scroll(): Promise<void> {
 
     rows_render_limit.value = Math.max(rows_render_limit.value, position + ROWS_RENDER_STEP)
 
-    await nextTick()
+    return nextTick().then(() => {
+        const row = container.querySelector(`[data-row-index="${String(position)}"]`)
 
-    const row = container.querySelector(`[data-row-index="${String(position)}"]`)
+        row?.scrollIntoView({ block: 'center' })
+    })
+}
 
-    row?.scrollIntoView({ block: 'center' })
+async function focus_scroll(): Promise<void> {
+    const focus = focus_current.value
+    const container = list_element.value
+
+    if (focus === null) return
+    if (container === null) return
+
+    assert(focus.job_id === job_id_current.value)
+    assert(rows.value.length > 0)
+
+    if (filter_text.value.length === 0) return focus_row_scroll(focus, container)
+
+    filter_text.value = ''
+
+    return nextTick().then(async () => focus_row_scroll(focus, container))
 }
 
 function highlights_apply(): void {
     const registry = highlights_registry()
-    const regex = filter_regex.value
-    const container = list_ref.value
 
     if (registry === null) return
 
-    if (regex === null || container === null) {
-        registry.delete(HIGHLIGHT_NAME)
+    const ranges = highlights_ranges()
+
+    if (ranges === null) {
+        void registry.delete(HIGHLIGHT_NAME)
 
         return
     }
 
-    const matcher = new RegExp(regex.source, 'gi')
+    registry.set(HIGHLIGHT_NAME, new Highlight(...ranges))
+}
+
+function highlights_ranges(): Range[] | null {
+    const regex = filter_regex.value
+    const container = list_element.value
+
+    if (regex === null) return null
+    if (container === null) return null
+
+    assert(regex.flags === 'iu')
+
+    const matcher = new RegExp(regex.source, 'giu')
     const ranges: Range[] = []
 
     for (const element of container.querySelectorAll('.transcript-pane-row-text')) {
@@ -233,6 +310,8 @@ function highlights_apply(): void {
         if (!(node instanceof Text)) continue
 
         for (const match of node.data.matchAll(matcher)) {
+            assert(match[0].length > 0)
+
             const range = new Range()
 
             range.setStart(node, match.index)
@@ -241,7 +320,7 @@ function highlights_apply(): void {
         }
     }
 
-    registry.set(HIGHLIGHT_NAME, new Highlight(...ranges))
+    return ranges
 }
 
 function highlights_registry(): HighlightRegistry | null {
@@ -254,10 +333,13 @@ function highlights_registry(): HighlightRegistry | null {
 
 function pane_context_menu(event: MouseEvent): void {
     assert(event.type === 'contextmenu')
+    assert(event.currentTarget instanceof HTMLElement)
 
     const job_id = job_id_current.value
 
     if (job_id === null) return
+
+    assert(job_id.length > 0)
 
     context_menu_open(event, [MENU_ITEM_ASK], pane_menu_select.bind(undefined, job_id))
 }
@@ -270,15 +352,23 @@ async function pane_menu_select(job_id: JobID, id: string): Promise<void> {
 }
 
 function playback_clear(): void {
+    assert(playback_index.value === null || playback_index.value >= 0)
+
     playback_index.value = null
 }
 
 function playback_mark(index: number): void {
+    assert(Number.isInteger(index))
+    assert(index >= 0)
+
     playback_index.value = index
 }
 
-function playback_space_toggle(): void {
-    const audio = audio_ref.value
+function playback_space_toggle(event: KeyboardEvent): void {
+    assert(event.type === 'keydown')
+    assert(event.key === ' ')
+
+    const audio = audio_element.value
 
     if (audio === null) return
 
@@ -295,31 +385,54 @@ function playback_space_toggle(): void {
 
 function row_context_menu(event: MouseEvent, row: DisplayRow, index: number): void {
     assert(event.type === 'contextmenu')
+    assert(row.text.length > 0)
     assert(index >= 0)
 
-    context_menu_open(event, row_menu_items(index), row_menu_select.bind(undefined, row, index))
+    const job_id = job_id_current.value
+    const items = row_menu_items(index, job_id)
+    const select = row_menu_select.bind(undefined, row, index, job_id)
+
+    context_menu_open(event, items, select)
+}
+
+function row_copied_clear(index: number): void {
+    assert(Number.isInteger(index))
+    assert(index >= 0)
+
+    if (index_copied.value === index) index_copied.value = null
 }
 
 async function row_copy(row: DisplayRow, index: number): Promise<void> {
-    try {
-        await navigator.clipboard.writeText(row.text)
-        index_copied.value = index
+    assert(row.text.length > 0)
+    assert(index >= 0)
 
-        setTimeout(() => {
-            if (index_copied.value === index) index_copied.value = null
-        }, COPIED_FLASH_MS)
-    } catch (error) {
-        index_copied.value = null
+    return Promise.resolve(row.text)
+        .then(async (text) => navigator.clipboard.writeText(text))
+        .then(() => {
+            index_copied.value = index
 
-        log_warn('[transcript] clipboard write failed', error)
-    }
+            setTimeout(row_copied_clear.bind(undefined, index), COPIED_FLASH_MS)
+        })
+        .catch((error: unknown) => {
+            index_copied.value = null
+
+            log_warn('[transcript] clipboard write failed', error)
+        })
 }
 
-function row_edit_cancel(): void {
+function row_edit_cancel(event: KeyboardEvent): void {
+    assert(event.type === 'keydown')
+    assert(event.currentTarget instanceof HTMLTextAreaElement)
+    assert(index_editing.value !== null)
+
     index_editing.value = null
 }
 
 async function row_edit_commit(row: DisplayRow, index: number): Promise<void> {
+    assert(row.text.length > 0)
+    assert(row.segment_index >= 0)
+    assert(index >= 0)
+
     if (index_editing.value !== index) return
 
     const text = text_editing.value.trim()
@@ -329,18 +442,20 @@ async function row_edit_commit(row: DisplayRow, index: number): Promise<void> {
     if (text.length === 0) return
     if (text === row.text) return
 
-    try {
-        await transcript_segments_text_set([{ index: row.segment_index, text }])
-    } catch (error) {
-        await error_dialog_show(error)
-    }
+    return transcript_segments_text_set([{ index: row.segment_index, text }])
+        .catch(error_dialog_show)
 }
 
 function row_edit_focus(element: Element | ComponentPublicInstance | null): void {
+    assert(element === null || element instanceof HTMLTextAreaElement)
+
     if (element instanceof HTMLTextAreaElement) element.focus()
 }
 
 function row_edit_toggle(row: DisplayRow, index: number): void {
+    assert(row.text.length > 0)
+    assert(index >= 0)
+
     if (index_editing.value === index) {
         void row_edit_commit(row, index)
 
@@ -352,27 +467,40 @@ function row_edit_toggle(row: DisplayRow, index: number): void {
 }
 
 function row_focused(row: DisplayRow): boolean {
+    assert(row.segment_index >= 0)
+
     const focus = focus_current.value
 
     if (focus === null) return false
+
+    assert(focus.segment_index_first <= focus.segment_index_last)
 
     return row.segment_index >= focus.segment_index_first
         && row.segment_index <= focus.segment_index_last
 }
 
 function row_highlighted(row: DisplayRow): boolean {
+    assert(Number.isInteger(row.segment_index))
+    assert(row.segment_index >= 0)
+
     if (row_focused(row)) return true
 
-    return props.segment_indexes_highlighted?.includes(row.segment_index) ?? false
+    return properties.segment_indexes_highlighted?.includes(row.segment_index) ?? false
 }
 
 function row_label(row: DisplayRow): string {
+    assert(Number.isInteger(row.segment_index))
+    assert(row.segment_index >= 0)
+
     if (timing_present.value) return seconds_to_clock(row.start_seconds)
 
     return `Line ${String(row.segment_index + 1)}`
 }
 
-function row_menu_items(index: number): MenuItem[] {
+function row_menu_items(index: number, job_id: JobID | null): MenuItem[] {
+    assert(index >= 0)
+    assert(job_id === null || job_id.length > 0)
+
     const items: MenuItem[] = [MENU_ITEM_LINE_COPY]
     const playing = playback_index.value === index
 
@@ -380,25 +508,46 @@ function row_menu_items(index: number): MenuItem[] {
 
     items.push(MENU_ITEM_LINE_EDIT)
 
-    if (job_id_current.value !== null) items.push(MENU_ITEM_ASK)
+    if (job_id !== null) items.push(MENU_ITEM_ASK)
 
     assert(items.length <= 4)
 
     return items
 }
 
-async function row_menu_select(row: DisplayRow, index: number, id: string): Promise<void> {
+async function row_menu_select(
+    row: DisplayRow,
+    index: number,
+    job_id: JobID | null,
+    id: string,
+): Promise<void> {
+    assert(row.text.length > 0)
     assert(index >= 0)
+    assert(job_id === null || job_id.length > 0)
     assert(id.length > 0)
 
-    const job_id = job_id_current.value
     const playing = playback_index.value === index
 
-    if (id === MENU_ITEM_ASK.id && job_id !== null) return meeting_ask(job_id)
+    if (id === MENU_ITEM_ASK.id) {
+        assert(job_id !== null, `the transcript has no action for ${id}`)
+
+        return meeting_ask(job_id)
+    }
+
     if (id === MENU_ITEM_LINE_COPY.id) return row_copy(row, index)
-    if (id === MENU_ITEM_PAUSE.id && !playing) return
-    if (id === MENU_ITEM_PLAY.id && playing) return
-    if (id === MENU_ITEM_PAUSE.id || id === MENU_ITEM_PLAY.id) return row_play_toggle(row, index)
+    if (job_id_current.value !== job_id) return
+
+    if (id === MENU_ITEM_PAUSE.id) {
+        if (!playing) return
+
+        return row_play_toggle(row, index)
+    }
+
+    if (id === MENU_ITEM_PLAY.id) {
+        if (playing) return
+
+        return row_play_toggle(row, index)
+    }
 
     assert(id === MENU_ITEM_LINE_EDIT.id, `the transcript has no action for ${id}`)
 
@@ -406,6 +555,9 @@ async function row_menu_select(row: DisplayRow, index: number, id: string): Prom
 }
 
 async function row_play_toggle(row: DisplayRow, index: number): Promise<void> {
+    assert(row.segment_index >= 0)
+    assert(index >= 0)
+
     if (playback_index.value === index) {
         audio_pause_if_playing()
         playback_clear()
@@ -415,26 +567,30 @@ async function row_play_toggle(row: DisplayRow, index: number): Promise<void> {
 
     audio_pause_if_playing()
 
-    try {
-        const audio = await audio_clip_attach(row)
+    return audio_clip_attach(row)
+        .then(async (audio) => {
+            if (audio === null) return
 
-        if (audio === null) return
+            playback_mark(index)
 
-        playback_mark(index)
+            return audio.play()
+        })
+        .catch((error: unknown) => {
+            playback_clear()
 
-        await audio.play()
-    } catch (error) {
-        playback_clear()
-
-        log_warn('[transcript] playback refused', error)
-    }
+            log_warn('[transcript] playback refused', error)
+        })
 }
 
 function rows_render_grow(): void {
-    const container = list_ref.value
+    assert(rows_render_limit.value >= ROWS_RENDER_STEP)
+
+    const container = list_element.value
 
     if (container === null) return
     if (rows_render_limit.value >= rows_filtered.value.length) return
+
+    assert(rows_rendered.value.length === rows_render_limit.value)
 
     const distance_to_end = container.scrollHeight - container.scrollTop - container.clientHeight
 
@@ -445,7 +601,16 @@ function rows_render_grow(): void {
 
 use_shortcuts({ space: playback_space_toggle })
 
+onActivated(highlights_apply)
+
+onDeactivated(() => {
+    audio_pause_if_playing()
+    highlights_registry()?.delete(HIGHLIGHT_NAME)
+})
+
 onMounted(() => {
+    assert(!audio_checked.value)
+
     void audio_path_load()
 })
 
@@ -458,7 +623,7 @@ watch(() => job_id_current.value, () => {
 
 onUnmounted(() => {
     audio_pause_if_playing()
-    audio_src_release()
+    audio_source_release()
     highlights_registry()?.delete(HIGHLIGHT_NAME)
 })
 </script>
@@ -466,9 +631,9 @@ onUnmounted(() => {
 <template>
     <div class="transcript-pane card" @contextmenu="pane_context_menu">
         <audio
-            v-if="audio_src"
-            ref="audio_ref"
-            :src="audio_src"
+            v-if="audio_source"
+            ref="audio_element"
+            :src="audio_source"
             preload="metadata"
             @pause="audio_pause_handler"
             @error="audio_error_handler"
@@ -488,7 +653,7 @@ onUnmounted(() => {
         </div>
         <ul
             v-else-if="audio_checked"
-            ref="list_ref"
+            ref="list_element"
             class="transcript-pane-list"
             @scroll.passive="rows_render_grow"
         >

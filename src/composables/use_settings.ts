@@ -1,30 +1,28 @@
-import { ref } from 'vue'
+import { ref, shallowRef } from 'vue'
 import { assert } from '../lib/assert'
+import { error_shown } from '../lib/errors'
 import { ipc } from '../lib/ipc'
 import type { Settings } from '../types'
 
 
 const settings_default = Object.freeze<Settings>({
     notes_template_id_default: null,
+    mode: null,
     theme: null,
     palette: null,
     recordings_directory: null,
-    notes_model: null,
-    notes_thinking: null,
-    api_host: null,
     jobs_view: null,
-    embeddings_host: null,
-    embeddings_model: null,
 })
 
 const settings = ref<Settings>({ ...settings_default })
 const error_message = ref<string | null>(null)
 const api = Object.freeze({ settings, error_message, refresh, update })
+const update_queue = shallowRef<Promise<void>>(Promise.resolve())
 
 
 export function use_settings(): typeof api {
-    assert(Object.isFrozen(api))
-    assert(Object.isFrozen(settings_default))
+    assert(Object.keys(settings.value).length === Object.keys(settings_default).length)
+    assert(Object.keys(settings_default).every((key) => key in settings.value))
 
     return api
 }
@@ -39,13 +37,24 @@ async function refresh(): Promise<void> {
 
         settings.value = fetched
 
-        assert(settings.value.api_host === fetched.api_host)
+        assert(settings.value.mode === fetched.mode)
     } catch (error) {
-        error_message.value = String(error)
+        error_message.value = error_shown(error)
     }
 }
 
 async function update(patch: Partial<Settings>): Promise<void> {
+    assert(typeof patch === 'object')
+    assert(typeof update_queue.value.then === 'function')
+
+    const queued = update_queue.value.then(async () => update_send(patch))
+
+    update_queue.value = queued
+
+    return queued
+}
+
+async function update_send(patch: Partial<Settings>): Promise<void> {
     assert(typeof patch === 'object')
     assert(typeof settings.value === 'object')
 
@@ -58,6 +67,6 @@ async function update(patch: Partial<Settings>): Promise<void> {
             settings.value = next
         })
         .catch((error: unknown) => {
-            error_message.value = String(error)
+            error_message.value = error_shown(error)
         })
 }

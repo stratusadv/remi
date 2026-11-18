@@ -1,4 +1,5 @@
 import { loadStripe } from '@stripe/stripe-js/pure'
+import { shallowRef } from 'vue'
 import { assert } from './assert'
 import { error_friendly } from './errors'
 import { log_warn } from './log'
@@ -13,7 +14,7 @@ import type {
     StripeCheckoutLoadActionsSuccess,
     StripePaymentElement,
 } from '@stripe/stripe-js'
-import type { CheckoutSessionID, CheckoutStarted } from '../types'
+import type { CheckoutSessionID, CheckoutStarted, ThemeChoice } from '../types'
 
 
 export interface CheckoutForm {
@@ -41,6 +42,11 @@ interface CheckoutLoaded {
     testing: boolean
 }
 
+interface StripeLoad {
+    readonly loaded: Promise<StripeLoaded>
+    readonly publishable_key: string
+}
+
 interface StripeLoaded {
     fonts: CustomFontSource[]
     stripe: Stripe
@@ -60,7 +66,8 @@ export const TEST_CARDS: readonly Readonly<TestCardOption>[] = Object.freeze([
 ])
 
 const COLOR_SENTINEL = '#010203'
-const CSS_CLASS_THEME_LIGHT = 'theme-light'
+const CSS_CLASS_MODE_LIGHT = 'mode-light'
+const DATA_THEME_STANDARD: ThemeChoice = 'standard'
 const FONT_FAMILY_FIELDS = '"Geist", system-ui, sans-serif'
 const FONT_GEIST_URL = '/fonts/geist-variable.woff2'
 const INPUT_PADDING = '10px 12px'
@@ -71,12 +78,12 @@ const MESSAGE_FONT_UNREADABLE = 'the Geist font could not be read as a data addr
 const MESSAGE_FORM_FAILED = 'The payment form could not load. Close it and try again.'
 const MESSAGE_STRIPE_UNREACHABLE = 'Payments could not load. Check the connection and try again.'
 const MESSAGE_TEST_CARD_REFUSED = 'Stripe would not make a payment method from that test card.'
-const PUBLISHABLE_KEY_PATTERN = /^pk_(?:live|test)_[A-Za-z0-9]{1,250}$/
+const PUBLISHABLE_KEY_PATTERN = /^pk_(?:live|test)_[A-Za-z0-9]{1,250}$/u
 const PUBLISHABLE_KEY_TEST_PREFIX = 'pk_test_'
 const SPACING_COLUMNS = '12px'
 const SPACING_ROWS = '16px'
-const STRIPE_LOADS = new Map<string, Promise<StripeLoaded>>()
 const TOKEN_COLOR_PREFIX = '--color-'
+const stripe_load_current = shallowRef<StripeLoad | null>(null)
 
 
 export async function checkout_preload(
@@ -84,9 +91,10 @@ export async function checkout_preload(
     starting: Promise<CheckoutStarted>,
 ): Promise<CheckoutPreloaded> {
     assert(PUBLISHABLE_KEY_PATTERN.test(publishable_key))
-    assert(STRIPE_LOADS.size <= 1)
 
     const loading = Promise.all([stripe_load(publishable_key), starting])
+
+    assert(stripe_load_current.value?.publishable_key === publishable_key)
 
     return loading.then(async ([loaded, started]) => checkout_preload_session(loaded, started))
 }
@@ -100,9 +108,15 @@ export function stripe_appearance(): Appearance {
     document.body.append(probe)
 
     const accent = token_color(probe, '--color-accent')
+    const accent_soft = token_color(probe, '--color-accent-soft')
     const border = token_color(probe, '--color-field-border')
     const content_muted = token_color(probe, '--color-content-muted')
     const plane = token_color(probe, '--color-plane')
+    const standard = document.documentElement.dataset['theme'] === DATA_THEME_STANDARD
+
+    const shadow_focus = standard
+        ? `0 0 0 3px ${accent_soft}`
+        : `0 0 0 1px ${accent}, 3px 3px 0 ${plane}`
 
     const variables = {
         borderRadius: token_computed(probe, 'border-top-left-radius', '--radius-md'),
@@ -137,23 +151,24 @@ export function stripe_appearance(): Appearance {
         '.Input': input,
         '.Input:focus': {
             borderColor: accent,
-            boxShadow: `0 0 0 1px ${accent}, 3px 3px 0 ${plane}`,
+            boxShadow: shadow_focus,
         },
         '.Label': label,
     }
 
     probe.remove()
 
-    const light = document.documentElement.classList.contains(CSS_CLASS_THEME_LIGHT)
+    const light = document.documentElement.classList.contains(CSS_CLASS_MODE_LIGHT)
 
     return { rules, theme: light ? 'stripe' : 'night', variables }
 }
 
 export function stripe_preload(publishable_key: string): void {
     assert(PUBLISHABLE_KEY_PATTERN.test(publishable_key))
-    assert(STRIPE_LOADS.size <= 1)
 
     void stripe_load(publishable_key).catch(stripe_preload_failed)
+
+    assert(stripe_load_current.value?.publishable_key === publishable_key)
 }
 
 async function blob_data_address(blob: Blob): Promise<string> {
@@ -215,9 +230,7 @@ async function checkout_confirm_test(
     const data = { ...billing, card: { token: card }, type: 'card' as const }
     const confirming = test_card_confirm.bind(undefined, actions)
 
-    return stripe.createPaymentMethod(data).then(confirming, (error: unknown) => {
-        return error_friendly(error).message
-    })
+    return stripe.createPaymentMethod(data).then(confirming, confirm_failed)
 }
 
 function checkout_form_build(
@@ -408,25 +421,31 @@ function started_secret(started: CheckoutStarted): string {
 
 async function stripe_load(publishable_key: string): Promise<StripeLoaded> {
     assert(PUBLISHABLE_KEY_PATTERN.test(publishable_key))
-    assert(STRIPE_LOADS.size <= 1)
 
-    const cached = STRIPE_LOADS.get(publishable_key)
+    const current = stripe_load_current.value
 
-    if (cached !== undefined) return cached
+    if (current?.publishable_key === publishable_key) return current.loaded
 
     const options = { developerTools: { assistant: { enabled: false } } }
     const testing = stripe_test_cards_allowed(publishable_key)
     const loading = Promise.all([loadStripe(publishable_key, options), font_sources()])
     const loaded = loading.then(stripe_loaded.bind(undefined, testing))
+    const load: StripeLoad = Object.freeze({ loaded, publishable_key })
 
-    STRIPE_LOADS.clear()
-    STRIPE_LOADS.set(publishable_key, loaded)
+    stripe_load_current.value = load
 
-    assert(STRIPE_LOADS.size === 1)
-
-    void loaded.catch(() => STRIPE_LOADS.delete(publishable_key))
+    void loaded.catch(stripe_load_evict.bind(undefined, load))
 
     return loaded
+}
+
+function stripe_load_evict(load: StripeLoad): void {
+    assert(Object.isFrozen(load))
+    assert(PUBLISHABLE_KEY_PATTERN.test(load.publishable_key))
+
+    if (stripe_load_current.value !== load) return
+
+    stripe_load_current.value = null
 }
 
 function stripe_loaded(
@@ -441,6 +460,12 @@ function stripe_loaded(
     return { fonts, stripe, testing }
 }
 
+function stripe_preload_failed(error: unknown): void {
+    assert(error !== undefined)
+
+    log_warn('[checkout] Stripe.js could not load ahead of the payment form', error)
+}
+
 function stripe_test_cards_allowed(publishable_key: string): boolean {
     assert(PUBLISHABLE_KEY_PATTERN.test(publishable_key))
     assert(typeof import.meta.env.DEV === 'boolean')
@@ -448,12 +473,6 @@ function stripe_test_cards_allowed(publishable_key: string): boolean {
     if (!import.meta.env.DEV) return false
 
     return publishable_key.startsWith(PUBLISHABLE_KEY_TEST_PREFIX)
-}
-
-function stripe_preload_failed(error: unknown): void {
-    assert(error !== undefined)
-
-    log_warn('[checkout] Stripe.js could not load ahead of the payment form', error)
 }
 
 async function test_card_confirm(

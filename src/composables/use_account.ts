@@ -1,8 +1,9 @@
-import { computed, ref } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import { assert } from '../lib/assert'
 import { SECONDS_PER_HOUR, seconds_to_balance } from '../lib/duration'
-import { error_friendly } from '../lib/errors'
+import { error_shown } from '../lib/errors'
 import { ipc } from '../lib/ipc'
+import { region_is_known } from '../lib/regions'
 import type {
     Account,
     AccountOffer,
@@ -32,13 +33,15 @@ interface OfferPair {
     other: AccountOffer
 }
 
+const ACCOUNT_GENERATION_MAX = Number.MAX_SAFE_INTEGER
 const CENTS_PER_UNIT = 100
 const LOCALE_PRICES = 'en-CA'
 const MESSAGE_SIGNED_OUT = 'This copy of remi is not signed in to an account.'
 const OFFERS_MAX = 4
 const PERCENT = 100
-const PUBLISHABLE_KEY_PATTERN = /^pk_(?:live|test)_[A-Za-z0-9]{1,250}$/
+const PUBLISHABLE_KEY_PATTERN = /^pk_(?:live|test)_[A-Za-z0-9]{1,250}$/u
 const account = ref<Account | null>(null)
+const account_generation = shallowRef(0)
 const error_message = ref<string | null>(null)
 const status = ref<AccountStatus>({ billing: false, signed_in: false })
 const sign_up_needed = computed(() => status.value.billing && !status.value.signed_in)
@@ -58,6 +61,7 @@ const api = Object.freeze({
     code_copy,
     create,
     promo_redeem,
+    refresh,
     sign_in,
     status_load,
 })
@@ -118,7 +122,7 @@ export function price_format(amount: number, currency: string): string {
 }
 
 export function use_account(): typeof api {
-    assert(Object.isFrozen(api))
+    assert(account.value === null || status.value.signed_in)
     assert(typeof status.value.billing === 'boolean')
 
     if (status.value.signed_in) assert(status.value.billing)
@@ -126,16 +130,34 @@ export function use_account(): typeof api {
     return api
 }
 
+function account_generation_advance(): void {
+    const generation = account_generation.value
+
+    assert(Number.isSafeInteger(generation))
+    assert(generation < ACCOUNT_GENERATION_MAX)
+
+    account_generation.value = generation + 1
+}
+
 async function account_load(): Promise<void> {
     if (!status.value.signed_in) return
 
     assert(status.value.billing)
 
-    return ipc.account_get().then(account_loaded, error_record)
+    account_generation_advance()
+
+    const generation = account_generation.value
+
+    return ipc.account_get()
+        .then((loaded) => {
+            if (account_generation.value === generation) account_loaded(loaded)
+        })
+        .catch((error: unknown) => {
+            if (account_generation.value === generation) error_record(error)
+        })
 }
 
 function account_loaded(loaded: Account | null): void {
-    assert(status.value.billing)
     assert(loaded === null || Number.isSafeInteger(loaded.balance_seconds))
     assert(loaded === null || loaded.balance_seconds >= 0)
     assert(loaded === null || loaded.email.length > 0)
@@ -145,6 +167,14 @@ function account_loaded(loaded: Account | null): void {
 
     if (key !== '') assert(PUBLISHABLE_KEY_PATTERN.test(key))
 
+    if (!status.value.billing) {
+        assert(!status.value.signed_in)
+        assert(account.value === null)
+
+        return
+    }
+
+    account_generation_advance()
     account.value = loaded
     error_message.value = null
     status.value = { billing: true, signed_in: loaded !== null }
@@ -185,18 +215,20 @@ async function code_copy(): Promise<void> {
 }
 
 async function create(sign_up: AccountSignUp): Promise<void> {
+    assert(status.value.billing)
     assert(sign_up.name.trim().length > 0)
     assert(sign_up.email.trim().length > 0)
+    assert(region_is_known(sign_up.region))
 
     return ipc.account_create(sign_up).then(account_loaded)
 }
 
 function error_record(error: unknown): void {
-    const friendly = error_friendly(error)
+    const message = error_shown(error)
 
-    assert(friendly.message.length > 0)
+    assert(message.length > 0)
 
-    error_message.value = friendly.message
+    error_message.value = message
 }
 
 function offer_best(offers: readonly AccountOffer[]): AccountOffer | null {
@@ -278,7 +310,17 @@ async function promo_redeem(code: PromoCode): Promise<void> {
     return ipc.account_promo_redeem(code.trim()).then(account_loaded)
 }
 
+async function refresh(): Promise<void> {
+    return status_load().then(() => {
+        assert(account.value === null || status.value.signed_in)
+        assert(status.value.billing || !status.value.signed_in)
+
+        void account_load()
+    })
+}
+
 async function sign_in(code: SignInCode): Promise<void> {
+    assert(status.value.billing)
     assert(typeof code === 'string')
     assert(code.trim().length > 0)
 
@@ -297,5 +339,8 @@ function status_loaded(loaded: AccountStatus): void {
 
     status.value = loaded
 
-    if (!loaded.signed_in) account.value = null
+    if (loaded.signed_in) return
+
+    account_generation_advance()
+    account.value = null
 }

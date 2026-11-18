@@ -1,6 +1,6 @@
 import { TextSelection } from '@tiptap/pm/state'
-import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import RichEditor from '../../src/components/rich_editor.vue'
 import { assert } from '../../src/lib/assert'
 import { ipc } from '../../src/lib/ipc'
@@ -10,16 +10,20 @@ import {
     EMIT_UPDATE,
     MODEL_VALUE,
     PROPERTIES,
+    deferred_new,
     editor_of,
+    mount_auto_unmount,
 } from './fixtures'
 import type { Editor } from '@tiptap/core'
 import type { DOMWrapper, VueWrapper } from '@vue/test-utils'
 import type { Mock } from 'vitest'
-import type { AIRewriteArgs, AIRewriteHandler } from '../../src/types'
+import type { AppConfig } from 'vue'
+import type { AIRewriteHandler, AIRewriteRequest } from '../../src/types'
 
 
 vi.mock('../../src/lib/ipc')
 
+const KEY_ERROR_HANDLER = 'errorHandler'
 const MARKDOWN = 'First paragraph\n\n- item one\n- item two'
 
 const TITLE_PRESS_OUTSIDE = 'clears the selection on a press outside the editor '
@@ -28,8 +32,7 @@ const TITLE_PRESS_OUTSIDE = 'clears the selection on a press outside the editor 
 const TITLE_RESIZE_DETACHED = 'ignores a resize while detached '
     + 'and collapses the toolbar on a narrow one once attached'
 
-const mounted = new Set<VueWrapper>()
-
+type ErrorHandler = NonNullable<AppConfig['errorHandler']>
 type PositionFrom = number
 type PositionTo = number
 type TextFirst = string
@@ -58,16 +61,20 @@ class ResizeObserverStub {
 
 function ai_button(wrapper: VueWrapper): Omit<DOMWrapper<Element>, 'exists'> {
     assert(wrapper.exists())
-    assert(mounted.has(wrapper))
 
-    return wrapper.get('.rich-tb-btn-ai')
+    const button = wrapper.get('.rich-tb-btn-ai')
+
+    assert(button.attributes('disabled') === undefined)
+
+    return button
 }
 
 function ai_meta(wrapper: VueWrapper): string | undefined {
     assert(wrapper.exists())
-    assert(mounted.has(wrapper))
 
     const metas = wrapper.findAll('.rich-editor-ai-meta')
+
+    assert(metas.length > 0)
 
     return metas[metas.length - 1]?.text()
 }
@@ -95,16 +102,20 @@ function collapse(editor: Editor, position: number): void {
 
 function editor_from(wrapper: VueWrapper): Editor {
     assert(wrapper.exists())
-    assert(mounted.has(wrapper))
 
-    return editor_of(wrapper.get('.ProseMirror').element)
+    const editor = editor_of(wrapper.get('.ProseMirror').element)
+
+    assert(!editor.isDestroyed)
+
+    return editor
 }
 
 function model_emitted_last(wrapper: VueWrapper): string[] | undefined {
     assert(wrapper.exists())
-    assert(mounted.has(wrapper))
 
     const calls = wrapper.emitted<string[]>('update:modelValue') ?? []
+
+    assert(calls.every((call) => call.length === 1))
 
     return calls[calls.length - 1]
 }
@@ -118,12 +129,11 @@ async function mount_editor(
 
     const properties = { [MODEL_VALUE]: markdown }
 
-    const wrapper = mount(RichEditor, {
-        [PROPERTIES]: ai_rewrite !== undefined ? { ...properties, ai_rewrite } : properties,
+    const wrapper = mount_auto_unmount(RichEditor, {
+        [PROPERTIES]: ai_rewrite === undefined ? properties : { ...properties, ai_rewrite },
         [ATTACH_TO]: document.body,
     })
 
-    mounted.add(wrapper)
     await flushPromises()
 
     return wrapper
@@ -149,11 +159,11 @@ function resize(target: Element, width: number): void {
     ResizeObserverStub.callback?.([{ target, [CONTENT_RECT]: { width } }])
 }
 
-function rewrite_handler(reply: string): Mock<(request: AIRewriteArgs) => Promise<string>> {
+function rewrite_handler(reply: string): Mock<(request: AIRewriteRequest) => Promise<string>> {
     assert(typeof reply === 'string')
-    assert(mounted.size >= 0)
+    assert(reply.length > 0)
 
-    return vi.fn(async (request: AIRewriteArgs) => {
+    return vi.fn(async (request: AIRewriteRequest) => {
         request.on_chunk(reply)
 
         return Promise.resolve(reply)
@@ -196,21 +206,18 @@ function text_range(
 }
 
 beforeEach(() => {
+    onTestFinished(() => {
+        vi.unstubAllGlobals()
+        vi.restoreAllMocks()
+        document.body.innerHTML = ''
+    })
+
     vi.resetAllMocks()
     vi.stubGlobal('ResizeObserver', ResizeObserverStub)
 
     vi.mocked(ipc.markdown_render_html).mockImplementation(
         async (markdown) => Promise.resolve(`<p>${markdown}</p>`),
     )
-})
-
-afterEach(() => {
-    for (const wrapper of mounted) wrapper.unmount()
-
-    mounted.clear()
-    vi.unstubAllGlobals()
-    vi.restoreAllMocks()
-    document.body.innerHTML = ''
 })
 
 describe('RichEditor mounting', () => {
@@ -550,7 +557,10 @@ describe('RichEditor AI rewrite', () => {
         await quick_action(wrapper, 'Fix grammar').trigger('click')
         await flushPromises()
 
-        expect(wrapper.get('.rich-editor-ai-error').text()).toBe('network error: offline')
+        expect(wrapper.get('.rich-editor-ai-error').text()).toBe(
+            'The server could not be reached. Check your internet connection and try again.',
+        )
+
         expect(wrapper.find('.rich-editor-ai').exists()).toBe(true)
     })
 
@@ -603,5 +613,89 @@ describe('RichEditor AI rewrite', () => {
         const wrapper = await mount_editor()
 
         expect(wrapper.find('.rich-tb-btn-ai').exists()).toBe(false)
+    })
+})
+
+describe('RichEditor AI range', () => {
+    beforeEach(() => {
+        vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    })
+
+    it('rewrites the whole shortened document after a select-all leaves markdown', async () => {
+        const rewrite = rewrite_handler('Tiny rewritten')
+        const wrapper = await mount_editor(MARKDOWN, rewrite)
+
+        editor_from(wrapper).commands.selectAll()
+        await ai_button(wrapper).trigger('click')
+        await wrapper.get('[title="Edit raw markdown"]').trigger('click')
+        await wrapper.get('.rich-editor-source').setValue('Tiny')
+        await wrapper.get('[title="Back to rich editor"]').trigger('click')
+
+        expect(ai_meta(wrapper)).toBe('4 characters selected')
+
+        await quick_action(wrapper, 'Shorten').trigger('click')
+        await flushPromises()
+
+        expect(rewrite).toHaveBeenCalledTimes(1)
+        expect(rewrite.mock.calls[0]?.[0]?.text).toBe('Tiny')
+        expect(model_emitted_last(wrapper)).toEqual(['Tiny rewritten'])
+    })
+
+    it('rewrites the whole grown document after a select-all and a new model value', async () => {
+        const rewrite = rewrite_handler('Grown rewritten')
+        const wrapper = await mount_editor('Short', rewrite)
+        const editor = editor_from(wrapper)
+
+        editor.commands.selectAll()
+        await ai_button(wrapper).trigger('click')
+        await wrapper.setProps({ [MODEL_VALUE]: MARKDOWN })
+
+        const { doc } = editor.state
+        const characters = doc.textBetween(0, doc.content.size, '\n').length
+
+        expect(ai_meta(wrapper)).toBe(`${String(characters)} characters selected`)
+
+        await quick_action(wrapper, 'Shorten').trigger('click')
+        await flushPromises()
+
+        expect(rewrite.mock.calls[0]?.[0]?.text).toBe(MARKDOWN)
+        expect(model_emitted_last(wrapper)).toEqual(['Grown rewritten'])
+    })
+})
+
+describe('RichEditor AI busy', () => {
+    it('ignores an Enter on the disabled instruction input during a rewrite', async () => {
+        const reply = deferred_new<string>()
+        const rewrite = vi.fn(async () => reply.promise)
+        const error_handler = vi.fn<ErrorHandler>()
+
+        const wrapper = mount_auto_unmount(RichEditor, {
+            [PROPERTIES]: { [MODEL_VALUE]: MARKDOWN, ai_rewrite: rewrite },
+            [ATTACH_TO]: document.body,
+            global: { config: { [KEY_ERROR_HANDLER]: error_handler } },
+        })
+
+        await flushPromises()
+        await ai_button(wrapper).trigger('click')
+
+        const input = wrapper.get('.rich-editor-ai-input')
+
+        await input.setValue('Make it formal')
+        await input.trigger('keydown', { key: 'Enter' })
+
+        expect(rewrite).toHaveBeenCalledTimes(1)
+        expect(input.attributes('disabled')).toBeDefined()
+
+        input.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
+        await flushPromises()
+
+        expect(error_handler).not.toHaveBeenCalled()
+        expect(rewrite).toHaveBeenCalledTimes(1)
+
+        reply.resolve('Formal text')
+        await flushPromises()
+
+        expect(model_emitted_last(wrapper)).toEqual(['Formal text'])
+        expect(input.attributes('disabled')).toBeUndefined()
     })
 })

@@ -1,10 +1,12 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
+import { nextTick } from 'vue'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import JobsManager from '../../src/components/jobs_manager.vue'
 import { use_ask } from '../../src/composables/use_ask'
 import { use_dialog } from '../../src/composables/use_dialog'
 import { use_folders } from '../../src/composables/use_folders'
 import { use_jobs } from '../../src/composables/use_jobs'
+import { use_modal_shown } from '../../src/composables/use_modal'
 import { use_people } from '../../src/composables/use_people'
 import { use_pipeline } from '../../src/composables/use_pipeline'
 import { use_settings } from '../../src/composables/use_settings'
@@ -15,10 +17,12 @@ import {
     TO_FAKE,
     deferred_new,
     job_listing_build,
+    mount_auto_unmount,
     person_build,
     search_hit_build,
     transcript_build,
 } from './fixtures'
+import { escape_press, pointer_press } from './modal'
 import type { DOMWrapper, VueWrapper } from '@vue/test-utils'
 import type { JobListing, JobSearchHit } from '../../src/types'
 
@@ -62,13 +66,13 @@ const JOBS = Object.freeze<JobListing[]>([
     }),
 ])
 
-const mounted = new Set<VueWrapper>()
 const folders_state = use_folders()
 const jobs_state = use_jobs()
 const people_state = use_people()
 const settings_state = use_settings()
 const pipeline = use_pipeline()
 const dialog = use_dialog()
+const modal_shown = use_modal_shown()
 
 
 function aria_sort(wrapper: VueWrapper, label: string): string | null {
@@ -101,18 +105,51 @@ function menu_item_click(label: string): void {
     item.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 }
 
-async function mount_manager(view: 'grid' | 'list' = 'list'): Promise<VueWrapper> {
+function menu_labels(): string[] {
+    assert(document.body.isConnected)
+
+    const items = [...document.body.querySelectorAll('[role="menuitem"]')]
+
+    assert(items.length <= 12)
+
+    return items.map((item) => item.textContent.trim())
+}
+
+async function mount_manager(
+    view: 'grid' | 'list' = 'list',
+    animated = false,
+): Promise<VueWrapper> {
     assert(view.length > 0)
-    assert(mounted.size >= 0)
+    assert(jobs_state.jobs.value.length === 0)
+    assert(typeof animated === 'boolean')
 
     settings_state.settings.value = { ...settings_state.settings.value, jobs_view: view }
 
-    const wrapper = mount(JobsManager, { [ATTACH_TO]: document.body })
+    const wrapper = mount_auto_unmount(JobsManager, {
+        [ATTACH_TO]: document.body,
+        global: { stubs: { transition: !animated } },
+    })
 
-    mounted.add(wrapper)
     await flushPromises()
 
     return wrapper
+}
+
+async function rename_open(wrapper: VueWrapper): Promise<HTMLElement> {
+    assert(wrapper.exists())
+    assert(document.body.querySelector('.app-dialog') === null)
+
+    await wrapper.findAll('.recording-table-row')[3]?.get('.menu-icon-btn').trigger('click')
+
+    menu_item_click('Rename')
+
+    await flushPromises()
+
+    const backdrop = document.body.querySelector<HTMLElement>('.app-dialog-backdrop')
+
+    assert(backdrop !== null, 'the rename dialog did not open')
+
+    return backdrop
 }
 
 async function sort_by(wrapper: VueWrapper, label: string): Promise<void> {
@@ -124,12 +161,21 @@ async function sort_by(wrapper: VueWrapper, label: string): Promise<void> {
 
 function titles(wrapper: VueWrapper): string[] {
     assert(wrapper.exists())
-    assert(mounted.has(wrapper))
 
-    return wrapper.findAll('.recording-table-title').map((cell) => cell.text())
+    const cells = wrapper.findAll('.recording-table-title')
+
+    assert(wrapper.findAll('.recording-table-row').length === cells.length)
+
+    return cells.map((cell) => cell.text())
 }
 
 beforeEach(async () => {
+    onTestFinished(() => {
+        dialog.close(false)
+        vi.useRealTimers()
+        document.body.innerHTML = ''
+    })
+
     vi.useFakeTimers({ [TO_FAKE]: ['setTimeout', 'clearTimeout'] })
     vi.resetAllMocks()
     vi.mocked(ipc.folders_list).mockResolvedValue([])
@@ -148,15 +194,6 @@ beforeEach(async () => {
     folders_state.folder_close()
 
     await folders_state.refresh()
-})
-
-afterEach(() => {
-    for (const wrapper of mounted) wrapper.unmount()
-
-    mounted.clear()
-    dialog.close(false)
-    vi.useRealTimers()
-    document.body.innerHTML = ''
 })
 
 describe('JobsManager list ordering', () => {
@@ -524,7 +561,7 @@ describe('JobsManager actions', () => {
         input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
         await flushPromises()
 
-        expect(document.body.querySelector('.app-dialog .error')?.textContent.trim())
+        expect(document.body.querySelector('.app-dialog [role="alert"]')?.textContent.trim())
             .toBe('Title cannot be empty.')
 
         expect(ipc.job_meta_update).not.toHaveBeenCalled()
@@ -535,6 +572,35 @@ describe('JobsManager actions', () => {
         await flushPromises()
 
         expect(ipc.job_meta_update).not.toHaveBeenCalled()
+        expect(document.body.querySelector('.app-dialog')).toBeNull()
+    })
+})
+
+describe('JobsManager rename dialog', () => {
+    it('makes the app inert while it is open and lets go of it as it fades out', async () => {
+        const leaving = await rename_open(await mount_manager('list', true))
+
+        expect(modal_shown.value).toBe(true)
+        expect(leaving.inert).toBe(false)
+
+        leaving.querySelector<HTMLButtonElement>('.app-dialog-actions .btn-default')?.click()
+        await nextTick()
+
+        expect(modal_shown.value).toBe(false)
+        expect(leaving.isConnected).toBe(true)
+        expect(leaving.inert).toBe(true)
+    })
+
+    it('closes on Escape after a click on a part of it that takes no focus', async () => {
+        const backdrop = await rename_open(await mount_manager())
+        const title = backdrop.querySelector('.app-dialog-title')
+
+        assert(title !== null)
+
+        pointer_press(title)
+        escape_press()
+        await flushPromises()
+
         expect(document.body.querySelector('.app-dialog')).toBeNull()
     })
 })
@@ -580,7 +646,7 @@ describe('JobsManager actions', () => {
 
         const wrapper = await mount_manager()
 
-        expect(wrapper.get('.banner').text()).toContain('Error: no index')
+        expect(wrapper.get('.banner').text()).toContain('no index')
 
         await wrapper.get('.banner-close').trigger('click')
 
@@ -747,6 +813,38 @@ describe('JobsManager folders', () => {
 
         expect(wrapper.find('.recording-table').exists()).toBe(false)
         expect(wrapper.get('.recording-tile-new').text()).toBe('New recording')
+    })
+})
+
+describe('JobsManager folder removal', () => {
+    it('removes a filed recording from its folder in one step from its menu', async () => {
+        vi.mocked(ipc.job_meta_update).mockResolvedValue(JOBS[3] ?? job_listing_build())
+
+        const wrapper = await mount_manager()
+        const rows = wrapper.findAll('.recording-table-row')
+        const filed = rows.find((row) => row.text().includes('Delta sync'))
+        const loose = rows.find((row) => row.text().includes('Alpha review'))
+
+        await loose?.get('.menu-icon-btn').trigger('click')
+
+        expect(menu_labels()).not.toContain('Remove from folder')
+
+        await loose?.get('.menu-icon-btn').trigger('click')
+        await filed?.get('.menu-icon-btn').trigger('click')
+
+        expect(menu_labels()).toEqual([
+            'Ask about this meeting',
+            'Rename',
+            'Move to folder',
+            'Remove from folder',
+            'Delete',
+        ])
+
+        menu_item_click('Remove from folder')
+        await flushPromises()
+
+        expect(ipc.job_meta_update).toHaveBeenCalledExactlyOnceWith('delta', { project: '' })
+        expect(document.body.querySelector('.folder-move-option')).toBeNull()
     })
 })
 

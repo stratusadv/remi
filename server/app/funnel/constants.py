@@ -5,6 +5,7 @@ from app.funnel.choices import CampaignChoices
 
 FUNNEL_PAGE_ORIGIN = 'https://remirememberthat.com'
 FUNNEL_PAGE_URL_GENERAL = f'{FUNNEL_PAGE_ORIGIN}/'
+FUNNEL_PAGE_URL_GENERAL_DOWNLOAD = f'{FUNNEL_PAGE_URL_GENERAL}download/'
 FUNNEL_PAGE_URL_WIB = f'{FUNNEL_PAGE_ORIGIN}/wib/'
 FUNNEL_PAGE_URL_WIB_DOWNLOAD = f'{FUNNEL_PAGE_URL_WIB}download/'
 FUNNEL_PATH_PREFIX = '/api/v1/funnel/'

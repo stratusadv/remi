@@ -1,16 +1,4 @@
 #[cfg(target_os = "linux")]
-pub(crate) use linux::api_certificate_allow;
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn api_certificate_allow(
-    window: &tauri::WebviewWindow,
-) -> std::future::Ready<crate::error::AppResult<()>> {
-    assert_ne!(window.label(), "");
-
-    std::future::ready(Ok(()))
-}
-
-#[cfg(target_os = "linux")]
 mod linux {
     use crate::error::{AppError, AppResult};
     use crate::http::{ClientCell, client_get, crypto_provider_install};
@@ -40,7 +28,7 @@ mod linux {
         let installed = certificate_send(window, &certificate)?;
 
         installed.await.map_err(|_closed| {
-            AppError::Config("the webview closed before it took Stripe's certificate".into())
+            AppError::Internal("the webview closed before it took Stripe's certificate".into())
         })?
     }
 
@@ -58,11 +46,11 @@ mod linux {
             .map_or_default(<[u8]>::to_vec);
 
         if certificate.is_empty() {
-            return Err(AppError::Service("Stripe's API presented no certificate".into()));
+            return Err(AppError::Internal("Stripe's API presented no certificate".into()));
         }
 
         if certificate.len() > usize_of!(CERTIFICATE_BYTES_MAX) {
-            return Err(AppError::Service(format!(
+            return Err(AppError::Internal(format!(
                 "Stripe's API presented a certificate of {} bytes",
                 certificate.len(),
             )));
@@ -77,10 +65,10 @@ mod linux {
 
         let context = webview
             .context()
-            .ok_or_else(|| AppError::Config("the webview has no web context".into()))?;
+            .ok_or_else(|| AppError::Internal("the webview has no web context".into()))?;
 
         let certificate = TlsCertificate::from_pem(pem).map_err(|error| {
-            AppError::Config(format!("Stripe's certificate could not be read: {error}"))
+            AppError::Internal(format!("Stripe's certificate could not be read: {error}"))
         })?;
 
         context.allow_tls_certificate_for_host(&certificate, STRIPE_API_HOST);
@@ -101,7 +89,7 @@ mod linux {
 
         for line in encoded.as_bytes().chunks(PEM_LINE_CHARS) {
             let text = std::str::from_utf8(line).map_err(|error| {
-                AppError::Config(format!("the certificate encoding is not ASCII: {error}"))
+                AppError::Internal(format!("the certificate encoding is not ASCII: {error}"))
             })?;
 
             pem.push_str(text);
@@ -132,7 +120,7 @@ mod linux {
                 let _sent = installed_sender.send(certificate_install(&webview.inner(), &pem));
             })
             .map_err(|error| {
-                AppError::Config(format!("the webview could not be reached: {error}"))
+                AppError::Internal(format!("the webview could not be reached: {error}"))
             })?;
 
         Ok(installed_receiver)
@@ -221,4 +209,16 @@ mod linux {
             assert!(rebuilt.is_same(&original));
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) use linux::api_certificate_allow;
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn api_certificate_allow(
+    window: &tauri::WebviewWindow,
+) -> std::future::Ready<crate::error::AppResult<()>> {
+    assert_ne!(window.label(), "");
+
+    std::future::ready(Ok(()))
 }

@@ -1,16 +1,20 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { assert } from '../../src/lib/assert'
 import {
     seconds_to_balance,
     seconds_to_clock,
     seconds_to_clock_hours,
+    unix_now,
 } from '../../src/lib/duration'
 
 
-const BALANCE_PATTERN = /^(?<whole>\d+)(?:\.(?<tenth>\d))? (?<unit>hours?|minutes?)$/
+const BALANCE_PATTERN = /^(?<whole>\d+)(?:\.(?<tenth>\d))? (?<unit>hours?|minutes?)$/u
 const BALANCE_SAMPLES = 2000
 const BALANCE_SECONDS_MAX = 2_000_000
 const BALANCE_TENTHS_SWEPT = 5000
+const CLOCK_MS_MAX = 2 ** 42
+const CLOCK_SAMPLES = 2000
+const MILLISECONDS_PER_SECOND = 1000
 const SECONDS_PER_HOUR_TENTH = 360
 const SECONDS_PER_MINUTE = 60
 const TENTHS_PER_HOUR = 10
@@ -38,6 +42,10 @@ function balance_shown(text: string): BalanceShown {
 
     return { seconds: tenths * SECONDS_PER_HOUR_TENTH, step_seconds: SECONDS_PER_HOUR_TENTH }
 }
+
+afterEach(() => {
+    vi.restoreAllMocks()
+})
 
 describe('seconds_to_balance', () => {
     it('reads minutes under an hour and tenths of an hour above it', () => {
@@ -101,5 +109,46 @@ describe('seconds_to_clock_hours', () => {
         expect(seconds_to_clock_hours(59)).toBe('0:59')
         expect(seconds_to_clock_hours(3600)).toBe('1:00:00')
         expect(seconds_to_clock_hours(4023)).toBe('1:07:03')
+    })
+})
+
+describe('unix_now', () => {
+    it('reads the clock to the whole second it is in', () => {
+        const now = vi.spyOn(Date, 'now')
+        let state = 7
+
+        now.mockReturnValue(Date.parse('2026-11-17T14:05:09.999Z'))
+
+        expect(new Date(unix_now() * MILLISECONDS_PER_SECOND).toISOString())
+            .toBe('2026-11-17T14:05:09.000Z')
+
+        for (let sample = 0; sample < CLOCK_SAMPLES; sample += 1) {
+            state = (state * 48_271) % 2_147_483_647
+
+            const clock_ms = (state * MILLISECONDS_PER_SECOND + sample) % CLOCK_MS_MAX
+
+            now.mockReturnValue(clock_ms)
+
+            const shown_ms = unix_now() * MILLISECONDS_PER_SECOND
+
+            expect(shown_ms).toBeLessThanOrEqual(clock_ms)
+            expect(clock_ms - shown_ms).toBeLessThan(MILLISECONDS_PER_SECOND)
+        }
+    })
+
+    it('reads the epoch rather than failing on a clock set before 1970', () => {
+        const now = vi.spyOn(Date, 'now')
+
+        now.mockReturnValue(Date.parse('1969-07-20T20:17:40.000Z'))
+
+        expect(unix_now()).toBe(0)
+
+        now.mockReturnValue(-1)
+
+        expect(unix_now()).toBe(0)
+
+        now.mockReturnValue(0)
+
+        expect(unix_now()).toBe(0)
     })
 })

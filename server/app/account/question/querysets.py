@@ -23,7 +23,6 @@ class AccountQuestionQuerySet(QuerySet['AccountQuestion']):
             raise ValueError(message)
 
         latest = self.order_by('-created_datetime').values_list('created_datetime', flat=True)
-
         return sorted(latest[:count])
 
     def by_id(self, question_id: int) -> Self:

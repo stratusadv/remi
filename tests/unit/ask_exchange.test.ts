@@ -1,18 +1,51 @@
-import { mount } from '@vue/test-utils'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import AskExchange from '../../src/components/ask_exchange.vue'
+import { use_ask } from '../../src/composables/use_ask'
 import { use_context_menu } from '../../src/composables/use_context_menu'
+import { use_pipeline } from '../../src/composables/use_pipeline'
 import { assert } from '../../src/lib/assert'
-import { ATTACH_TO, PROPERTIES } from './fixtures'
+import { ipc } from '../../src/lib/ipc'
+import {
+    ATTACH_TO,
+    PROPERTIES,
+    ask_source_build,
+    job_meta_build,
+    mount_auto_unmount,
+    transcript_build,
+} from './fixtures'
 import type { VueWrapper } from '@vue/test-utils'
 import type { Exchange } from '../../src/composables/use_ask'
+import type { SegmentRange } from '../../src/types'
 
 
 vi.mock('../../src/lib/ipc')
 
+const ask_state = use_ask()
 const context_menu = use_context_menu()
-const mounted = new Set<VueWrapper>()
+const pipeline = use_pipeline()
 
+const CITED_TWICE = Object.freeze<Partial<Exchange>>({
+    answer: 'Sam drafts it [M1]. Priya reviews it [M2]. Sam ships it [M1].',
+    meetings: [job_meta_build({ id: 'job-1', title: 'Weekly sync' })],
+    sources: [
+        ask_source_build({ job_id: 'job-1', marker: 'M1' }),
+        ask_source_build({ heading: 'Next steps', job_id: 'job-1', marker: 'M2' }),
+    ],
+    state: 'done',
+})
+
+
+function documents_mock(range: SegmentRange | null): void {
+    assert(range === null || range.segment_index_first >= 0)
+    assert(range === null || range.segment_index_first <= range.segment_index_last)
+
+    vi.mocked(ipc.job_transcript_engines_list).mockResolvedValue(['stratus.listen'])
+    vi.mocked(ipc.job_transcript_load).mockResolvedValue(transcript_build(['hello', 'world']))
+    vi.mocked(ipc.job_transcript_range_find).mockResolvedValue(range)
+    vi.mocked(ipc.job_waveform_get).mockResolvedValue(null)
+    vi.mocked(ipc.notes_load).mockResolvedValue('# Notes')
+}
 
 function exchange_build(patch: Partial<Exchange>): Exchange {
     assert(typeof patch === 'object')
@@ -33,8 +66,27 @@ function exchange_build(patch: Partial<Exchange>): Exchange {
     }
 }
 
+function hovered_numbers(wrapper: VueWrapper, selector: string): string[] {
+    assert(!wrapper.vm.$.isUnmounted)
+    assert(selector.length > 0)
+
+    return wrapper
+        .findAll(selector)
+        .filter((badge) => badge.attributes('data-hovered') === 'true')
+        .map((badge) => badge.text())
+}
+
+function lookup_claim(): string {
+    const call = vi.mocked(ipc.job_transcript_range_find).mock.lastCall
+
+    assert(call !== undefined, 'no transcript passage was looked up')
+    assert(call[0] === 'job-1')
+
+    return call[1]
+}
+
 async function menu_ids(wrapper: VueWrapper): Promise<string[] | null> {
-    assert(mounted.has(wrapper))
+    assert(!wrapper.vm.$.isUnmounted)
 
     context_menu.close()
     await wrapper.get('.ask-question').trigger('contextmenu')
@@ -52,22 +104,41 @@ function mount_exchange(patch: Partial<Exchange>, last: boolean): VueWrapper {
     assert(patch.state !== undefined, 'each case names the state its menu depends on')
     assert(typeof last === 'boolean')
 
-    const wrapper = mount(AskExchange, {
-        [PROPERTIES]: { exchange: exchange_build(patch), last },
+    return mount_shown(exchange_build(patch), last)
+}
+
+function mount_shown(exchange: Exchange, last: boolean): VueWrapper {
+    assert(exchange.id.length > 0)
+    assert(typeof last === 'boolean')
+
+    const wrapper = mount_auto_unmount(AskExchange, {
+        [PROPERTIES]: { exchange, last },
         [ATTACH_TO]: document.body,
     })
-
-    mounted.add(wrapper)
 
     return wrapper
 }
 
-afterEach(() => {
-    for (const wrapper of mounted) wrapper.unmount()
+async function sources_toggle(wrapper: VueWrapper, open: boolean): Promise<void> {
+    assert(!wrapper.vm.$.isUnmounted)
 
-    mounted.clear()
-    context_menu.close()
-    document.body.innerHTML = ''
+    const details = wrapper.get<HTMLDetailsElement>('.ask-sources').element
+
+    assert(details.open !== open)
+
+    details.open = open
+    details.dispatchEvent(new Event('toggle'))
+    await flushPromises()
+}
+
+beforeEach(() => {
+    onTestFinished(() => {
+        context_menu.close()
+        ask_state.sources_open.value = []
+        pipeline.pipeline_reset()
+        vi.resetAllMocks()
+        document.body.innerHTML = ''
+    })
 })
 
 describe('AskExchange menu', () => {
@@ -160,5 +231,180 @@ describe('AskExchange notice', () => {
 
         expect(problem).toContain('Process a recording to keep asking.')
         expect(failed.find('.ask-notice').exists()).toBe(false)
+    })
+})
+
+describe('AskExchange answer', () => {
+    it('shows bold text in bold without its asterisks', () => {
+        const answer = '- **QR code sign-up flow**: Sam drafts it.'
+        const item = mount_exchange({ answer, state: 'done' }, true).get('.ask-answer li')
+
+        expect(item.get('strong').text()).toBe('QR code sign-up flow')
+        expect(item.text()).toBe('QR code sign-up flow: Sam drafts it.')
+    })
+})
+
+describe('AskExchange sources', () => {
+    const cited: Partial<Exchange> = {
+        answer: 'Sam drafts it [M1].',
+        meetings: [job_meta_build({ id: 'job-1', title: 'Weekly sync' })],
+        sources: [ask_source_build({ job_id: 'job-1', marker: 'M1' })],
+        state: 'done',
+    }
+
+    it('lists each cited source in a closed dropdown under the settled answer', () => {
+        const wrapper = mount_exchange(cited, true)
+        const rows = wrapper.findAll('.ask-sources .ask-source')
+
+        expect(wrapper.get('.ask-sources-toggle').text()).toBe('1 source')
+        expect(wrapper.get<HTMLDetailsElement>('.ask-sources').element.open).toBe(false)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]?.get('.ask-source-number').text()).toBe('1')
+        expect(rows[0]?.get('.ask-source-title').text()).toBe('Weekly sync')
+        expect(rows[0]?.get('.ask-source-where').text()).toBe('Decisions')
+    })
+
+    it('waits for the answer to settle before listing its sources', () => {
+        const answering = mount_exchange({ ...cited, state: 'answering' }, true)
+
+        expect(answering.find('.ask-sources').exists()).toBe(false)
+    })
+
+    it('keeps an opened source list open when the answer is shown again', async () => {
+        const exchange = exchange_build(cited)
+        const other = mount_shown(exchange_build(cited), false)
+        const first = mount_shown(exchange, true)
+
+        expect(first.get<HTMLDetailsElement>('.ask-sources').element.open).toBe(false)
+
+        await sources_toggle(first, true)
+
+        expect(ask_state.sources_open.value).toEqual([exchange.id])
+        expect(other.get<HTMLDetailsElement>('.ask-sources').element.open).toBe(false)
+
+        first.unmount()
+
+        const again = mount_shown(exchange, true)
+
+        expect(again.get<HTMLDetailsElement>('.ask-sources').element.open).toBe(true)
+
+        await sources_toggle(again, false)
+
+        expect(ask_state.sources_open.value).toEqual([])
+    })
+
+    it('forgets every open source list when a new chat starts', async () => {
+        ask_state.sources_open.value = ['left-open']
+
+        await ask_state.clear()
+
+        expect(ask_state.sources_open.value).toEqual([])
+    })
+})
+
+describe('AskExchange source hover', () => {
+    it('marks every citation of the listed source under the pointer', async () => {
+        const wrapper = mount_exchange(CITED_TWICE, true)
+
+        await sources_toggle(wrapper, true)
+
+        const second = wrapper.findAll('.ask-source')[1]
+
+        assert(second !== undefined)
+
+        await second.trigger('mouseenter')
+
+        expect(hovered_numbers(wrapper, '.ask-cite')).toEqual(['2'])
+        expect(hovered_numbers(wrapper, '.ask-source-number')).toEqual(['2'])
+
+        await second.trigger('mouseleave')
+
+        expect(hovered_numbers(wrapper, '.ask-cite')).toEqual([])
+        expect(hovered_numbers(wrapper, '.ask-source-number')).toEqual([])
+    })
+
+    it('marks the listed source of the citation under the pointer', async () => {
+        const wrapper = mount_exchange(CITED_TWICE, true)
+
+        await sources_toggle(wrapper, true)
+
+        const first = wrapper.findAll('.ask-cite')[0]
+
+        assert(first !== undefined)
+
+        await first.trigger('mouseenter')
+
+        expect(hovered_numbers(wrapper, '.ask-source-number')).toEqual(['1'])
+        expect(hovered_numbers(wrapper, '.ask-cite')).toEqual(['1', '1'])
+
+        await first.trigger('mouseleave')
+
+        expect(hovered_numbers(wrapper, '[data-hovered="true"]')).toEqual([])
+    })
+})
+
+describe('AskExchange source opening', () => {
+    it('opens a notes citation on the transcript passage its own sentence matches', async () => {
+        documents_mock({ segment_index_first: 4, segment_index_last: 6 })
+
+        const second = mount_exchange(CITED_TWICE, true).findAll('.ask-cite')[1]
+
+        assert(second !== undefined)
+
+        await second.trigger('click')
+        await flushPromises()
+
+        expect(lookup_claim()).toContain('Priya reviews it')
+        expect(lookup_claim()).not.toContain('Sam')
+        expect(pipeline.view_current.value).toBe('transcribe')
+
+        expect(pipeline.segment_focus.value).toEqual({
+            job_id: 'job-1',
+            segment_index_first: 4,
+            segment_index_last: 6,
+        })
+    })
+
+    it('opens a listed notes source on its notes when no passage matches', async () => {
+        documents_mock(null)
+
+        const wrapper = mount_exchange(CITED_TWICE, true)
+
+        await sources_toggle(wrapper, true)
+        await wrapper.get('.ask-source').trigger('click')
+        await flushPromises()
+
+        expect(lookup_claim()).toContain('Sam drafts it')
+        expect(lookup_claim()).toContain('Sam ships it')
+        expect(lookup_claim()).not.toContain('Priya')
+        expect(pipeline.view_current.value).toBe('notes')
+        expect(pipeline.segment_focus.value).toBeNull()
+    })
+
+    it('opens a transcript citation at its own passage without a lookup', async () => {
+        documents_mock(null)
+
+        const moment = ask_source_build({
+            job_id: 'job-1',
+            marker: 'M1',
+            segment_index_first: 2,
+            segment_index_last: 3,
+            source: 'transcript',
+            start_seconds: 60,
+        })
+
+        const wrapper = mount_exchange({ ...CITED_TWICE, sources: [moment] }, true)
+
+        await wrapper.get('.ask-cite').trigger('click')
+        await flushPromises()
+
+        expect(ipc.job_transcript_range_find).not.toHaveBeenCalled()
+        expect(pipeline.view_current.value).toBe('transcribe')
+
+        expect(pipeline.segment_focus.value).toEqual({
+            job_id: 'job-1',
+            segment_index_first: 2,
+            segment_index_last: 3,
+        })
     })
 })

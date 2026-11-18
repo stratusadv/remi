@@ -1,0 +1,197 @@
+body {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    gap: clamp(40px, 7vh, 72px);
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding: clamp(24px, 4vh, 44px) var(--gutter) clamp(24px, 4vh, 40px);
+    isolation: isolate;
+}
+
+.facets i:nth-child(1) {
+    --shape: polygon(0 0, 30% 0, 16% 100%, 0 100%);
+    --fill: var(--plum);
+}
+
+.facets i:nth-child(2) {
+    --shape: polygon(47% 0, 53% 0, 39% 100%, 33% 100%);
+    --fill: rgba(255, 255, 255, 0.025);
+}
+
+.facets i:nth-child(3) {
+    --shape: polygon(76% 0, 95% 0, 87% 15%);
+    --fill: var(--rose-deep);
+}
+
+.facets i:nth-child(4) {
+    --shape: polygon(87% 36%, 98% 32%, 99% 60%, 89% 64%);
+    --fill: radial-gradient(circle, rgba(162, 148, 255, 0.45) 1.5px, transparent 2px) 0 0 / 12px 12px;
+}
+
+.facets i:nth-child(5) {
+    --shape: polygon(100% 74%, 100% 100%, 82% 100%);
+    --fill: var(--stripes);
+}
+
+.facets i:nth-child(6) {
+    --shape: polygon(70% 68%, 79% 64%, 77% 79%);
+    --fill: rgba(255, 196, 107, 0.5);
+}
+
+.masthead,
+.download,
+.foot {
+    width: 100%;
+    max-width: 880px;
+    margin: 0 auto;
+}
+
+.brand {
+    display: block;
+    width: max-content;
+    color: var(--text);
+}
+
+.download {
+    align-self: center;
+}
+
+.download h1 {
+    margin-bottom: clamp(32px, 5vh, 48px);
+    font-size: clamp(3rem, 7vw, 6rem);
+}
+
+.download h1 em {
+    color: var(--rose-light);
+}
+
+.download .notice {
+    max-width: 560px;
+}
+
+.button.big {
+    gap: 16px;
+    min-width: min(100%, 420px);
+    height: clamp(72px, 9vw, 92px);
+    padding: 0 clamp(28px, 4vw, 44px);
+    font-size: clamp(19px, 2vw, 23px);
+    box-shadow: 8px 8px 0 var(--plane);
+}
+
+.button.big::before {
+    flex: none;
+    width: 0.8em;
+    height: 0.95em;
+    background: currentColor;
+    clip-path: polygon(32% 0, 68% 0, 68% 52%, 100% 52%, 50% 100%, 0 52%, 32% 52%);
+    content: "";
+}
+
+.button.big:hover {
+    box-shadow: 12px 12px 0 var(--plane);
+}
+
+.button.big:active {
+    box-shadow: 3px 3px 0 var(--plane);
+}
+
+#mobile:not([hidden]) ~ #get-main,
+#mobile:not([hidden]) ~ .others-label {
+    display: none;
+}
+
+.download .release {
+    margin-top: 26px;
+}
+
+.stub {
+    display: grid;
+    justify-items: start;
+    gap: 14px;
+    max-width: 560px;
+    margin: 44px 12px 0 0;
+    padding: 22px 24px 24px;
+    background: var(--ink-dots), var(--paper-deep);
+    color: var(--paper-ink);
+    box-shadow: 0 0 0 2px var(--paper-ink), 10px 10px 0 var(--rose);
+    transform: rotate(-0.8deg);
+}
+
+.stub p {
+    margin: 0;
+}
+
+.stub-label {
+    color: var(--paper-soft);
+    font: 500 11px/1.4 var(--mono);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+}
+
+.stub-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+}
+
+.stub :focus-visible {
+    outline-color: var(--cyan-ink);
+}
+
+#code {
+    padding: 12px 16px;
+    white-space: nowrap;
+    background: linear-gradient(104deg, var(--saffron) 0 58%, var(--saffron-deep) 58%);
+    color: var(--ink);
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    box-shadow: 0 0 0 2px var(--paper-ink);
+}
+
+.others-label {
+    margin: 56px 0 0;
+    color: var(--faint);
+    font: 500 12px/1.3 var(--mono);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+}
+
+.others-label:has(+ .others:empty) {
+    display: none;
+}
+
+.download .others a {
+    padding: 12px 16px;
+    font-size: 15px;
+}
+
+.foot {
+    padding-top: 24px;
+    border-top: 1px solid var(--edge);
+}
+
+@media (max-width: 600px) {
+    .lockup {
+        height: 26px;
+    }
+
+    .facets i:nth-child(3) {
+        --shape: polygon(74% 0, 96% 0, 88% 6%);
+    }
+
+    .facets i:nth-child(4),
+    .facets i:nth-child(6) {
+        display: none;
+    }
+
+    .stub {
+        margin-right: 10px;
+        padding: 20px;
+    }
+
+    .others-label {
+        margin-top: 44px;
+    }
+}

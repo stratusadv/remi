@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { use_jobs } from '../../src/composables/use_jobs'
+import { MESSAGE_UNSHOWN } from '../../src/lib/errors'
 import { ipc } from '../../src/lib/ipc'
 import { job_listing_build } from './fixtures'
 import type { Waveform } from '../../src/types'
@@ -36,7 +37,7 @@ describe('refresh', () => {
         await jobs_state.refresh()
 
         expect(jobs_state.jobs.value).toHaveLength(1)
-        expect(jobs_state.error_message.value).toBe('Error: no store')
+        expect(jobs_state.error_message.value).toBe('no store')
     })
 })
 
@@ -57,7 +58,7 @@ describe('favourite_set', () => {
         await jobs_state.favourite_set('job-1', false)
 
         expect(ipc.jobs_list).not.toHaveBeenCalled()
-        expect(jobs_state.error_message.value).toBe('Error: locked')
+        expect(jobs_state.error_message.value).toBe('locked')
     })
 })
 
@@ -83,7 +84,7 @@ describe('remove', () => {
 
         await jobs_state.remove('job-1')
 
-        expect(jobs_state.error_message.value).toBe('in use')
+        expect(jobs_state.error_message.value).toBe(MESSAGE_UNSHOWN)
         expect(ipc.jobs_list).not.toHaveBeenCalled()
     })
 })

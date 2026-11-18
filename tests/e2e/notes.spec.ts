@@ -23,6 +23,8 @@ const LINE_FIRST = 'Alpha beta'
 const LINE_SECOND = 'Gamma delta'
 const EXPORT_PATH = '/home/you/Documents/notes.docx'
 const PRINT_STUB = 'window.print = () => { document.body.dataset.printed = "true" }'
+const TITLE_GENERATION_ELSEWHERE = 'notes that finish after another meeting opens never land in it'
+const TITLE_GENERATION_RETURN = 'a meeting reopened mid-generation shows the notes still coming'
 
 const TITLE_SELECTION_COUNT = 'the selection count follows the selection '
     + 'and resets when it is cleared'
@@ -117,6 +119,59 @@ test('Regenerate asks before overwriting', async ({ page }) => {
     await expect(editor(page)).not.toContainText(LINE_FIRST)
 })
 
+test('an edit made just before leaving Notes is kept', async ({ page }) => {
+    await notes_open(page)
+    await editor(page).getByText(LINE_FIRST, { exact: true }).click()
+    await page.keyboard.press('End')
+    await page.keyboard.type(' kept')
+    await nav_to(page, 'Home')
+    await recording_open(page, RECORDING_TITLED)
+
+    await expect(editor(page).locator('p')).toHaveText([`${LINE_FIRST} kept`, LINE_SECOND])
+})
+
+test(TITLE_GENERATION_ELSEWHERE, async ({ page }) => {
+    await notes_open(page)
+    await nav_to(page, 'Home')
+    await notes_empty_open(page)
+    await page.getByRole('button', { name: 'Generate notes' }).click()
+    await expect(page.locator('.notes-stream-pane')).toBeVisible()
+    await nav_to(page, 'Home')
+    await recording_open(page, RECORDING_TITLED)
+
+    const lines = editor(page).locator('p')
+
+    await expect(lines).toHaveText([LINE_FIRST, LINE_SECOND])
+    await expect(page.locator('aside')).toContainText('Notes ready', { timeout: STREAM_TIMEOUT_MS })
+    await expect(lines).toHaveText([LINE_FIRST, LINE_SECOND])
+
+    await nav_to(page, 'Home')
+    await recording_open(page, RECORDING_TITLED)
+
+    await expect(lines).toHaveText([LINE_FIRST, LINE_SECOND])
+
+    await nav_to(page, 'Home')
+    await recording_open(page, RECORDING_UNTITLED)
+
+    await expect(editor(page).locator('h1')).toHaveText(RECORDING_TITLED)
+})
+
+test(TITLE_GENERATION_RETURN, async ({ page }) => {
+    await notes_empty_open(page)
+    await page.getByRole('button', { name: 'Generate notes' }).click()
+    await expect(page.locator('.streaming-status')).toHaveText('Writing notes')
+    await nav_to(page, 'Home')
+    await recording_open(page, RECORDING_UNTITLED)
+
+    await expect(step_current(page)).toHaveText('Notes')
+    await expect(page.locator('.notes-stream-pane')).toContainText(RECORDING_TITLED)
+    await expect(page.getByRole('button', { name: 'Regenerating…' })).toBeDisabled()
+
+    await generation_wait(page)
+
+    await expect(editor(page).locator('h2')).toHaveText(['Summary', 'Decisions', 'Action items'])
+})
+
 test('Link asks for the address in the app and applies it to the selection', async ({ page }) => {
     await notes_open(page)
     await editor_line_select(page, LINE_SECOND)
@@ -148,12 +203,12 @@ test('Bold applies on the first click and removes on the second', async ({ page 
     await toolbar_button(page, 'Bold (Ctrl+B)').click()
 
     await expect(editor(page).locator('strong')).toHaveText(LINE_SECOND)
-    await expect(toolbar_button(page, 'Bold (Ctrl+B)')).toHaveClass(/rich-tb-btn-active/)
+    await expect(toolbar_button(page, 'Bold (Ctrl+B)')).toHaveClass(/rich-tb-btn-active/u)
 
     await toolbar_button(page, 'Bold (Ctrl+B)').click()
 
     await expect(editor(page).locator('strong')).toHaveCount(0)
-    await expect(toolbar_button(page, 'Bold (Ctrl+B)')).not.toHaveClass(/rich-tb-btn-active/)
+    await expect(toolbar_button(page, 'Bold (Ctrl+B)')).not.toHaveClass(/rich-tb-btn-active/u)
 })
 
 test('Italic applies on the first click and removes on the second', async ({ page }) => {
@@ -194,13 +249,13 @@ test('the inline code button only reads as on inside inline code', async ({ page
 
     const button = toolbar_button(page, 'Inline code')
 
-    await expect(button).not.toHaveClass(/rich-tb-btn-active/)
+    await expect(button).not.toHaveClass(/rich-tb-btn-active/u)
     await expect(button.locator('code')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
 
     await editor_line_select(page, LINE_SECOND)
     await button.click()
 
-    await expect(button).toHaveClass(/rich-tb-btn-active/)
+    await expect(button).toHaveClass(/rich-tb-btn-active/u)
 })
 
 test('the heading select changes the block type', async ({ page }) => {
@@ -229,7 +284,7 @@ test('the heading select changes the block type', async ({ page }) => {
 
     await expect(editor(page).locator('h1, h2, h3')).toHaveCount(0)
 
-    await expect(editor(page).locator('p').filter({ [HAS_TEXT]: /\S/ }))
+    await expect(editor(page).locator('p').filter({ [HAS_TEXT]: /\S/u }))
         .toHaveText([LINE_FIRST, LINE_SECOND])
 })
 
@@ -363,7 +418,7 @@ test('source mode round-trips markdown', async ({ page }) => {
 
     await page.getByRole('button', { name: 'Markdown', exact: true }).click()
 
-    await expect(source).toHaveValue(/^## Heading here\n\n- one\n- two\n\n\*\*bold\*\* text$/)
+    await expect(source).toHaveValue(/^## Heading here\n\n- one\n- two\n\n\*\*bold\*\* text$/u)
 })
 
 test('the word and character counts follow the content', async ({ page }) => {
@@ -372,7 +427,7 @@ test('the word and character counts follow the content', async ({ page }) => {
     const stats = page.locator('.rich-editor-stats')
 
     await expect(stats).toContainText('4 words')
-    await expect(stats).toContainText(/\d+ characters/)
+    await expect(stats).toContainText(/\d+ characters/u)
 
     await editor(page).getByText(LINE_SECOND).click()
     await page.keyboard.press('End')

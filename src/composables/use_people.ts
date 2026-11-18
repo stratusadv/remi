@@ -1,9 +1,11 @@
 import { computed, ref } from 'vue'
 import { assert } from '../lib/assert'
+import { error_shown } from '../lib/errors'
 import { ipc } from '../lib/ipc'
 import type { Group, Person, RecordID } from '../types'
 
 
+const PEOPLE_COUNT_MAX = 1024
 const people = ref<Person[]>([])
 const groups = ref<Group[]>([])
 const error_message = ref<string | null>(null)
@@ -46,7 +48,7 @@ export function person_name_full(person: Person): string {
 }
 
 export function use_people(): typeof api {
-    assert(Object.isFrozen(api))
+    assert(people.value.length <= PEOPLE_COUNT_MAX)
     assert(Array.isArray(people.value))
 
     return api
@@ -73,7 +75,7 @@ async function group_remove(id: RecordID): Promise<void> {
     return ipc.group_remove(id)
         .then(refresh)
         .catch((error: unknown) => {
-            error_message.value = String(error)
+            error_message.value = error_shown(error)
         })
 }
 
@@ -86,7 +88,7 @@ async function group_save(group: Group): Promise<void> {
     return ipc.group_save(group)
         .then(refresh)
         .catch((error: unknown) => {
-            error_message.value = String(error)
+            error_message.value = error_shown(error)
         })
 }
 
@@ -124,7 +126,7 @@ async function refresh(): Promise<void> {
         people.value = people_loaded
         groups.value = groups_loaded
     } catch (error) {
-        error_message.value = String(error)
+        error_message.value = error_shown(error)
     }
 }
 
@@ -137,7 +139,7 @@ async function remove(id: RecordID): Promise<void> {
     return ipc.person_remove(id)
         .then(refresh)
         .catch((error: unknown) => {
-            error_message.value = String(error)
+            error_message.value = error_shown(error)
         })
 }
 
@@ -150,6 +152,6 @@ async function save(person: Person): Promise<void> {
     return ipc.person_save(person)
         .then(refresh)
         .catch((error: unknown) => {
-            error_message.value = String(error)
+            error_message.value = error_shown(error)
         })
 }

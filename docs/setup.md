@@ -7,8 +7,9 @@ A first launch opens a welcome screen that creates your remi account. The accoun
 ## Create Your Account
 
 1. Enter your name and your email.
-2. Enter a promo code if you have one. A code adds free hours to the account.
-3. Press *Get started*.
+2. Pick your province or state. Pick *Outside Canada and the United States* if you live elsewhere.
+3. Enter a promo code if you have one. A code adds free hours to the account.
+4. Press *Get started*.
 
 The balance shows in the sidebar. A transcription takes the length of its recording from the balance, rounded up to the second, and notes, rewrites, and questions take nothing.
 
@@ -30,18 +31,8 @@ The *Promo code* box on the *Account* tab redeems a code later. Each code works 
 
 The code opens your account, so keep it private, like a password.
 
-## Use Your Company's Keys
-
-A copy of remi built without keys asks for an API address and two keys instead, one for transcription and one for notes. Your company gives you all three.
-
-1. Enter the *API address*, such as `https://api.example.com`.
-2. Paste the *Transcription key* and the *Notes key*.
-3. Press *Continue*.
-
-The button tests nothing, so a wrong value only shows up at the first transcription. The *AI* tab of Settings changes any of the three later.
-
-The keys are encrypted for your account on Windows, and on macOS and Linux they are plain text in a file only your account can read.
-
 ## What Leaves Your Computer
 
-The audio and the names on your People page go to the transcription service. The transcript, the template, and the people you tick go to the notes service, which also handles corrections, rewrites, and titles. A question on the *Ask* page goes to the notes service with excerpts from the recordings that match it. Both services sit behind the one address.
+The audio and the names on your People page go to the transcription service. The transcript, the template, and the people you tick go to the notes service, which also handles corrections, rewrites, and titles. A question on the *Ask* page goes to the notes service with excerpts from the recordings that match it. Both services sit behind remi's server.
+
+The server passes each request on to the AI service and keeps only the length and a fingerprint of each piece of audio, so a recording is billed once.

@@ -1,0 +1,15 @@
+WORLD_DATABASE_NAME = 'remi_world'
+WORLD_FAKES_PORT_DEFAULT = 47802
+WORLD_GATEWAY_KEY_NOTES = 'world-notes-key'
+WORLD_GATEWAY_KEY_TRANSCRIPTION = 'world-transcription-key'
+WORLD_PORTAL_API_KEY = 'remi-world-portal-key'
+WORLD_PORTAL_PORT_DEFAULT = 47803
+WORLD_PORT_MAX = 65_535
+WORLD_PORT_MIN = 1024
+WORLD_PROMOS = (('wib', 'WIB2026', 50, 500), ('general', 'FRIEND', 5, 500))
+WORLD_REMI_PORT_DEFAULT = 47801
+WORLD_SECRET_KEY = 'remi-world-secret-key-for-local-end-to-end-tests-only'
+WORLD_SENDGRID_API_KEY = 'SG.remi-world'
+WORLD_STRIPE_PUBLISHABLE_KEY = 'pk_test_remiworld'
+WORLD_STRIPE_SECRET_KEY = 'sk_test_remiworld'
+WORLD_STRIPE_WEBHOOK_SECRET = 'whsec_remiworld'

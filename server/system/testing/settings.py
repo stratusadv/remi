@@ -6,6 +6,9 @@ from system.base_settings import *
 DJANGO_SPIRE_REMOTE_API_KEY = ''
 DJANGO_SPIRE_REMOTE_API_URL = ''
 PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
+REMI_API_HOST = ''
+REMI_API_KEY_NOTES = ''
+REMI_API_KEY_TRANSCRIPTION = ''
 SENDGRID_API_KEY = ''
 STRIPE_PUBLISHABLE_KEY = ''
 STRIPE_SECRET_KEY = ''

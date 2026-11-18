@@ -131,7 +131,7 @@ describe('the context menu', () => {
 
         await flushPromises()
 
-        expect(dialog.current.value?.message).toContain('this chat was deleted')
+        expect(dialog.current.value?.message).toBe('This chat was deleted.')
 
         dialog.close(false)
         await chosen

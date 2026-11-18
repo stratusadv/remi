@@ -2,21 +2,31 @@ use crate::error::{AppError, AppResult};
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use std::future::Future;
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hasher};
 use std::sync::LazyLock;
 use std::time::Duration;
 
+const BODY_EXCERPT_CHARS_MAX: u32 = 2048;
 const RESPONSE_BYTES_MAX: u32 = 8 << 20;
 const RESPONSE_CHUNK_COUNT_MAX: u32 = 1 << 20;
+pub(crate) const RETRY_ATTEMPTS_LIMIT: u32 = 16;
 pub(crate) const RETRY_ATTEMPTS_MAX: u32 = 3;
+const RETRY_BACKOFF_DOUBLINGS_MAX: u32 = 3;
 const RETRY_BACKOFF_MS_BASE: u64 = 500;
+
+pub(crate) const RETRY_BUDGET_DEFAULT: RetryBudget =
+    RetryBudget { attempts_max: RETRY_ATTEMPTS_MAX, backoff_ms_base: RETRY_BACKOFF_MS_BASE };
+
 const STATUS_CODE_CEILING: u16 = 1000;
 const STATUS_CODE_FIRST: u16 = 100;
 const STATUS_CODE_LAST: u16 = 599;
 const STATUS_CODE_SERVER_FIRST: u16 = 500;
 const STATUS_CODE_TOO_MANY_REQUESTS: u16 = 429;
 
+const _: () = assert!(BODY_EXCERPT_CHARS_MAX > 0);
 const _: () = assert!(RETRY_ATTEMPTS_MAX >= 1);
+const _: () = assert!(RETRY_ATTEMPTS_MAX <= RETRY_ATTEMPTS_LIMIT);
 const _: () = assert!(RETRY_BACKOFF_MS_BASE > 0);
 const _: () = assert!(RESPONSE_BYTES_MAX > 0);
 const _: () = assert!(STATUS_CODE_FIRST < STATUS_CODE_SERVER_FIRST);
@@ -35,16 +45,29 @@ pub(crate) struct ClientTimeouts {
 #[derive(Deserialize)]
 struct OpenAIError {
     #[serde(default)]
-    message: Option<String>,
-    #[serde(default)]
     code: Option<String>,
     #[serde(default, rename = "type")]
     kind: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct OpenAIErrorEnvelope {
     error: OpenAIError,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ReplyFailed<'reply> {
+    pub(crate) body: &'reply str,
+    pub(crate) label: &'reply str,
+    pub(crate) status: reqwest::StatusCode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RetryBudget {
+    pub(crate) attempts_max: u32,
+    pub(crate) backoff_ms_base: u64,
 }
 
 pub(crate) fn api_status_code(message: &str) -> Option<u16> {
@@ -59,6 +82,28 @@ pub(crate) fn api_status_code(message: &str) -> Option<u16> {
     assert!(code <= STATUS_CODE_LAST);
 
     Some(code)
+}
+
+pub(crate) fn body_error_absent_message(reply: &ReplyFailed<'_>) -> String {
+    assert!(!reply.status.is_success());
+    assert_ne!(reply.label, "");
+
+    let excerpt: String = reply.body.chars().take(usize_of!(BODY_EXCERPT_CHARS_MAX)).collect();
+
+    tracing::warn!(
+        target: "remi_lib::http",
+        "{} failed with {} and a body that is not an error envelope: {excerpt:?}",
+        reply.label,
+        reply.status.as_u16(),
+    );
+
+    let reason = reply.status.canonical_reason().unwrap_or("unexpected status").to_lowercase();
+
+    if reply.status.is_server_error() {
+        return format!("The server ran into a problem ({reason}). Try again in a few minutes.");
+    }
+
+    format!("The server refused the request ({reason}).")
 }
 
 pub(crate) fn body_error_message(body: &str) -> Option<String> {
@@ -86,7 +131,7 @@ pub(crate) fn client_build(timeouts: &ClientTimeouts) -> Result<reqwest::Client,
 }
 
 pub(crate) fn client_get(cell: &'static ClientCell) -> AppResult<&'static reqwest::Client> {
-    cell.as_ref().map_err(|message| AppError::Config(message.clone()))
+    cell.as_ref().map_err(|message| AppError::Internal(message.clone()))
 }
 
 pub(crate) fn crypto_provider_install() {
@@ -116,7 +161,11 @@ pub(crate) async fn response_ensure_ok(
 
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
-    let message_friendly = body_error_friendly(&body).unwrap_or(body);
+    let reply = ReplyFailed { body: &body, label, status };
+
+    let message_friendly =
+        body_error_friendly(&body).unwrap_or_else(|| body_error_absent_message(&reply));
+
     let message = format!("{} {label}: {message_friendly}", status.as_u16());
 
     Err(AppError::Service(message))
@@ -129,7 +178,7 @@ pub(crate) async fn response_json_bounded<T: DeserializeOwned>(
         response.content_length().filter(|length| *length > u64::from(RESPONSE_BYTES_MAX));
 
     if let Some(length) = declared {
-        return Err(AppError::Service(format!(
+        return Err(AppError::Internal(format!(
             "the response is {length} bytes, over the {RESPONSE_BYTES_MAX} bytes this app reads",
         )));
     }
@@ -140,13 +189,13 @@ pub(crate) async fn response_json_bounded<T: DeserializeOwned>(
 
     for _chunk_index in 0..RESPONSE_CHUNK_COUNT_MAX {
         let Some(chunk) = stream.next().await else {
-            return Ok(serde_json::from_slice(&body)?);
+            return body_parse(&body);
         };
 
         let bytes = chunk?;
 
         if body.len() + bytes.len() > body_bytes_max {
-            return Err(AppError::Service(format!(
+            return Err(AppError::Internal(format!(
                 "the response ran past the {RESPONSE_BYTES_MAX} bytes this app reads",
             )));
         }
@@ -154,7 +203,7 @@ pub(crate) async fn response_json_bounded<T: DeserializeOwned>(
         body.extend_from_slice(&bytes);
     }
 
-    Err(AppError::Service(format!(
+    Err(AppError::Internal(format!(
         "the response arrived in more than {RESPONSE_CHUNK_COUNT_MAX} pieces without ending",
     )))
 }
@@ -181,6 +230,7 @@ pub(crate) fn retry_is_transient(error: &AppError) -> bool {
         | AppError::Config(_)
         | AppError::Export(_)
         | AppError::Index(_)
+        | AppError::Internal(_)
         | AppError::IO(_)
         | AppError::Serde(_)
         | AppError::Task(_)
@@ -193,7 +243,18 @@ where
     Attempt: Fn() -> Work,
     Work: Future<Output = AppResult<T>>,
 {
-    for attempt in 0..RETRY_ATTEMPTS_MAX - 1 {
+    retry_run_budgeted(&RETRY_BUDGET_DEFAULT, attempt_run).await
+}
+
+pub(crate) async fn retry_run_budgeted<T, Attempt, Work>(
+    budget: &RetryBudget,
+    attempt_run: Attempt,
+) -> AppResult<T>
+where
+    Attempt: Fn() -> Work,
+    Work: Future<Output = AppResult<T>>,
+{
+    for attempt in 0..retry_count_max(budget) {
         let error = match attempt_run().await {
             Ok(value) => return Ok(value),
             Err(error) => error,
@@ -203,7 +264,7 @@ where
             return Err(error);
         }
 
-        let delay = retry_delay(attempt);
+        let delay = retry_delay(budget, attempt);
 
         tracing::warn!(
             target: "remi_lib::http",
@@ -248,14 +309,90 @@ fn body_error_friendly(body: &str) -> Option<String> {
     Some(message)
 }
 
-fn retry_delay(attempt: u32) -> Duration {
-    assert!(attempt + 1 < RETRY_ATTEMPTS_MAX);
+fn body_parse<T: DeserializeOwned>(body: &[u8]) -> AppResult<T> {
+    let text = String::from_utf8_lossy(body);
 
-    let delay_ms = RETRY_BACKOFF_MS_BASE << attempt;
+    if let Some(message) = body_error_message(&text) {
+        return Err(AppError::Service(message));
+    }
 
-    assert!(delay_ms >= RETRY_BACKOFF_MS_BASE);
+    Ok(serde_json::from_slice(body)?)
+}
+
+fn retry_count_max(budget: &RetryBudget) -> u32 {
+    assert!(budget.attempts_max >= 1);
+    assert!(budget.attempts_max <= RETRY_ATTEMPTS_LIMIT);
+
+    budget.attempts_max - 1
+}
+
+fn retry_delay(budget: &RetryBudget, attempt: u32) -> Duration {
+    assert!(attempt + 1 < budget.attempts_max);
+    assert!(budget.backoff_ms_base > 0);
+
+    let ceiling_ms = budget.backoff_ms_base << attempt.min(RETRY_BACKOFF_DOUBLINGS_MAX);
+    let floor_ms = ceiling_ms.div_euclid(2);
+    let delay_ms = floor_ms + retry_jitter_ms(ceiling_ms - floor_ms);
+
+    assert!(delay_ms >= floor_ms);
+    assert!(delay_ms <= ceiling_ms);
 
     Duration::from_millis(delay_ms)
+}
+
+fn retry_jitter_ms(span_ms: u64) -> u64 {
+    assert!(span_ms > 0);
+
+    let random = RandomState::new().build_hasher().finish();
+    let jitter_ms = random % span_ms.saturating_add(1);
+
+    assert!(jitter_ms <= span_ms);
+
+    jitter_ms
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpStream;
+
+    const REQUEST_READS_MAX: u32 = 64;
+
+    fn request_complete(received: &[u8]) -> bool {
+        let text = String::from_utf8_lossy(received);
+
+        let Some((head, body)) = text.split_once("\r\n\r\n") else {
+            return false;
+        };
+
+        let length = head
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase().strip_prefix("content-length:").map(str::to_owned)
+            })
+            .map_or(0, |value| value.trim().parse::<usize>().unwrap());
+
+        body.len() >= length
+    }
+
+    pub(crate) async fn request_read(stream: &mut TcpStream) -> String {
+        let mut received: Vec<u8> = Vec::new();
+        let mut block = [0_u8; 4096];
+
+        for _read_index in 0..REQUEST_READS_MAX {
+            let read = stream.read(&mut block).await.unwrap();
+
+            assert_ne!(read, 0);
+
+            received.extend_from_slice(&block[..read]);
+
+            if request_complete(&received) {
+                return String::from_utf8(received).unwrap();
+            }
+        }
+
+        panic!("the request did not end within {REQUEST_READS_MAX} reads");
+    }
 }
 
 #[cfg(test)]
@@ -300,6 +437,21 @@ mod tests {
 
         assert_eq!(body_error_friendly(r#"{"message":"bad"}"#), None);
         assert_eq!(body_error_friendly(""), None);
+    }
+
+    #[test]
+    fn a_reply_padded_with_whitespace_parses_and_an_error_envelope_comes_back_as_its_message() {
+        let padded = b"\n\n\n{\"choices\": [{\"message\": {\"content\": \"Budget review\"}}]}";
+        let envelope = b"\n{\"error\": {\"message\": \"overloaded\"}}";
+        let trimmed = padded.trim_ascii_start();
+        let parsed: serde_json::Value = body_parse(padded).unwrap();
+        let expected: serde_json::Value = serde_json::from_slice(trimmed).unwrap();
+        let failure = body_parse::<serde_json::Value>(envelope);
+        let garbled = body_parse::<serde_json::Value>(b"\n\nnot json");
+
+        assert_eq!(parsed, expected);
+        assert!(matches!(&failure, Err(AppError::Service(message)) if message == "overloaded"));
+        assert!(matches!(garbled, Err(AppError::Serde(_))));
     }
 
     #[test]
@@ -379,6 +531,41 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(attempts.load(Ordering::SeqCst), RETRY_ATTEMPTS_MAX);
+    }
+
+    #[tokio::test]
+    async fn a_larger_budget_makes_each_of_its_attempts_before_giving_up() {
+        let attempts = AtomicU32::new(0);
+        let budget = RetryBudget { attempts_max: 7, backoff_ms_base: 1 };
+
+        let result: AppResult<()> = retry_run_budgeted(&budget, || async {
+            let _previous = attempts.fetch_add(1, Ordering::SeqCst);
+
+            Err(AppError::Service("503 remote transcribe: down".into()))
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), budget.attempts_max);
+    }
+
+    #[test]
+    fn each_retry_waits_between_half_and_all_of_its_capped_backoff() {
+        let budget = RetryBudget { attempts_max: 9, backoff_ms_base: 500 };
+
+        for attempt in 0..budget.attempts_max - 1 {
+            let doubled = 500_u64 * 2_u64.pow(attempt.min(3));
+            let ceiling_ms = doubled.min(4_000);
+            let ceiling = Duration::from_millis(ceiling_ms);
+            let floor = Duration::from_millis(ceiling_ms.div_euclid(2));
+
+            for _draw in 0_u32..64 {
+                let delay = retry_delay(&budget, attempt);
+
+                assert!(delay >= floor, "{attempt}: {delay:?}");
+                assert!(delay <= ceiling, "{attempt}: {delay:?}");
+            }
+        }
     }
 
     #[test]

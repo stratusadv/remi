@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref, useTemplateRef } from 'vue'
 import { use_context_menu } from '../composables/use_context_menu'
 import { use_dialog } from '../composables/use_dialog'
+import { use_modal } from '../composables/use_modal'
 import { person_name_full, use_people } from '../composables/use_people'
 import { use_pipeline } from '../composables/use_pipeline'
 import { use_shortcuts } from '../composables/use_shortcuts'
 import { assert } from '../lib/assert'
-import { error_dialog_show } from '../lib/errors'
+import { error_dialog_sentence_show, error_dialog_show } from '../lib/errors'
+import { transition_leave_inert } from '../lib/transition'
 import GroupForm from './group_form.vue'
 import InfoHint from './info_hint.vue'
 import MonogramTile from './monogram_tile.vue'
@@ -34,10 +36,10 @@ const HINT_PEOPLE = 'These are the people who turn up in your meetings. Add each
 
 const MESSAGE_REMOVE = 'The meetings they were added to keep their notes.'
 
-const MENU_ITEMS: MenuItem[] = [
+const MENU_ITEMS = Object.freeze<MenuItem[]>([
     { id: 'edit', label: 'Edit', icon: 'edit' },
     { id: 'delete', label: 'Delete', icon: 'delete', danger: true },
-]
+])
 
 const { open: context_menu_open } = use_context_menu()
 const { confirm: dialog_confirm } = use_dialog()
@@ -56,18 +58,16 @@ const {
 
 const edit = ref<EditState | null>(null)
 const group_edit = ref<GroupEditState | null>(null)
+const form_element = useTemplateRef<HTMLElement>('form_element')
+const covered = use_modal('dialog', () => edit.value !== null || group_edit.value !== null)
 
 const dialog_title = computed(() => {
-    if (edit.value !== null) return edit.value.person !== null ? 'Edit person' : 'New person'
+    if (edit.value !== null) return edit.value.person === null ? 'New person' : 'Edit person'
     if (group_edit.value === null) return ''
 
-    return group_edit.value.group !== null ? 'Edit group' : 'New group'
+    return group_edit.value.group === null ? 'New group' : 'Edit group'
 })
 
-
-function add_click(): void {
-    edit.value = { person: null }
-}
 
 function cancel_click(): void {
     edit.value = null
@@ -75,28 +75,37 @@ function cancel_click(): void {
 }
 
 async function delete_click(person: Person): Promise<void> {
-    const ok = await dialog_confirm(
-        `Remove ${person_name_full(person)} from People? ${MESSAGE_REMOVE}`,
-        { title: 'Remove person', kind: 'warning' },
-    )
+    assert(person.id.length > 0)
 
-    if (!ok) return
+    const question = `Remove ${person_name_full(person)} from People? ${MESSAGE_REMOVE}`
 
-    try {
-        await remove(person.id)
+    return dialog_confirm(question, { title: 'Remove person', kind: 'warning' })
+        .then(async (ok) => {
+            if (!ok) return
 
-        if (error_message.value !== null) await error_dialog_show(error_message.value)
-    } catch (error) {
-        await error_dialog_show(error)
-    }
+            await remove(person.id)
+                .then(async () => {
+                    if (error_message.value !== null) {
+                        await error_dialog_sentence_show(error_message.value)
+                    }
+                })
+                .catch(error_dialog_show)
+        })
 }
 
-function edit_click(person: Person): void {
+function edit_open(person: Person | null): void {
+    assert(person === null || person.id.length > 0)
+
     edit.value = { person }
+
+    void nextTick(form_focus)
 }
 
-function group_add_click(): void {
-    group_edit.value = { group: null }
+function form_focus(): void {
+    assert(edit.value === null || group_edit.value === null)
+    assert(form_element.value === null || form_element.value.isConnected)
+
+    form_element.value?.querySelector('input')?.focus()
 }
 
 function group_context_menu(event: MouseEvent, group: Group): void {
@@ -107,56 +116,76 @@ function group_context_menu(event: MouseEvent, group: Group): void {
 }
 
 async function group_delete_click(group: Group): Promise<void> {
-    const ok = await dialog_confirm(
-        `Delete the "${group.name}" group? The people in it stay in People.`,
-        { title: 'Delete group', kind: 'warning' },
-    )
+    assert(group.id.length > 0)
 
-    if (!ok) return
+    const question = `Delete the "${group.name}" group? The people in it stay in People.`
 
-    try {
-        await group_remove(group.id)
+    return dialog_confirm(question, { title: 'Delete group', kind: 'warning' })
+        .then(async (ok) => {
+            if (!ok) return
 
-        if (error_message.value !== null) await error_dialog_show(error_message.value)
-    } catch (error) {
-        await error_dialog_show(error)
-    }
+            await group_remove(group.id)
+                .then(async () => {
+                    if (error_message.value !== null) {
+                        await error_dialog_sentence_show(error_message.value)
+                    }
+                })
+                .catch(error_dialog_show)
+        })
 }
 
-function group_edit_click(group: Group): void {
+function group_edit_open(group: Group | null): void {
+    assert(group === null || group.id.length > 0)
+
     group_edit.value = { group }
+
+    void nextTick(form_focus)
 }
 
 function group_members_text(group: Group): string {
+    assert(group.id.length > 0)
+    assert(groups_sorted.value.includes(group))
+
     const names = group_members(group).map(person_name_full)
+
+    assert(names.length <= group.person_ids.length)
 
     return names.length > 0 ? names.join(', ') : 'No members yet'
 }
 
 async function group_menu_select(group: Group, id: string): Promise<void> {
+    assert(group.id.length > 0)
+    assert(MENU_ITEMS.some((item) => item.id === id))
+
     if (id === 'edit') {
-        group_edit_click(group)
+        group_edit_open(group)
 
         return
     }
 
-    if (id === 'delete') await group_delete_click(group)
+    if (id === 'delete') return group_delete_click(group)
 }
 
 async function group_save_click(group: Group): Promise<void> {
-    try {
-        await group_save(group)
+    assert(group.id.length > 0)
+    assert(group.name.length > 0)
+    assert(group.name === group.name.trim())
 
-        if (error_message.value !== null) {
-            await error_dialog_show(error_message.value)
+    const group_edited = group_edit.value?.group ?? null
 
-            return
-        }
+    assert(group_edited === null || group_edited.id === group.id)
 
-        group_edit.value = null
-    } catch (error) {
-        await error_dialog_show(error)
-    }
+    return group_save(group)
+        .then(async () => {
+            if (error_message.value !== null) {
+                await error_dialog_sentence_show(error_message.value)
+
+                return
+            }
+
+            group_edit.value = null
+        })
+        .catch(error_dialog_show)
 }
 
 function intent_apply(): void {
@@ -166,18 +195,21 @@ function intent_apply(): void {
     assert(edit.value === null)
     assert(group_edit.value === null)
 
-    if (intent === 'group_add') group_add_click()
-    if (intent === 'person_add') add_click()
+    if (intent === 'group_add') group_edit_open(null)
+    if (intent === 'person_add') edit_open(null)
 }
 
 async function menu_select(person: Person, id: string): Promise<void> {
+    assert(person.id.length > 0)
+    assert(MENU_ITEMS.some((item) => item.id === id))
+
     if (id === 'edit') {
-        edit_click(person)
+        edit_open(person)
 
         return
     }
 
-    if (id === 'delete') await delete_click(person)
+    if (id === 'delete') return delete_click(person)
 }
 
 function person_context_menu(event: MouseEvent, person: Person): void {
@@ -188,26 +220,30 @@ function person_context_menu(event: MouseEvent, person: Person): void {
 }
 
 async function save_click(person: Person): Promise<void> {
-    try {
-        await save(person)
+    assert(person.id.length > 0)
+    assert(person.name_first.length > 0)
+    assert(person.name_first === person.name_first.trim())
 
-        if (error_message.value !== null) {
-            await error_dialog_show(error_message.value)
+    const person_edited = edit.value?.person ?? null
 
-            return
-        }
+    assert(person_edited === null || person_edited.id === person.id)
 
-        edit.value = null
-    } catch (error) {
-        await error_dialog_show(error)
-    }
+    return save(person)
+        .then(async () => {
+            if (error_message.value !== null) {
+                await error_dialog_sentence_show(error_message.value)
+
+                return
+            }
+
+            edit.value = null
+        })
+        .catch(error_dialog_show)
 }
 
 intent_apply()
 
-use_shortcuts({
-    escape: () => { if (edit.value !== null || group_edit.value !== null) cancel_click() },
-})
+use_shortcuts({ escape: cancel_click })
 </script>
 
 <template>
@@ -221,8 +257,20 @@ use_shortcuts({
                 </h2>
             </div>
             <div class="page-header-actions">
-                <button class="btn-default" @click="group_add_click">Add group</button>
-                <button class="btn-primary" @click="add_click">Add person</button>
+                <button
+                    type="button"
+                    class="btn-default"
+                    @click="group_edit_open(null)"
+                >
+                    Add group
+                </button>
+                <button
+                    type="button"
+                    class="btn-primary"
+                    @click="edit_open(null)"
+                >
+                    Add person
+                </button>
             </div>
         </header>
 
@@ -239,7 +287,7 @@ use_shortcuts({
                     @contextmenu="person_context_menu($event, person)"
                 >
                     <MonogramTile :text="person_name_full(person)" />
-                    <button type="button" class="list-row-main" @click="edit_click(person)">
+                    <button type="button" class="list-row-main" @click="edit_open(person)">
                         <span class="flex items-center gap-2 min-w-0">
                             <span class="font-medium truncate">{{ person_name_full(person) }}</span>
                             <span class="pill shrink-0">{{ person.role || 'No role' }}</span>
@@ -275,7 +323,7 @@ use_shortcuts({
                     @contextmenu="group_context_menu($event, group)"
                 >
                     <MonogramTile :text="group.name" />
-                    <button type="button" class="list-row-main" @click="group_edit_click(group)">
+                    <button type="button" class="list-row-main" @click="group_edit_open(group)">
                         <span class="flex items-center gap-2 min-w-0">
                             <span class="font-medium truncate">{{ group.name }}</span>
                             <span class="pill shrink-0">
@@ -299,12 +347,15 @@ use_shortcuts({
         </div>
 
         <Teleport to="body">
-            <Transition name="app-dialog">
+            <Transition name="app-dialog" @before-leave="transition_leave_inert">
                 <div
                     v-if="edit || group_edit"
+                    ref="form_element"
                     class="app-dialog-backdrop"
                     role="dialog"
                     aria-modal="true"
+                    tabindex="-1"
+                    :inert="covered"
                     @mousedown.left.self.prevent="cancel_click"
                     @keydown.esc="cancel_click"
                 >
@@ -347,3 +398,9 @@ use_shortcuts({
         </Teleport>
     </section>
 </template>
+
+<style scoped>
+.app-dialog-backdrop:focus {
+    outline: none;
+}
+</style>

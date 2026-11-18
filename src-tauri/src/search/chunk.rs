@@ -543,16 +543,16 @@ mod tests {
         assert!(seconds.start <= seconds.end);
 
         TranscriptSegment {
-            text: text.to_owned(),
-            start_seconds: seconds.start,
             end_seconds: seconds.end,
+            start_seconds: seconds.start,
+            text: text.to_owned(),
         }
     }
 
     fn transcript_of(segments: &[TranscriptSegment]) -> Transcript {
         let text = segments.iter().map(|part| part.text.as_str()).collect::<Vec<_>>().join(" ");
 
-        Transcript { text, segments: segments.to_vec() }
+        Transcript { segments: segments.to_vec(), text }
     }
 
     fn words_of(text: &str) -> Vec<String> {
@@ -730,7 +730,7 @@ mod tests {
         let lines: Vec<String> =
             (0..200_u32).map(|index| format!("Sentence {index} of the call.")).collect();
 
-        let transcript = Transcript { text: lines.join("\n"), segments: Vec::new() };
+        let transcript = Transcript { segments: Vec::new(), text: lines.join("\n") };
         let chunks = chunks_from_transcript(&transcript);
         let rejoined: Vec<String> = chunks.iter().flat_map(|chunk| words_of(&chunk.body)).collect();
 
@@ -742,8 +742,8 @@ mod tests {
         assert!(chunks.iter().all(|chunk| chars_count(&chunk.body) <= CHUNK_CHARS_UNTIMED));
 
         let blank_segments = Transcript {
-            text: "Only the text holds words.".to_owned(),
             segments: vec![segment("  ", 0.0_f64..1.0_f64)],
+            text: "Only the text holds words.".to_owned(),
         };
 
         let recovered = chunks_from_transcript(&blank_segments);
@@ -754,7 +754,7 @@ mod tests {
 
     #[test]
     fn empty_sources_yield_no_chunks() {
-        let blank = Transcript { text: " \n ".to_owned(), segments: Vec::new() };
+        let blank = Transcript { segments: Vec::new(), text: " \n ".to_owned() };
         let spaces = transcript_of(&[segment(" ", 0.0_f64..1.0_f64)]);
 
         assert_eq!(chunks_from_notes("").len(), 0);
@@ -789,18 +789,18 @@ mod tests {
 
         let people = vec![
             Person {
+                description: String::new(),
                 id: "p1".to_owned(),
                 name_first: "Ana".to_owned(),
                 name_last: "Lopez".to_owned(),
                 role: String::new(),
-                description: String::new(),
             },
             Person {
+                description: String::new(),
                 id: "p2".to_owned(),
                 name_first: "Ben".to_owned(),
                 name_last: "Ng".to_owned(),
                 role: String::new(),
-                description: String::new(),
             },
         ];
 

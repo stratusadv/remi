@@ -22,6 +22,8 @@ use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
 
 const DECODE_ERROR_COUNT_MAX: u32 = 64;
+const MESSAGE_AUDIO_NONE: &str = "no audio could be read from this file";
+const MESSAGE_FORMAT_UNREAD: &str = "this file is not in an audio or video format the app reads";
 const PACKET_COUNT_MAX: u32 = 4_000_000;
 const RESAMPLE_CHUNK_SIZE: u32 = 16384;
 const RESAMPLE_FLUSH_COUNT_MAX: u32 = 16;
@@ -40,13 +42,13 @@ type SampleSink<'sink> = dyn FnMut(&[f32]) -> AppResult<()> + 'sink;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Waveform {
-    pub(crate) peaks: Vec<f32>,
     pub(crate) duration_seconds: f64,
+    pub(crate) peaks: Vec<f32>,
 }
 
 struct DecodeTrack {
-    format: Box<dyn FormatReader>,
     decoder: Box<dyn AudioDecoder>,
+    format: Box<dyn FormatReader>,
     track_id: u32,
 }
 
@@ -59,20 +61,14 @@ struct DecodeFlow {
 }
 
 struct DecodeProgress {
+    channels: u16,
     sample_count: u64,
     sample_rate: u32,
-    channels: u16,
 }
 
 struct RateChange {
     source: u32,
     target: u32,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct PreparePaths<'path> {
-    pub(crate) prepared: &'path Path,
-    pub(crate) source: &'path Path,
 }
 
 struct Resampling {
@@ -87,16 +83,6 @@ struct Resampling {
 }
 
 impl DecodeFlow {
-    const fn new() -> Self {
-        Self {
-            decode_error_count: 0,
-            interleaved: Vec::new(),
-            mono: Vec::new(),
-            progress: DecodeProgress { sample_count: 0, sample_rate: 0, channels: 0 },
-            resampling: None,
-        }
-    }
-
     fn buffer_accept(
         &mut self,
         buffer: &GenericAudioBufferRef<'_>,
@@ -137,7 +123,7 @@ impl DecodeFlow {
         assert!(self.decode_error_count <= DECODE_ERROR_COUNT_MAX);
 
         if self.progress.sample_rate == 0 {
-            return Err(AppError::Audio("no audio decoded from track".into()));
+            return Err(AppError::Audio(MESSAGE_AUDIO_NONE.into()));
         }
 
         assert!(self.progress.channels > 0);
@@ -178,6 +164,16 @@ impl DecodeFlow {
 
         Ok(())
     }
+
+    const fn new() -> Self {
+        Self {
+            decode_error_count: 0,
+            interleaved: Vec::new(),
+            mono: Vec::new(),
+            progress: DecodeProgress { channels: 0, sample_count: 0, sample_rate: 0 },
+            resampling: None,
+        }
+    }
 }
 
 impl Resampling {
@@ -186,23 +182,23 @@ impl Resampling {
         let frames_output = self.output.len();
 
         let buffer_in = InterleavedSlice::new(self.input.as_slice(), 1, frames_input)
-            .map_err(|error| AppError::Audio(format!("resampler input: {error}")))?;
+            .map_err(|error| AppError::Internal(format!("resampler input: {error}")))?;
 
         let mut buffer_out =
             InterleavedSlice::new_mut(self.output.as_mut_slice(), 1, frames_output)
-                .map_err(|error| AppError::Audio(format!("resampler output: {error}")))?;
+                .map_err(|error| AppError::Internal(format!("resampler output: {error}")))?;
 
         let (_consumed, produced) = self
             .resampler
             .process_into_buffer(&buffer_in, &mut buffer_out, Some(indexing))
-            .map_err(|error| AppError::Audio(format!("resample: {error}")))?;
+            .map_err(|error| AppError::Internal(format!("resample: {error}")))?;
 
         let trimmed = produced.min(usize_of!(self.delay_frames));
 
         let fresh = self
             .output
             .get(trimmed..produced)
-            .ok_or_else(|| AppError::Audio("the resampler wrote past its output".into()))?;
+            .ok_or_else(|| AppError::Internal("the resampler wrote past its output".into()))?;
 
         sink(&self.held)?;
 
@@ -242,7 +238,9 @@ impl Resampling {
         let complete = self.frames_produced() >= expected && self.frames_emitted <= expected;
 
         if !complete {
-            return Err(AppError::Audio("the resampler did not reach the end of the audio".into()));
+            return Err(AppError::Internal(
+                "the resampler did not reach the end of the audio".into(),
+            ));
         }
 
         let remaining = usize::try_from(expected - self.frames_emitted).unwrap_or(usize::MAX);
@@ -275,7 +273,7 @@ impl Resampling {
             1,
             FixedAsync::Input,
         )
-        .map_err(|error| AppError::Audio(format!("resampler init: {error}")))?;
+        .map_err(|error| AppError::Internal(format!("resampler init: {error}")))?;
 
         let output = vec![0.0_f32; resampler.output_frames_max()];
 
@@ -340,18 +338,18 @@ pub(crate) fn load_for_whisper(path: &Path) -> AppResult<Vec<f32>> {
     Ok(samples)
 }
 
-pub(crate) fn prepare_for_whisper(paths: &PreparePaths<'_>) -> AppResult<()> {
-    assert_ne!(paths.prepared, paths.source);
+pub(crate) fn prepare_for_whisper(job_id: &str, source: &Path) -> AppResult<()> {
+    assert!(workspace::job_id_is_valid(job_id));
+    assert!(source.file_name().is_some());
 
-    let mut track = decode_track_open(paths.source)?;
+    let mut track = decode_track_open(source)?;
 
-    workspace::audio_wav_save_streamed(paths.prepared, SAMPLE_RATE_WHISPER, |writer| {
+    workspace::job_audio_save_streamed(job_id, SAMPLE_RATE_WHISPER, |writer| {
         decode_packets(&mut track, &mut |block| workspace::pcm16_append(writer, block))
-    })?;
-
-    assert!(paths.prepared.is_file());
-
-    Ok(())
+    })
+    .inspect_err(|error| {
+        tracing::warn!("{} could not be prepared for job {job_id}: {error}", source.display());
+    })
 }
 
 pub(crate) fn waveform_compute(audio_path: &Path, bar_count: BarCount) -> AppResult<Waveform> {
@@ -368,22 +366,22 @@ pub(crate) fn waveform_compute(audio_path: &Path, bar_count: BarCount) -> AppRes
     assert!(duration_seconds >= 0.0_f64);
 
     if bars == 0 {
-        return Ok(Waveform { peaks: Vec::new(), duration_seconds });
+        return Ok(Waveform { duration_seconds, peaks: Vec::new() });
     }
 
     if frame_count == 0 {
-        return Ok(Waveform { peaks: Vec::new(), duration_seconds });
+        return Ok(Waveform { duration_seconds, peaks: Vec::new() });
     }
 
     if specification.bits_per_sample != 16 {
-        return Err(AppError::Audio(format!(
+        return Err(AppError::Internal(format!(
             "waveform expects 16-bit PCM, got {}-bit samples",
             specification.bits_per_sample,
         )));
     }
 
     if specification.sample_format != hound::SampleFormat::Int {
-        return Err(AppError::Audio(format!(
+        return Err(AppError::Internal(format!(
             "waveform expects integer PCM, got {:?} samples",
             specification.sample_format,
         )));
@@ -396,7 +394,7 @@ pub(crate) fn waveform_compute(audio_path: &Path, bar_count: BarCount) -> AppRes
     assert!(u32::try_from(peaks.len()).is_ok_and(|count| count <= bars));
     assert!(peaks.iter().all(|peak| peak.is_finite()));
 
-    Ok(Waveform { peaks, duration_seconds })
+    Ok(Waveform { duration_seconds, peaks })
 }
 
 fn decode_error_count_check(decode_error_count: u32) -> AppResult<()> {
@@ -412,16 +410,27 @@ fn decode_error_count_check(decode_error_count: u32) -> AppResult<()> {
     Ok(())
 }
 
+fn decode_failure(stage: &str, error: &symphonia::core::errors::Error) -> AppError {
+    assert_ne!(stage, "");
+
+    tracing::warn!("audio {stage} failed: {error}");
+
+    AppError::Audio(
+        "this file could not be decoded; it may be damaged or in a format the app does not read"
+            .into(),
+    )
+}
+
 fn decode_format_of(specification: &AudioSpec) -> AppResult<(u16, u32)> {
     let channels = u16::try_from(specification.channels().count()).map_err(|_overflow| {
-        AppError::Audio("track reports more channels than fit in u16".into())
+        AppError::Audio("this file reports more audio channels than the app reads".into())
     })?;
 
     let sample_rate = specification.rate();
     let usable = channels > 0 && sample_rate > 0;
 
     if !usable {
-        return Err(AppError::Audio("no audio decoded from track".into()));
+        return Err(AppError::Audio(MESSAGE_AUDIO_NONE.into()));
     }
 
     Ok((channels, sample_rate))
@@ -435,7 +444,7 @@ fn decode_packets(track: &mut DecodeTrack, sink: &mut SampleSink<'_>) -> AppResu
         let packet = match format.next_packet() {
             Ok(Some(packet)) => packet,
             Ok(None) => return flow.finish(sink),
-            Err(error) => return Err(AppError::Audio(format!("packet read: {error}"))),
+            Err(error) => return Err(decode_failure("packet read", &error)),
         };
 
         if packet.track_id != *track_id {
@@ -445,7 +454,7 @@ fn decode_packets(track: &mut DecodeTrack, sink: &mut SampleSink<'_>) -> AppResu
         match decoder.decode(&packet) {
             Ok(buffer) => flow.buffer_accept(&buffer, sink)?,
             Err(symphonia::core::errors::Error::DecodeError(_)) => flow.decode_error_note()?,
-            Err(error) => return Err(AppError::Audio(format!("decode: {error}"))),
+            Err(error) => return Err(decode_failure("decode", &error)),
         }
     }
 
@@ -470,6 +479,14 @@ fn decode_samples_bound_check(progress: &DecodeProgress) -> AppResult<()> {
     Ok(())
 }
 
+fn decode_open_failure(path: &Path, detail: &str) -> AppError {
+    assert_ne!(detail, "");
+
+    tracing::warn!("{} could not be opened as audio: {detail}", path.display());
+
+    AppError::Audio(MESSAGE_FORMAT_UNREAD.into())
+}
+
 fn decode_track_open(path: &Path) -> AppResult<DecodeTrack> {
     let file = File::open(path)?;
     let stream_options = MediaSourceStreamOptions { buffer_len: usize_of!(STREAM_BUFFER_BYTES) };
@@ -490,25 +507,24 @@ fn decode_track_open(path: &Path) -> AppResult<DecodeTrack> {
 
     let format = symphonia::default::get_probe()
         .probe(&hint, stream, format_options, metadata_options)
-        .map_err(|error| AppError::Audio(format!("probe: {error}")))?;
+        .map_err(|error| decode_open_failure(path, &format!("probe: {error}")))?;
 
     let track = format
         .default_track(TrackType::Audio)
-        .ok_or_else(|| AppError::Audio("no audio track found".into()))?;
+        .ok_or_else(|| AppError::Audio("this file holds no audio".into()))?;
 
-    let codec_parameters = track
-        .codec_params
-        .as_ref()
-        .and_then(|parameters| parameters.audio())
-        .ok_or_else(|| AppError::Audio("the audio track carries no codec parameters".into()))?;
+    let codec_parameters =
+        track.codec_params.as_ref().and_then(|parameters| parameters.audio()).ok_or_else(|| {
+            decode_open_failure(path, "the audio track carries no codec parameters")
+        })?;
 
     let track_id = track.id;
 
     let decoder = symphonia::default::get_codecs()
         .make_audio_decoder(codec_parameters, &AudioDecoderOptions::default())
-        .map_err(|error| AppError::Audio(format!("decoder init: {error}")))?;
+        .map_err(|error| decode_open_failure(path, &format!("decoder init: {error}")))?;
 
-    Ok(DecodeTrack { format, decoder, track_id })
+    Ok(DecodeTrack { decoder, format, track_id })
 }
 
 fn mix_to_mono(interleaved: &[f32], channels: u16, mono: &mut Vec<f32>) {
@@ -573,7 +589,7 @@ fn waveform_peaks_scan<Data: Read + Seek>(
     let mut bucket_start: u64 = 0;
 
     let data_start =
-        data.stream_position().map_err(|error| AppError::Audio(format!("wav seek: {error}")))?;
+        data.stream_position().map_err(|error| AppError::Internal(format!("wav seek: {error}")))?;
 
     assert!(bucket_size > 0);
 
@@ -588,14 +604,14 @@ fn waveform_peaks_scan<Data: Read + Seek>(
 
         let block_wanted = block
             .get_mut(..read_bytes_wanted)
-            .ok_or_else(|| AppError::Audio("waveform read block overflow".into()))?;
+            .ok_or_else(|| AppError::Internal("waveform read block overflow".into()))?;
 
         let _position = data
             .seek(SeekFrom::Start(data_start + bucket_start * sample_bytes))
-            .map_err(|error| AppError::Audio(format!("wav seek: {error}")))?;
+            .map_err(|error| AppError::Internal(format!("wav seek: {error}")))?;
 
         data.read_exact(block_wanted)
-            .map_err(|error| AppError::Audio(format!("wav read: {error}")))?;
+            .map_err(|error| AppError::Internal(format!("wav read: {error}")))?;
 
         let (pairs, _) = block_wanted.as_chunks::<{ size_of::<i16>() }>();
 
@@ -616,7 +632,7 @@ fn waveform_peaks_scan<Data: Read + Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::test_support::root_scoped;
+    use crate::workspace::test_support::{meta_with, root_scoped};
     use crate::workspace::{audio_wav_save, root, samples_to_pcm16};
     use std::fs;
     use std::io::Cursor;
@@ -897,9 +913,9 @@ mod tests {
     fn a_decode_that_runs_past_the_audio_limit_is_refused() {
         let within = AUDIO_SECONDS_MAX * 16000;
 
-        let at_limit = DecodeProgress { sample_count: within, sample_rate: 16000, channels: 1 };
+        let at_limit = DecodeProgress { channels: 1, sample_count: within, sample_rate: 16000 };
         let past_limit = DecodeProgress { sample_count: within + 1, ..at_limit };
-        let stereo = DecodeProgress { sample_count: within * 2, channels: 2, ..at_limit };
+        let stereo = DecodeProgress { channels: 2, sample_count: within * 2, ..at_limit };
 
         decode_samples_bound_check(&at_limit).unwrap();
         decode_samples_bound_check(&stereo).unwrap();
@@ -1011,7 +1027,8 @@ mod tests {
     fn a_prepared_file_holds_the_mixed_and_resampled_pcm16_of_its_source() {
         let _root = root_scoped();
         let source = root().unwrap().join("stereo.wav");
-        let target = root().unwrap().join("prepared.wav");
+        let job_id = workspace::job_id_from_text("stereo");
+        let target = workspace::job_audio_path(&job_id).unwrap();
         let frames = frame_lengths()[6];
         let left = signal_of(frames, NonZeroU32::new(48_000).unwrap());
 
@@ -1030,7 +1047,8 @@ mod tests {
         }
 
         writer.finalize().unwrap();
-        prepare_for_whisper(&PreparePaths { prepared: &target, source: &source }).unwrap();
+        workspace::meta_save(&meta_with(&job_id, 1)).unwrap();
+        prepare_for_whisper(&job_id, &source).unwrap();
 
         let mut reader = hound::WavReader::open(&source).unwrap();
         let decoded: Vec<f32> =
@@ -1057,16 +1075,16 @@ mod tests {
     fn a_source_that_fails_to_decode_leaves_no_prepared_file_behind() {
         let _root = root_scoped();
         let source = root().unwrap().join("broken.wav");
-        let target = root().unwrap().join("prepared.wav");
+        let job_id = workspace::job_id_from_text("broken");
+        let target = workspace::job_audio_path(&job_id).unwrap();
 
         fs::write(&source, b"RIFF but not really audio").unwrap();
+        workspace::meta_save(&meta_with(&job_id, 1)).unwrap();
 
-        let paths = PreparePaths { prepared: &target, source: &source };
-
-        assert_ne!(prepare_for_whisper(&paths).unwrap_err().to_string(), "");
+        assert_ne!(prepare_for_whisper(&job_id, &source).unwrap_err().to_string(), "");
         assert!(!target.exists());
 
-        let leftovers = fs::read_dir(root().unwrap())
+        let leftovers = fs::read_dir(target.parent().unwrap())
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .filter(|name| name.ends_with("tmp"));

@@ -6,6 +6,26 @@ from enum import Enum, auto
 from django.core.exceptions import ImproperlyConfigured
 
 
+CURRENCY_CODES_DECIMAL_THREE = ('bhd', 'jod', 'kwd', 'omr', 'tnd')
+
+CURRENCY_CODES_DECIMAL_ZERO = (
+    'bif',
+    'clp',
+    'djf',
+    'gnf',
+    'jpy',
+    'kmf',
+    'krw',
+    'mga',
+    'pyg',
+    'rwf',
+    'vnd',
+    'vuv',
+    'xaf',
+    'xof',
+    'xpf',
+)
+
 CURRENCY_PATTERN = re.compile(r'[a-z]{3}')
 INTEGER_PATTERN = re.compile(r'[0-9]{1,15}')
 OFFER_HOURS_MAX = 10_000
@@ -29,12 +49,19 @@ class EnvironmentVariable(Enum):
     DJANGO_SITE_DOMAIN = auto()
     DJANGO_SPIRE_REMOTE_API_KEY = auto()
     DJANGO_SPIRE_REMOTE_API_URL = auto()
+    REMI_API_HOST = auto()
+    REMI_API_KEY_NOTES = auto()
+    REMI_API_KEY_TRANSCRIPTION = auto()
     REMI_ASK_BURST_COUNT = auto()
     REMI_ASK_BURST_SECONDS = auto()
     REMI_ASK_PACE_SECONDS = auto()
     REMI_ASK_TOKENS_ESTIMATE = auto()
     REMI_ASK_TOKENS_SOFT_CAP = auto()
     REMI_ASK_WINDOW_DAYS = auto()
+    REMI_CHAT_DAY_MAX = auto()
+    REMI_CHAT_MINUTE_MAX = auto()
+    REMI_EMBEDDINGS_DAY_MAX = auto()
+    REMI_EMBEDDINGS_MINUTE_MAX = auto()
     REMI_OFFERS = auto()
     REMI_PRICE_CURRENCY = auto()
     ROBIT_KEY = auto()
@@ -88,6 +115,14 @@ def environment_currency(variable: EnvironmentVariable, *, default: str) -> str:
         message = f'{variable.name} must be a three-letter ISO currency code, not {value!r}'
         raise ImproperlyConfigured(message)
 
+    if value in CURRENCY_CODES_DECIMAL_THREE:
+        message = f'{variable.name} is {value!r}, which Stripe counts in thousandths, not cents'
+        raise ImproperlyConfigured(message)
+
+    if value in CURRENCY_CODES_DECIMAL_ZERO:
+        message = f'{variable.name} is {value!r}, which Stripe counts in whole units, not cents'
+        raise ImproperlyConfigured(message)
+
     return value
 
 
@@ -132,7 +167,6 @@ def environment_integer(
 
 def environment_list(variable: EnvironmentVariable) -> list[str]:
     text = environment_text(variable)
-
     return [item.strip() for item in text.split(',') if item.strip() != '']
 
 

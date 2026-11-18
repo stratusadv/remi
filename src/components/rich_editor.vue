@@ -1,5 +1,15 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, toValue, useId, watch } from 'vue'
+import {
+    computed,
+    onBeforeUnmount,
+    onMounted,
+    ref,
+    shallowRef,
+    toValue,
+    useId,
+    useTemplateRef,
+    watch,
+} from 'vue'
 import { Extension, createNodeFromContent, generateJSON } from '@tiptap/core'
 import Link from '@tiptap/extension-link'
 import Placeholder from '@tiptap/extension-placeholder'
@@ -13,12 +23,13 @@ import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { Markdown } from 'tiptap-markdown'
 import { use_dialog } from '../composables/use_dialog'
+import { assert } from '../lib/assert'
 import { clipboard_plain_text } from '../lib/clipboard_text'
-import { error_text_extract } from '../lib/errors'
+import { error_shown } from '../lib/errors'
 import { ipc } from '../lib/ipc'
 import { log_warn } from '../lib/log'
-import type { ChainedCommands, Content, Editor, JSONContent } from '@tiptap/core'
-import type { AIGenerateHandler, AIRewriteArgs, AIRewriteHandler } from '../types'
+import type { AnyExtension, ChainedCommands, Content, Editor, JSONContent } from '@tiptap/core'
+import type { AIGenerateHandler, AIRewriteHandler, AIRewriteRequest } from '../types'
 
 
 type HeadingLevel = 1 | 2 | 3
@@ -34,7 +45,7 @@ interface AIRange {
     to: number
 }
 
-const props = defineProps<{
+const properties = defineProps<{
     placeholder?: string
     ai_rewrite?: AIRewriteHandler
     ai_generate?: AIGenerateHandler
@@ -42,7 +53,9 @@ const props = defineProps<{
 
 const model = defineModel<string>({ required: true })
 
-const HEADING_LEVELS: HeadingLevel[] = [1, 2, 3]
+defineSlots<{ status?: () => unknown }>()
+
+const HEADING_LEVELS = Object.freeze<HeadingLevel[]>([1, 2, 3])
 const CODE_FENCE = '```'
 const TOOLBAR_COLLAPSE_WIDTH_PX = 640
 const SELECTION_GUARD_WINDOW_MS = 250
@@ -52,12 +65,24 @@ const MESSAGE_EMPTY_REPLY = 'The AI did not return any text.'
 const MESSAGE_EMPTY_LAYOUT = 'The AI did not return anything.'
 const MESSAGE_DESCRIBE_FIRST = 'Describe the document first.'
 const HTML_BLOCK_TAGS = 'p|h[1-6]|ul|ol|li|blockquote|pre|table|hr|div|span|strong|em|code|br'
-const HTML_BLOCK_START = new RegExp(`^<(?:${HTML_BLOCK_TAGS})\\b`, 'i')
+const HTML_BLOCK_START = new RegExp(`^<(?:${HTML_BLOCK_TAGS})\\b`, 'iu')
+const KEY_ADD_PROSE_MIRROR_PLUGINS = 'addProseMirrorPlugins'
+const KEY_CLIPBOARD_TEXT_SERIALIZER = 'clipboardTextSerializer'
+const KEY_COLUMNS = 'cols'
+const KEY_EDITOR_PROPERTIES = 'editorProps'
+const KEY_EMIT_UPDATE = 'emitUpdate'
+const KEY_FILTER_TRANSACTION = 'filterTransaction'
+const KEY_ON_SELECTION_UPDATE = 'onSelectionUpdate'
+const KEY_ON_UPDATE = 'onUpdate'
+const KEY_OPEN_ON_CLICK = 'openOnClick'
+const KEY_PROPERTIES = 'props'
+const KEY_TRANSFORM_PASTED_TEXT = 'transformPastedText'
+const KEY_WITH_HEADER_ROW = 'withHeaderRow'
 
 const PLACEHOLDER_LAYOUT = 'Describe the document, e.g. weekly team meeting: decisions, who does '
     + 'what by when, problems to watch'
 
-const AI_QUICK_ACTIONS: AIQuickAction[] = [
+const AI_QUICK_ACTIONS = Object.freeze<AIQuickAction[]>([
     {
         id: 'rewrite',
         label: 'Rewrite',
@@ -88,18 +113,24 @@ const AI_QUICK_ACTIONS: AIQuickAction[] = [
         label: 'To bullets',
         instruction: 'Rewrite as a markdown bullet list. One bullet per distinct point.',
     },
-]
+])
 
 const selection_guard = Extension.create({
     name: 'selection_guard',
 
-    addProseMirrorPlugins() {
+    [KEY_ADD_PROSE_MIRROR_PLUGINS]() {
+        assert(this.name === 'selection_guard')
+
         let armed_until = 0
 
         return [
             new Plugin({
                 key: new PluginKey('selection_guard'),
-                filterTransaction(transaction, state) {
+                [KEY_FILTER_TRANSACTION](transaction, state) {
+                    assert(transaction.selection.to <= transaction.doc.content.size)
+                    assert(state.selection.to <= state.doc.content.size)
+                    assert(armed_until >= 0)
+
                     if (transaction.docChanged) {
                         if (!transaction.selection.empty) {
                             armed_until = performance.now() + SELECTION_GUARD_WINDOW_MS
@@ -110,7 +141,8 @@ const selection_guard = Extension.create({
 
                     if (performance.now() > armed_until) return true
                     if (!transaction.selectionSet) return true
-                    if (state.selection.empty || !transaction.selection.empty) return true
+                    if (state.selection.empty) return true
+                    if (!transaction.selection.empty) return true
                     if (transaction.scrolledIntoView) return true
 
                     const pointer = Boolean(transaction.getMeta('pointer'))
@@ -125,21 +157,29 @@ const selection_guard = Extension.create({
 const selection_inactive = Extension.create({
     name: 'selection_inactive',
 
-    addProseMirrorPlugins() {
+    [KEY_ADD_PROSE_MIRROR_PLUGINS]() {
+        assert(this.name === 'selection_inactive')
+
         const { editor } = this
 
         return [
             new Plugin({
                 key: new PluginKey('selection_inactive'),
-                props: {
+                [KEY_PROPERTIES]: {
                     decorations(state) {
+                        assert(state.selection.to <= state.doc.content.size)
+
                         const { from, to } = state.selection
 
-                        if (from === to || editor.isFocused) return null
+                        if (from === to) return null
+                        if (editor.isFocused) return null
 
-                        return DecorationSet.create(state.doc, [
-                            Decoration.inline(from, to, { class: 'selection-inactive' }),
-                        ])
+                        assert(from < to)
+
+                        return DecorationSet.create(
+                            state.doc,
+                            [Decoration.inline(from, to, { class: 'selection-inactive' })],
+                        )
                     },
                 },
             }),
@@ -163,16 +203,24 @@ const table_bar_dismissed = ref(false)
 const toolbar_collapsed = ref(false)
 const more_open = ref(false)
 const more_panel_id = useId()
-const root_ref = ref<HTMLElement | null>(null)
-let resize_observer: ResizeObserver | null = null
+const root_element = useTemplateRef<HTMLElement>('root_element')
+const resize_observer = shallowRef<ResizeObserver | null>(null)
 const heading_level_active = ref<string>('')
-let markdown_emitted = toValue(model)
+const markdown_emitted = shallowRef(toValue(model))
 
 async function ai_apply(instruction: string): Promise<void> {
-    const editor_current = editor.value
-    const rewrite = props.ai_rewrite
+    assert(instruction === ai_instruction.value
+        || AI_QUICK_ACTIONS.some((action) => action.instruction === instruction))
 
-    if (editor_current === undefined || rewrite === undefined || ai_busy.value) return
+    assert(ai_panel_open.value)
+    assert(!source_mode.value)
+
+    const editor_current = editor.value
+    const rewrite = properties.ai_rewrite
+
+    if (editor_current === undefined) return
+    if (rewrite === undefined) return
+    if (ai_busy.value) return
 
     const instruction_trimmed = instruction.trim()
 
@@ -185,9 +233,9 @@ async function ai_apply(instruction: string): Promise<void> {
     const range = ai_range.value
     const whole_document = range === null
 
-    const text_original = range !== null
-        ? markdown_of_range(editor_current, range)
-        : markdown_of(editor_current)
+    const text_original = range === null
+        ? markdown_of(editor_current)
+        : markdown_of_range(editor_current, range)
 
     if (text_original.trim().length === 0) {
         ai_error.value = MESSAGE_EMPTY_DOCUMENT
@@ -198,12 +246,15 @@ async function ai_apply(instruction: string): Promise<void> {
     ai_busy.value = true
     ai_error.value = ''
 
-    const reply = ai_rewrite_request(rewrite, text_original, instruction_trimmed, whole_document)
+    const reply = ai_rewrite_request(
+        { text: text_original, instruction: instruction_trimmed, whole_document },
+        rewrite,
+    )
 
-    await reply
+    return reply
         .then(async (output_final) => ai_reply_insert(output_final, range))
         .catch((error: unknown) => {
-            ai_error.value = error_text_extract(error)
+            ai_error.value = error_shown(error)
         })
         .finally(() => {
             ai_busy.value = false
@@ -211,6 +262,9 @@ async function ai_apply(instruction: string): Promise<void> {
 }
 
 function ai_close(): void {
+    assert(ai_panel_open.value)
+    assert(!source_mode.value)
+
     if (ai_busy.value) return
 
     ai_panel_open.value = false
@@ -221,20 +275,26 @@ function ai_close(): void {
 }
 
 async function ai_content_build(raw: string): Promise<Content> {
-    let html = raw
+    assert(raw.length > 0)
+    assert(raw === raw.trim())
 
-    if (!looks_like_html(raw)) {
-        try {
-            html = await ipc.markdown_render_html(raw)
-        } catch (error) {
+    if (looks_like_html(raw)) return ai_content_parse(raw)
+
+    return ipc.markdown_render_html(raw)
+        .catch((error: unknown) => {
             log_warn('[editor] markdown render failed, inserting raw text', error)
-        }
-    }
 
-    if (html.trim().length === 0) html = raw
+            return raw
+        })
+        .then((html) => ai_content_parse(html.trim().length === 0 ? raw : html))
+}
+
+function ai_content_parse(html: string): Content {
+    assert(html.trim().length > 0)
+    assert(ai_busy.value)
 
     try {
-        return generateJSON(html, extensions) as JSONContent
+        return generateJSON(html, [...extensions]) as JSONContent
     } catch (error) {
         log_warn('[editor] reply could not be parsed as a document', error)
 
@@ -243,7 +303,12 @@ async function ai_content_build(raw: string): Promise<Content> {
 }
 
 function ai_custom_apply(): void {
-    if (props.ai_generate !== undefined) {
+    assert(ai_panel_open.value)
+    assert(!source_mode.value)
+
+    if (ai_busy.value) return
+
+    if (properties.ai_generate !== undefined) {
         void ai_generate_apply()
 
         return
@@ -253,10 +318,15 @@ function ai_custom_apply(): void {
 }
 
 async function ai_generate_apply(): Promise<void> {
-    const editor_current = editor.value
-    const generate = props.ai_generate
+    assert(ai_panel_open.value)
+    assert(!source_mode.value)
 
-    if (editor_current === undefined || generate === undefined || ai_busy.value) return
+    const editor_current = editor.value
+    const generate = properties.ai_generate
+
+    if (editor_current === undefined) return
+    if (generate === undefined) return
+    if (ai_busy.value) return
 
     const description = ai_instruction.value.trim()
 
@@ -266,51 +336,59 @@ async function ai_generate_apply(): Promise<void> {
         return
     }
 
-    const confirmed = await ai_generate_confirm()
-
-    if (confirmed) await ai_generate_run(editor_current, generate, description)
+    return ai_generate_confirm().then(async (confirmed) => {
+        if (confirmed) await ai_generate_run(editor_current, description, generate)
+    })
 }
 
 async function ai_generate_confirm(): Promise<boolean> {
+    assert(properties.ai_generate !== undefined)
+    assert(!ai_busy.value)
+
     if (model.value.trim().length === 0) return true
 
-    return await dialog_confirm(
+    return dialog_confirm(
         'Replace what is in the editor with a layout written by the AI?',
         { title: 'Replace layout', kind: 'warning' },
     )
 }
 
-const extensions = [
+const extensions = Object.freeze<AnyExtension[]>([
     StarterKit.configure({ link: false }),
-    Link.configure({ openOnClick: false, autolink: true }),
+    Link.configure({ [KEY_OPEN_ON_CLICK]: false, autolink: true }),
     TaskList,
     TaskItem.configure({ nested: true }),
-    Placeholder.configure({ placeholder: props.placeholder ?? 'Start writing…' }),
+    Placeholder.configure({ placeholder: properties.placeholder ?? 'Start writing…' }),
     Table.configure({ resizable: false }),
     TableRow,
     TableHeader,
     TableCell,
-    Markdown.configure({ html: true, transformPastedText: true, breaks: true }),
+    Markdown.configure({ html: true, [KEY_TRANSFORM_PASTED_TEXT]: true, breaks: true }),
     selection_guard,
     selection_inactive,
-]
+])
 
 const editor = useEditor({
     content: toValue(model),
-    extensions,
-    editorProps: {
-        clipboardTextSerializer: (slice) => clipboard_plain_text(slice.content),
+    extensions: [...extensions],
+    [KEY_EDITOR_PROPERTIES]: {
+        [KEY_CLIPBOARD_TEXT_SERIALIZER]: clipboard_text_serialize,
     },
-    onUpdate({ editor: editor_current }) {
+    [KEY_ON_UPDATE]({ editor: editor_current, transaction }) {
+        assert(transaction.getMeta('preventUpdate') !== true)
+        assert(editor.value === undefined || editor.value === editor_current)
+
         const markdown = markdown_of(editor_current)
 
-        markdown_emitted = markdown
+        markdown_emitted.value = markdown
 
         if (markdown !== model.value) model.value = markdown
 
         refresh_state(editor_current)
     },
-    onSelectionUpdate({ editor: editor_current }) {
+    [KEY_ON_SELECTION_UPDATE]({ editor: editor_current }) {
+        assert(editor.value === undefined || editor.value === editor_current)
+
         refresh_state(editor_current)
     },
 })
@@ -318,26 +396,26 @@ const editor = useEditor({
 const stats = computed(() => {
     const text = model.value
     const trimmed = text.trim()
-    const words = trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length
+    const words = trimmed.length === 0 ? 0 : trimmed.split(/\s+/u).length
 
     return { chars: text.length, words }
 })
 
 const ai_button_title = computed(() => {
-    if (props.ai_generate !== undefined) return 'Write the layout with AI'
+    if (properties.ai_generate !== undefined) return 'Write the layout with AI'
     if (has_selection.value) return 'Rewrite the selected text with AI'
 
     return 'Rewrite the whole document with AI'
 })
 
-const ai_input_placeholder = computed(() => props.ai_generate !== undefined
-    ? PLACEHOLDER_LAYOUT
-    : 'Custom instruction (e.g. \'rewrite as bullet points\')')
+const ai_input_placeholder = computed(() => properties.ai_generate === undefined
+    ? 'Custom instruction (e.g. \'rewrite as bullet points\')'
+    : PLACEHOLDER_LAYOUT)
 
 const ai_submit_label = computed(() => {
     if (ai_busy.value) return 'Working…'
 
-    return props.ai_generate !== undefined ? 'Generate' : 'Apply'
+    return properties.ai_generate === undefined ? 'Apply' : 'Generate'
 })
 
 const ai_selected_count_text = computed(() => {
@@ -357,7 +435,7 @@ watch(
             return
         }
 
-        if (next === markdown_emitted) return
+        if (next === markdown_emitted.value) return
 
         content_apply()
     },
@@ -366,11 +444,11 @@ watch(
 onMounted(() => {
     document.addEventListener('mousedown', selection_clear_on_outside, true)
 
-    const root = root_ref.value
+    const root = root_element.value
 
     if (root === null) return
 
-    resize_observer = new ResizeObserver((entries) => {
+    resize_observer.value = new ResizeObserver((entries) => {
         const entry = entries[0]
 
         if (entry === undefined) return
@@ -381,26 +459,30 @@ onMounted(() => {
         if (!toolbar_collapsed.value) more_open.value = false
     })
 
-    resize_observer.observe(root)
+    resize_observer.value.observe(root)
 })
 
 onBeforeUnmount(() => {
     document.removeEventListener('mousedown', selection_clear_on_outside, true)
-    resize_observer?.disconnect()
+    resize_observer.value?.disconnect()
     editor.value?.destroy()
 })
 
 async function ai_generate_run(
     editor_current: Editor,
-    generate: AIGenerateHandler,
     description: string,
+    generate: AIGenerateHandler,
 ): Promise<void> {
+    assert(editor_current === editor.value)
+    assert(description.length > 0)
+    assert(generate === properties.ai_generate)
+
     ai_busy.value = true
     ai_error.value = ''
 
-    await ai_layout_request(editor_current, generate, description)
+    return ai_layout_request(editor_current, description, generate)
         .catch((error: unknown) => {
-            ai_error.value = error_text_extract(error)
+            ai_error.value = error_shown(error)
         })
         .finally(() => {
             ai_busy.value = false
@@ -409,25 +491,35 @@ async function ai_generate_run(
 
 async function ai_layout_request(
     editor_current: Editor,
-    generate: AIGenerateHandler,
     description: string,
+    generate: AIGenerateHandler,
 ): Promise<void> {
-    const generated = sanitize_llm_output(await generate(description))
+    assert(editor_current === editor.value)
+    assert(description.length > 0)
+    assert(generate === properties.ai_generate)
+    assert(ai_busy.value)
 
-    if (generated.length === 0) {
-        ai_error.value = MESSAGE_EMPTY_LAYOUT
+    return generate(description).then((reply) => {
+        const generated = sanitize_llm_output(reply)
 
-        return
-    }
+        if (generated.length === 0) {
+            ai_error.value = MESSAGE_EMPTY_LAYOUT
 
-    editor_current.commands.setContent(generated)
+            return
+        }
 
-    ai_panel_open.value = false
-    ai_instruction.value = ''
+        editor_current.commands.setContent(generated)
+
+        ai_panel_open.value = false
+        ai_instruction.value = ''
+    })
 }
 
 function ai_open(): void {
-    if (props.ai_generate !== undefined) {
+    assert(!ai_panel_open.value)
+    assert(!source_mode.value)
+
+    if (properties.ai_generate !== undefined) {
         ai_instruction.value = ''
         ai_error.value = ''
         ai_panel_open.value = true
@@ -437,7 +529,7 @@ function ai_open(): void {
 
     const editor_current = editor.value
 
-    if (props.ai_rewrite === undefined) return
+    if (properties.ai_rewrite === undefined) return
     if (editor_current === undefined) return
 
     ai_instruction.value = ''
@@ -448,10 +540,16 @@ function ai_open(): void {
 }
 
 function ai_quick_apply(action: AIQuickAction): void {
+    assert(AI_QUICK_ACTIONS.includes(action))
+    assert(action.instruction.length > 0)
+
     void ai_apply(action.instruction)
 }
 
 function ai_range_set(editor_current: Editor): void {
+    assert(editor_current === editor.value)
+    assert(ai_panel_open.value)
+
     const { from, to } = editor_current.state.selection
 
     ai_range.value = from === to ? null : { from, to }
@@ -459,59 +557,64 @@ function ai_range_set(editor_current: Editor): void {
 }
 
 async function ai_reply_insert(output_final: string, range: AIRange | null): Promise<void> {
+    assert(output_final === output_final.trim())
+    assert(range === null || range.from < range.to)
+
     const editor_after = editor.value
 
-    if (editor_after === undefined || output_final.length === 0) {
+    assert(editor_after !== undefined)
+
+    if (output_final.length === 0) {
         ai_error.value = MESSAGE_EMPTY_REPLY
 
         return
     }
 
-    const content = await ai_content_build(output_final)
+    return ai_content_build(output_final).then((content) => {
+        if (range === null) {
+            editor_after.commands.setContent(content, { [KEY_EMIT_UPDATE]: true })
 
-    if (range === null) {
-        editor_after.commands.setContent(content, { emitUpdate: true })
+            return
+        }
 
-        return
-    }
+        const slice = Slice.maxOpen(fragment_of(content, editor_after))
+        const transaction = editor_after.state.tr.replaceRange(range.from, range.to, slice)
+        const to_inserted = transaction.mapping.map(range.to)
 
-    const slice = Slice.maxOpen(fragment_of(content, editor_after))
-    const tr = editor_after.state.tr.replaceRange(range.from, range.to, slice)
-    const to_inserted = tr.mapping.map(range.to)
+        const selection_inserted = TextSelection.between(
+            transaction.doc.resolve(range.from),
+            transaction.doc.resolve(to_inserted),
+        )
 
-    const selection_inserted = TextSelection.between(
-        tr.doc.resolve(range.from),
-        tr.doc.resolve(to_inserted),
-    )
-
-    tr.setSelection(selection_inserted)
-    editor_after.view.dispatch(tr.scrollIntoView())
-    editor_after.commands.focus()
+        transaction.setSelection(selection_inserted)
+        editor_after.view.dispatch(transaction.scrollIntoView())
+        editor_after.commands.focus()
+    })
 }
 
 async function ai_rewrite_request(
+    request: Omit<AIRewriteRequest, 'on_chunk'>,
     rewrite: AIRewriteHandler,
-    text: string,
-    instruction: string,
-    whole_document: boolean,
 ): Promise<string> {
-    let accumulated = ''
+    assert(request.text.trim().length > 0)
+    assert(request.instruction.length > 0)
+    assert(request.whole_document === (ai_range.value === null))
+    assert(rewrite === properties.ai_rewrite)
 
-    const args: AIRewriteArgs = {
-        text,
-        instruction,
-        whole_document,
-        on_chunk: (chunk) => {
-            accumulated += chunk
-        },
+    const chunks: string[] = []
+
+    function chunk_push(chunk: string): void {
+        chunks.push(chunk)
     }
 
-    const reply = await rewrite(args)
-
-    return sanitize_llm_output(reply.length > 0 ? reply : accumulated)
+    return rewrite({ ...request, on_chunk: chunk_push })
+        .then((reply) => sanitize_llm_output(reply.length > 0 ? reply : chunks.join('')))
 }
 
 function ai_toggle(): void {
+    assert(!source_mode.value)
+    assert(properties.ai_rewrite !== undefined || properties.ai_generate !== undefined)
+
     if (ai_panel_open.value) {
         ai_close()
 
@@ -521,25 +624,39 @@ function ai_toggle(): void {
     ai_open()
 }
 
+function clipboard_text_serialize(slice: Slice): string {
+    assert(slice.openStart >= 0)
+    assert(slice.openEnd >= 0)
+
+    return clipboard_plain_text(slice.content)
+}
+
 function command_chain(): ChainedCommands | undefined {
+    assert(!source_mode.value)
+    assert(editor.value?.isDestroyed !== true)
+
     return editor.value?.chain().focus()
 }
 
 function content_apply(): void {
+    assert(!source_mode.value)
+    assert(model.value !== markdown_emitted.value)
+
     const editor_current = editor.value
-
-    if (editor_current === undefined) return
-    if (source_mode.value) return
-
     const next = model.value
 
-    if (next === markdown_emitted) return
+    if (editor_current === undefined) return
 
-    editor_current.commands.setContent(next, { emitUpdate: false })
-    markdown_emitted = next
+    editor_current.commands.setContent(next, { [KEY_EMIT_UPDATE]: false })
+    markdown_emitted.value = next
+
+    refresh_state(editor_current)
 }
 
 function fragment_of(content: Content, editor_current: Editor): Fragment {
+    assert(content !== null)
+    assert(editor_current === editor.value)
+
     const node = createNodeFromContent(content, editor_current.schema, { slice: true })
 
     if (node instanceof Fragment) return node
@@ -548,10 +665,16 @@ function fragment_of(content: Content, editor_current: Editor): Fragment {
 }
 
 function fullscreen_toggle(): void {
+    assert(root_element.value !== null)
+    assert(root_element.value.isConnected)
+
     fullscreen.value = !fullscreen.value
 }
 
 function heading_change(event: Event): void {
+    assert(event.type === 'change')
+    assert(!source_mode.value)
+
     if (!(event.target instanceof HTMLSelectElement)) return
 
     const { value } = event.target
@@ -571,10 +694,14 @@ function heading_change(event: Event): void {
 }
 
 function heading_level_is(value: number): value is HeadingLevel {
+    assert(Number.isInteger(value))
+
     return HEADING_LEVELS.some((level) => level === value)
 }
 
 function heading_level_of(editor_current: Editor): string {
+    assert(editor_current.schema.nodes['heading'] !== undefined)
+
     const level = HEADING_LEVELS.find((candidate) =>
         editor_current.isActive('heading', { level: candidate }))
 
@@ -582,9 +709,14 @@ function heading_level_of(editor_current: Editor): string {
 }
 
 function is_active(name: string, attributes?: Record<string, unknown>): boolean {
+    assert(name.length > 0)
+    assert(attributes === undefined || Object.keys(attributes).length > 0)
+
     const editor_current = editor.value
 
     if (editor_current === undefined) return false
+
+    assert(name in editor_current.schema.nodes || name in editor_current.schema.marks)
 
     if (attributes === undefined) return editor_current.isActive(name)
 
@@ -592,6 +724,9 @@ function is_active(name: string, attributes?: Record<string, unknown>): boolean 
 }
 
 async function link_apply(): Promise<void> {
+    assert(!source_mode.value)
+    assert(editor.value?.isDestroyed !== true)
+
     const editor_current = editor.value
 
     if (editor_current === undefined) return
@@ -600,38 +735,50 @@ async function link_apply(): Promise<void> {
     const href_previous = link_attributes['href']
     const previous = typeof href_previous === 'string' ? href_previous : 'https://'
     const { from, to } = editor_current.state.selection
-    const url = await dialog_prompt('Link URL', previous, { title: 'Add a link' })
 
-    if (url === null) return
+    return dialog_prompt('Link URL', previous, { title: 'Add a link' }).then((url) => {
+        if (url === null) return
 
-    const chain = editor_current.chain().focus().setTextSelection({ from, to })
+        const chain = editor_current.chain().focus().setTextSelection({ from, to })
 
-    if (url.trim().length === 0) {
-        chain.extendMarkRange('link').unsetLink().run()
+        if (url.trim().length === 0) {
+            chain.extendMarkRange('link').unsetLink().run()
 
-        return
-    }
+            return
+        }
 
-    chain.extendMarkRange('link').setLink({ href: url }).run()
+        chain.extendMarkRange('link').setLink({ href: url }).run()
+    })
 }
 
 function looks_like_html(text: string): boolean {
+    assert(text.trim().length > 0)
+    assert(!HTML_BLOCK_START.global)
+
     return HTML_BLOCK_START.test(text.trimStart())
 }
 
 function markdown_of(editor_current: Editor): string {
-    return editor_current.storage.markdown?.getMarkdown() ?? ''
+    assert(editor_current.storage.markdown !== undefined)
+
+    return editor_current.storage.markdown.getMarkdown()
 }
 
 function markdown_of_range(editor_current: Editor, range: AIRange): string {
+    assert(range.from < range.to)
+    assert(range.to <= editor_current.state.doc.content.size)
+    assert(editor_current.storage.markdown !== undefined)
+
     const doc = editor_current.state.doc
     const partial = doc.copy(doc.slice(range.from, range.to, true).content)
 
-    return editor_current.storage.markdown?.serializer.serialize(partial).trim()
-        ?? doc.textBetween(range.from, range.to, '\n')
+    return editor_current.storage.markdown.serializer.serialize(partial).trim()
 }
 
 function refresh_state(editor_current: Editor): void {
+    assert(editor_current.state.selection.to <= editor_current.state.doc.content.size)
+    assert(editor.value === undefined || editor.value === editor_current)
+
     const { from, to } = editor_current.state.selection
 
     has_selection.value = to > from
@@ -646,22 +793,37 @@ function refresh_state(editor_current: Editor): void {
 }
 
 function sanitize_llm_output(text: string): string {
+    assert(typeof text === 'string')
+
     const cleaned = text.trim()
 
-    if (!cleaned.startsWith(CODE_FENCE) || !cleaned.endsWith(CODE_FENCE)) return cleaned
+    if (!cleaned.startsWith(CODE_FENCE)) return cleaned
+    if (!cleaned.endsWith(CODE_FENCE)) return cleaned
 
-    return cleaned
-        .replace(/^```[a-zA-Z0-9_-]*\n?/, '')
-        .replace(/\n?```$/, '')
+    const unfenced = cleaned
+        .replace(/^```[a-zA-Z0-9_-]*\n?/u, '')
+        .replace(/\n?```$/u, '')
         .trim()
+
+    assert(unfenced.length < cleaned.length)
+
+    return unfenced
 }
 
 function selection_clear_on_outside(event: MouseEvent): void {
-    const editor_current = editor.value
-    const root = root_ref.value
+    assert(event.type === 'mousedown')
+    assert(event.currentTarget === document)
 
-    if (editor_current === undefined || root === null) return
-    if (event.target instanceof Node && root.contains(event.target)) return
+    const editor_current = editor.value
+    const root = root_element.value
+
+    if (editor_current === undefined) return
+    if (root === null) return
+
+    if (event.target instanceof Node) {
+        if (root.contains(event.target)) return
+    }
+
     if (editor_current.state.selection.empty) return
 
     editor_current
@@ -672,11 +834,17 @@ function selection_clear_on_outside(event: MouseEvent): void {
 }
 
 function source_enter(): void {
+    assert(!source_mode.value)
+    assert(editor.value !== undefined)
+
     source_buffer.value = model.value
     source_mode.value = true
 }
 
 function source_exit(): void {
+    assert(source_mode.value)
+    assert(editor.value?.isDestroyed !== true)
+
     const next = source_buffer.value
     const editor_current = editor.value
 
@@ -684,13 +852,17 @@ function source_exit(): void {
     model.value = next
 
     if (editor_current !== undefined) {
-        editor_current.commands.setContent(next, { emitUpdate: false })
+        editor_current.commands.setContent(next, { [KEY_EMIT_UPDATE]: false })
+        refresh_state(editor_current)
     }
 
-    markdown_emitted = next
+    markdown_emitted.value = next
 }
 
 function source_input(event: Event): void {
+    assert(event.type === 'input')
+    assert(source_mode.value)
+
     if (!(event.target instanceof HTMLTextAreaElement)) return
 
     source_buffer.value = event.target.value
@@ -698,22 +870,26 @@ function source_input(event: Event): void {
 }
 
 function table_insert(): void {
+    assert(!source_mode.value)
+
     if (is_in_table.value) {
         table_bar_dismissed.value = false
 
         return
     }
 
-    command_chain()?.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()
+    command_chain()?.insertTable({ rows: 3, [KEY_COLUMNS]: 3, [KEY_WITH_HEADER_ROW]: true }).run()
 }
 
 function toolbar_class(name: string): string[] {
+    assert(name.length > 0)
+
     return ['rich-tb-btn', is_active(name) ? 'rich-tb-btn-active' : '']
 }
 </script>
 
 <template>
-    <div ref="root_ref" class="rich-editor" :data-fullscreen="fullscreen ? 'true' : 'false'">
+    <div ref="root_element" class="rich-editor" :data-fullscreen="fullscreen ? 'true' : 'false'">
         <div class="rich-editor-toolbar">
             <div
                 :id="more_panel_id"
@@ -761,7 +937,7 @@ function toolbar_class(name: string): string[] {
                     @mousedown.prevent
                     @click="command_chain()?.toggleStrike().run()"
                 >
-                    <span style="text-decoration: line-through">S</span>
+                    <s>S</s>
                 </button>
                 <button
                     type="button"
@@ -885,22 +1061,22 @@ function toolbar_class(name: string): string[] {
             <span class="flex-1" />
             <Teleport defer :to="`#${more_panel_id}`" :disabled="!toolbar_collapsed">
                 <button
-                    v-if="!source_mode"
-                    type="button"
-                    class="rich-tb-btn"
-                    title="Edit raw markdown"
-                    @click="source_enter"
-                >
-                    Markdown
-                </button>
-                <button
-                    v-else
+                    v-if="source_mode"
                     type="button"
                     class="rich-tb-btn rich-tb-btn-active"
                     title="Back to rich editor"
                     @click="source_exit"
                 >
                     Rich editor
+                </button>
+                <button
+                    v-else
+                    type="button"
+                    class="rich-tb-btn"
+                    title="Edit raw markdown"
+                    @click="source_enter"
+                >
+                    Markdown
                 </button>
             </Teleport>
             <button
@@ -1102,20 +1278,20 @@ function toolbar_class(name: string): string[] {
             <p v-if="ai_error" class="rich-editor-ai-error">{{ ai_error }}</p>
         </div>
 
-        <div v-if="!source_mode" class="rich-editor-body">
+        <textarea
+            v-if="source_mode"
+            class="rich-editor-source"
+            spellcheck="false"
+            :value="source_buffer"
+            @input="source_input"
+        />
+        <div v-else class="rich-editor-body">
             <EditorContent
                 v-if="editor"
                 :editor="editor"
                 class="rich-editor-content prose-render"
             />
         </div>
-        <textarea
-            v-else
-            class="rich-editor-source"
-            spellcheck="false"
-            :value="source_buffer"
-            @input="source_input"
-        />
 
         <div class="rich-editor-stats">
             <span>{{ stats.words }} word{{ stats.words === 1 ? '' : 's' }}</span>

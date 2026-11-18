@@ -16,9 +16,9 @@ export type IconName =
     | 'people'
     | 'settings'
 
-const props = defineProps<{ name: IconName }>()
+const properties = defineProps<{ name: IconName }>()
 
-const ICON_PATHS: Record<IconName, string[]> = {
+const ICON_PATHS = Object.freeze<Record<IconName, readonly string[]>>({
     ask: ['M7.5 8.25h9', 'M7.5 11.25H12', ICON_PATH_BUBBLE],
     folder: [ICON_PATH_FOLDER],
     jobs: ['M3 11l9-7 9 7', 'M5 10v10h14V10', 'M10 20v-6h4v6'],
@@ -32,7 +32,7 @@ const ICON_PATHS: Record<IconName, string[]> = {
         ICON_PATH_GEAR,
         'M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
     ],
-}
+})
 </script>
 
 <template>
@@ -46,6 +46,6 @@ const ICON_PATHS: Record<IconName, string[]> = {
         stroke-linejoin="round"
         aria-hidden="true"
     >
-        <path v-for="path_data in ICON_PATHS[props.name]" :key="path_data" :d="path_data" />
+        <path v-for="path_data in ICON_PATHS[properties.name]" :key="path_data" :d="path_data" />
     </svg>
 </template>

@@ -25,13 +25,27 @@ def funnel_promo_downloaded(code: str) -> None:
     promo.services.processor.download_record()
 
 
-def funnel_promo_issue(*, address: str, campaign: str) -> PromoCode | None:
+def funnel_promo_issue(
+    *,
+    address: str,
+    campaign: str,
+    name_first: str = '',
+    name_last: str = '',
+) -> PromoCode | None:
     if campaign not in CampaignChoices.values:
         message = f'campaign must be one of {CampaignChoices.values}: {campaign!r}'
         raise ValueError(message)
 
     if address == '':
         message = 'address must be non-empty'
+        raise ValueError(message)
+
+    if name_first != name_first.strip():
+        message = 'name_first must arrive stripped'
+        raise ValueError(message)
+
+    if name_last != name_last.strip():
+        message = 'name_last must arrive stripped'
         raise ValueError(message)
 
     code_shared = FUNNEL_PROMO_CODES_SHARED.get(CampaignChoices(campaign))
@@ -45,4 +59,4 @@ def funnel_promo_issue(*, address: str, campaign: str) -> PromoCode | None:
         logger.error('The %s campaign has no active shared promo code %s', campaign, code_shared)
         raise EmailUnavailableError(FUNNEL_OFFER_UNSET_MESSAGE)
 
-    return shared.services.processor.issue(address)
+    return shared.services.processor.issue(address, name_first=name_first, name_last=name_last)

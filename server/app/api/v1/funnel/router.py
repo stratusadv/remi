@@ -1,9 +1,9 @@
 from ninja import Form, Router, Status
-from ninja.throttling import AnonRateThrottle
 
 from django.http import HttpRequest
 
 from app.api.v1.funnel.schemas import FunnelDownloadSchema, FunnelEmailSchema, FunnelVisitSchema
+from app.core.throttles import AddressRateThrottle
 from app.funnel.mail import funnel_email_send
 from app.funnel.metric import funnel_download_record, funnel_visit_record
 from app.funnel.promo import funnel_promo_downloaded
@@ -13,16 +13,10 @@ STATUS_NO_CONTENT = 204
 THROTTLE_RATE_BEACON = '3000/m'
 THROTTLE_RATE_EMAIL = '300/m'
 
-
-class FunnelBeaconThrottle(AnonRateThrottle):
-    scope = 'funnel_beacon'
-
-
-class FunnelEmailThrottle(AnonRateThrottle):
-    scope = 'funnel_email'
-
-
-router = Router(tags=['funnel'], throttle=[FunnelBeaconThrottle(THROTTLE_RATE_BEACON)])
+router = Router(
+    tags=['funnel'],
+    throttle=[AddressRateThrottle(THROTTLE_RATE_BEACON, scope='funnel_beacon')],
+)
 
 
 @router.post('/download/', auth=None, response={STATUS_NO_CONTENT: None})
@@ -45,7 +39,7 @@ def funnel_download(request: HttpRequest, payload: Form[FunnelDownloadSchema]) -
     '/email/',
     auth=None,
     response={STATUS_NO_CONTENT: None},
-    throttle=FunnelEmailThrottle(THROTTLE_RATE_EMAIL),
+    throttle=AddressRateThrottle(THROTTLE_RATE_EMAIL, scope='funnel_email'),
 )
 def funnel_email(request: HttpRequest, payload: Form[FunnelEmailSchema]) -> Status:
     if not isinstance(payload, FunnelEmailSchema):
@@ -54,7 +48,12 @@ def funnel_email(request: HttpRequest, payload: Form[FunnelEmailSchema]) -> Stat
 
     _ = request
 
-    funnel_email_send(address=payload.email, campaign=payload.campaign)
+    funnel_email_send(
+        address=payload.email,
+        campaign=payload.campaign,
+        name_first=payload.name_first,
+        name_last=payload.name_last,
+    )
 
     return Status(STATUS_NO_CONTENT, None)
 

@@ -14,7 +14,7 @@ const BEACON_CONTENT_TYPE = 'application/x-www-form-urlencoded;charset=UTF-8'
 const CODE_EMAILED = 'WIB-7KQ4-M2XD'
 const CODE_PRINTED = 'WIB2026'
 const EMAIL_ADDRESS = 'avery@example.com'
-const EMAIL_BODY = 'campaign=wib&email=avery%40example.com'
+const EMAIL_BODY = 'campaign=wib&email=avery%40example.com&name_first=Avery&name_last=Lee'
 const EMAIL_STATUS_FAILED = 'The email did not send. Your mail app can send it instead.'
 const EMAIL_STATUS_INVALID = 'That address does not look right. Check it and try again.'
 
@@ -22,9 +22,11 @@ const EMAIL_STATUS_SENT = 'The email is on its way. '
     + 'Check your spam folder if it is not in your inbox in a minute.'
 
 const FUNNEL_ORIGIN = 'https://funnel.example.test'
-const FUNNEL_ORIGIN_DECLARATION = /^const funnel_origin = '[^']*';$/m
+const FUNNEL_ORIGIN_DECLARATION = /^const funnel_origin = '[^']*';$/mu
 const FUNNEL_PATH = new URL('../../docs/assets/funnel.js', import.meta.url)
 const FUNNEL_SOURCE = readFileSync(FUNNEL_PATH, 'utf8')
+const NAME_FIRST = 'Avery'
+const NAME_LAST = 'Lee'
 const PAGE_GENERAL = '/docs/index.html'
 const PAGE_WIB = '/docs/wib/index.html'
 const PAGE_WIB_DOWNLOAD = '/docs/wib/download/index.html'
@@ -89,6 +91,15 @@ async function email_answer(page: Page, answer: number | 'unreachable'): Promise
     return bodies
 }
 
+async function email_fill(page: Page): Promise<void> {
+    assert(!page.isClosed())
+    assert(EMAIL_ADDRESS.includes('@'))
+
+    await page.getByLabel('First name').fill(` ${NAME_FIRST} `)
+    await page.getByLabel('Last name').fill(NAME_LAST)
+    await page.getByLabel('Your email').fill(EMAIL_ADDRESS)
+}
+
 function beacon_received(request: Request): Beacon {
     assert(request.method() === 'POST')
     assert(request.url().startsWith(FUNNEL_ORIGIN))
@@ -118,7 +129,7 @@ async function landing_open(
 
     const beacons: Beacon[] = []
 
-    await page.route(/^https:\/\//, async (route) => route.fulfill({ status: 204 }))
+    await page.route(/^https:\/\//u, async (route) => route.fulfill({ status: 204 }))
     await page.route('https://api.github.com/**', async (route) => route.fulfill({ json: RELEASE }))
 
     await page.route('https://fonts.googleapis.com/**', async (route) => {
@@ -198,11 +209,34 @@ test('the WIB page offers the email form on a computer too', async ({ page }) =>
 
     const bodies = await email_answer(page, 204)
 
-    await page.getByLabel('Your email').fill(EMAIL_ADDRESS)
+    await email_fill(page)
     await page.getByRole('button', { exact: true, name: 'Email my code' }).click()
 
     await expect.poll(() => bodies).toEqual([EMAIL_BODY])
     await expect(page.locator('#email-status')).toHaveText(EMAIL_STATUS_SENT)
+})
+
+test('the WIB form sends nothing until both names are filled in', async ({ page }) => {
+    await landing_open(page, PAGE_WIB)
+
+    const bodies = await email_answer(page, 204)
+    const first = page.getByLabel('First name')
+
+    await page.getByLabel('Your email').fill(EMAIL_ADDRESS)
+    await page.getByRole('button', { exact: true, name: 'Email my code' }).click()
+
+    await expect(first).toBeFocused()
+
+    expect(bodies).toEqual([])
+
+    await first.fill(NAME_FIRST)
+    await page.getByRole('button', { exact: true, name: 'Email my code' }).click()
+
+    const last = page.getByLabel('Last name')
+
+    await expect(last).toBeFocused()
+    await expect(page.locator('#email-status')).toHaveText('')
+    expect(bodies).toEqual([])
 })
 
 test.describe('on a Mac', () => {
@@ -231,7 +265,7 @@ test.describe('on a Mac', () => {
         const button = page.locator('#get-main')
 
         await expect(button).toHaveText('Download for macOS')
-        await expect(button).toHaveAttribute('href', /_universal\.dmg$/)
+        await expect(button).toHaveAttribute('href', /_universal\.dmg$/u)
     })
 })
 
@@ -259,16 +293,17 @@ test.describe('on a phone', () => {
         await landing_open(page, PAGE_WIB_SCANNED)
 
         const bodies = await email_answer(page, 204)
-        const address = page.getByLabel('Your email')
 
         await expect(page.locator('#mailto')).toBeHidden()
 
-        await address.fill(EMAIL_ADDRESS)
+        await email_fill(page)
         await page.getByRole('button', { exact: true, name: 'Email my code' }).click()
 
         await expect.poll(() => bodies).toEqual([EMAIL_BODY])
         await expect(page.locator('#email-status')).toHaveText(EMAIL_STATUS_SENT)
-        await expect(address).toHaveValue('')
+        await expect(page.getByLabel('Your email')).toHaveValue('')
+        await expect(page.getByLabel('First name')).toHaveValue('')
+        await expect(page.getByLabel('Last name')).toHaveValue('')
     })
 
     const failures = [
@@ -282,7 +317,7 @@ test.describe('on a phone', () => {
 
             const bodies = await email_answer(page, failure.answer)
 
-            await page.getByLabel('Your email').fill(EMAIL_ADDRESS)
+            await email_fill(page)
             await page.getByRole('button', { exact: true, name: 'Email my code' }).click()
 
             await expect.poll(() => bodies).toEqual([EMAIL_BODY])
@@ -297,7 +332,7 @@ test.describe('on a phone', () => {
 
         const address = page.getByLabel('Your email')
 
-        await address.fill(EMAIL_ADDRESS)
+        await email_fill(page)
         await page.getByRole('button', { exact: true, name: 'Email my code' }).click()
 
         await expect(page.locator('#email-status')).toHaveText(EMAIL_STATUS_INVALID)
@@ -310,6 +345,6 @@ test.describe('on a phone', () => {
 
         await expect(page.locator('#email')).toBeHidden()
         await expect(page.locator('#mailto')).toBeVisible()
-        await expect(page.locator('#mailto')).toHaveAttribute('href', /wib%2Fdownload%2F/)
+        await expect(page.locator('#mailto')).toHaveAttribute('href', /wib%2Fdownload%2F/u)
     })
 })

@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { assert } from '../lib/assert'
+import { AssertionError, assert } from '../lib/assert'
 import { error_dialog_show } from '../lib/errors'
 import { MENU_ITEM_COPY } from '../lib/menu'
 import type { MenuItem } from '../lib/menu'
@@ -20,6 +20,7 @@ export interface MenuShown {
 }
 
 const ITEMS_MAX = 12
+const ITEMS_SHOWN_MAX = ITEMS_MAX + 1
 const menu = ref<MenuShown | null>(null)
 const api = Object.freeze({ menu, choose, close, open })
 
@@ -32,7 +33,7 @@ export function context_menu_listen(): void {
 }
 
 export function use_context_menu(): typeof api {
-    assert(Object.isFrozen(api))
+    assert(menu.value === null || menu.value.items.length <= ITEMS_SHOWN_MAX)
     assert(menu.value === null || menu.value.items.length > 0)
 
     return api
@@ -137,5 +138,5 @@ async function select_none(id: string): Promise<void> {
     assert(id.length > 0)
     assert(id !== MENU_ITEM_COPY.id)
 
-    return Promise.reject(new Error(`No action is set for the menu item ${id}.`))
+    return Promise.reject(new AssertionError(`No action is set for the menu item ${id}.`))
 }

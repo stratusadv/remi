@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 
 
-const props = defineProps<{
+const properties = defineProps<{
     favourite: boolean
     title: string
 }>()
@@ -12,23 +12,23 @@ const emit = defineEmits<{
 }>()
 
 const label = computed(() =>
-    props.favourite
-        ? `Remove ${props.title} from favourites`
-        : `Add ${props.title} to favourites`)
+    properties.favourite
+        ? `Remove ${properties.title} from favourites`
+        : `Add ${properties.title} to favourites`)
 </script>
 
 <template>
     <button
         type="button"
         class="recording-tile-star"
-        :aria-pressed="props.favourite"
+        :aria-pressed="properties.favourite"
         :aria-label="label"
-        :title="props.favourite ? 'Remove from favourites' : 'Add to favourites'"
+        :title="properties.favourite ? 'Remove from favourites' : 'Add to favourites'"
         @click="emit('toggle')"
     >
         <svg
             viewBox="0 0 24 24"
-            :fill="props.favourite ? 'currentColor' : 'none'"
+            :fill="properties.favourite ? 'currentColor' : 'none'"
             stroke="currentColor"
             stroke-width="1.75"
             stroke-linejoin="round"

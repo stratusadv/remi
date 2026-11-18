@@ -1,141 +1,105 @@
 import { computed, watch } from 'vue'
 import { assert } from '../lib/assert'
 import {
-    PALETTE_DEFAULT,
+    MODE_STORAGE_KEY,
+    PALETTE_STORAGE_KEY,
+    THEME_DEFAULT,
+    THEME_STORAGE_KEY,
+    mode_apply_to_html,
+    mode_resolve,
     palette_apply_to_html,
+    storage_read,
+    storage_write,
     system_media_query,
     theme_apply_to_html,
-    theme_resolve,
-    theme_storage_write,
 } from '../lib/theme'
 import { use_settings } from './use_settings'
-import type { ThemeEffective } from '../lib/theme'
-import type { PaletteChoice, ThemeChoice } from '../types'
+import type { ModeEffective } from '../lib/theme'
+import type { ModeChoice, PaletteChoice, Settings, ThemeChoice } from '../types'
 
 
-export interface PaletteSwatch {
-    surface: string
-    accent: string
+interface AppearanceSaved {
+    mode: string | null
+    theme: string | null
+    palette: string | null
 }
 
 export interface Palette {
     id: PaletteChoice
     label: string
-    dark: PaletteSwatch
-    light: PaletteSwatch
+}
+
+export interface Theme {
+    id: ThemeChoice
+    label: string
+    palette: PaletteChoice
 }
 
 export const PALETTES = Object.freeze<Palette[]>([
-    {
-        id: 'cubist',
-        label: 'Cubist',
-        dark: { surface: '#0b1018', accent: '#00a2d2' },
-        light: { surface: '#efe8dc', accent: '#005f86' },
-    },
-    {
-        id: 'rose-pine',
-        label: 'Rosé Pine',
-        dark: { surface: '#191724', accent: '#c4a7e7' },
-        light: { surface: '#faf4ed', accent: '#7b6693' },
-    },
-    {
-        id: 'catppuccin',
-        label: 'Catppuccin',
-        dark: { surface: '#1e1e2e', accent: '#cba6f7' },
-        light: { surface: '#eff1f5', accent: '#8839ef' },
-    },
-    {
-        id: 'nord',
-        label: 'Nord',
-        dark: { surface: '#2e3440', accent: '#88c0d0' },
-        light: { surface: '#eceff4', accent: '#5e81ac' },
-    },
-    {
-        id: 'gruvbox',
-        label: 'Gruvbox',
-        dark: { surface: '#282828', accent: '#fe8019' },
-        light: { surface: '#fbf1c7', accent: '#af3a03' },
-    },
-    {
-        id: 'tokyo-night',
-        label: 'Tokyo Night',
-        dark: { surface: '#1a1b26', accent: '#7aa2f7' },
-        light: { surface: '#e1e2e7', accent: '#2e7de9' },
-    },
-    {
-        id: 'flexoki',
-        label: 'Flexoki',
-        dark: { surface: '#100f0f', accent: '#4385be' },
-        light: { surface: '#fffcf0', accent: '#205ea6' },
-    },
-    {
-        id: 'ayu',
-        label: 'Ayu',
-        dark: { surface: '#0b0e14', accent: '#59c2ff' },
-        light: { surface: '#fcfcfc', accent: '#1a6fb0' },
-    },
-    {
-        id: 'dracula',
-        label: 'Dracula',
-        dark: { surface: '#21222c', accent: '#8be9fd' },
-        light: { surface: '#fffbeb', accent: '#036a96' },
-    },
-    {
-        id: 'one',
-        label: 'One',
-        dark: { surface: '#21252b', accent: '#61afef' },
-        light: { surface: '#fafafa', accent: '#2a5bcc' },
-    },
-    {
-        id: 'iceberg',
-        label: 'Iceberg',
-        dark: { surface: '#161821', accent: '#84a0c6' },
-        light: { surface: '#e8e9ec', accent: '#2d539e' },
-    },
-    {
-        id: 'nightfox',
-        label: 'Nightfox',
-        dark: { surface: '#131a24', accent: '#719cd6' },
-        light: { surface: '#f6f2ee', accent: '#2848a9' },
-    },
-    {
-        id: 'night-owl',
-        label: 'Night Owl',
-        dark: { surface: '#011627', accent: '#82aaff' },
-        light: { surface: '#fbfbfb', accent: '#3a63bf' },
-    },
+    { id: 'cubist', label: 'Cubist' },
+    { id: 'graphite', label: 'Graphite' },
+    { id: 'rose-pine', label: 'Rosé Pine' },
+    { id: 'catppuccin', label: 'Catppuccin' },
+    { id: 'nord', label: 'Nord' },
+    { id: 'gruvbox', label: 'Gruvbox' },
+    { id: 'tokyo-night', label: 'Tokyo Night' },
+    { id: 'flexoki', label: 'Flexoki' },
+    { id: 'ayu', label: 'Ayu' },
+    { id: 'dracula', label: 'Dracula' },
+    { id: 'one', label: 'One' },
+    { id: 'iceberg', label: 'Iceberg' },
+    { id: 'nightfox', label: 'Nightfox' },
+    { id: 'night-owl', label: 'Night Owl' },
+])
+
+export const THEMES = Object.freeze<Theme[]>([
+    { id: 'cubism', label: 'Cubism', palette: 'cubist' },
+    { id: 'standard', label: 'Standard', palette: 'graphite' },
 ])
 
 const { settings, update } = use_settings()
-const palette_effective = computed<PaletteChoice>(() => palette_resolve(settings.value.palette))
-const theme_effective = computed<ThemeEffective>(() => theme_resolve(settings.value.theme))
+const mode_effective = computed<ModeEffective>(() => mode_resolve(settings.value.mode))
+const theme_effective = computed<ThemeChoice>(() => theme_resolve(settings.value.theme))
+
+const palette_effective = computed<PaletteChoice>(() =>
+    palette_resolve(settings.value.palette, theme_effective.value))
+
+const api = Object.freeze({
+    mode_effective,
+    mode_set,
+    mode_toggle,
+    palette_effective,
+    palette_set,
+    theme_effective,
+    theme_set,
+})
 
 
-watch(
-    () => settings.value.theme,
-    (choice) => {
-        theme_apply_to_html(theme_resolve(choice))
-        theme_storage_write(choice)
-    },
-    { immediate: true },
-)
+appearance_apply({
+    mode: storage_read(MODE_STORAGE_KEY),
+    theme: storage_read(THEME_STORAGE_KEY),
+    palette: storage_read(PALETTE_STORAGE_KEY),
+})
 
-watch(
-    () => settings.value.palette,
-    (palette) => {
-        palette_apply_to_html(palette_resolve(palette))
-    },
-    { immediate: true },
-)
-
-export function use_theme(): typeof api {
-    assert(Object.isFrozen(api))
-    assert(typeof palette_effective.value === 'string')
-
-    return api
-}
+watch(settings, settings_apply)
 
 listener_system_attach()
+
+function appearance_apply(saved: Readonly<AppearanceSaved>): void {
+    assert(saved.mode === null || typeof saved.mode === 'string')
+    assert(saved.theme === null || typeof saved.theme === 'string')
+    assert(saved.palette === null || typeof saved.palette === 'string')
+
+    const theme_applied = theme_resolve(saved.theme)
+    const palette_applied = palette_resolve(saved.palette, theme_applied)
+
+    mode_apply_to_html(mode_resolve(saved.mode))
+    theme_apply_to_html(theme_applied)
+    palette_apply_to_html(palette_applied)
+
+    assert(THEMES.some((candidate) => candidate.id === theme_applied))
+    assert(PALETTES.some((candidate) => candidate.id === palette_applied))
+}
 
 function listener_system_attach(): void {
     const query = system_media_query()
@@ -143,20 +107,43 @@ function listener_system_attach(): void {
     if (query === null) return
 
     assert(typeof query.addEventListener === 'function')
-    assert(PALETTES.length > 0)
+    assert(typeof query.matches === 'boolean')
 
     query.addEventListener('change', () => {
-        if (settings.value.theme === null) theme_apply_to_html(theme_resolve(null))
+        if (settings.value.mode === null) mode_apply_to_html(mode_resolve(null))
     })
 }
 
-export function palette_resolve(saved: string | null): PaletteChoice {
-    assert(saved === null || saved.length > 0)
-    assert(PALETTES.some((candidate) => candidate.id === PALETTE_DEFAULT))
+function mode_set(choice: ModeChoice): void {
+    assert(choice.length > 0)
+    assert(typeof update === 'function')
+
+    const next = choice === 'system' ? null : choice
+
+    void update({ mode: next })
+    mode_apply_to_html(mode_resolve(next))
+}
+
+function mode_toggle(): void {
+    assert(mode_effective.value.length > 0)
+    assert(typeof settings.value === 'object')
+
+    mode_set(mode_effective.value === 'light' ? 'dark' : 'light')
+}
+
+export function palette_resolve(saved: string | null, theme: ThemeChoice): PaletteChoice {
+    assert(saved === null || typeof saved === 'string')
+    assert(THEMES.some((candidate) => candidate.id === theme))
 
     const known = PALETTES.find((candidate) => candidate.id === saved)
 
-    return known === undefined ? PALETTE_DEFAULT : known.id
+    if (known !== undefined) return known.id
+
+    const owner = THEMES.find((candidate) => candidate.id === theme)
+
+    assert(owner !== undefined, `the ${theme} theme is not in THEMES`)
+
+    return owner.palette
 }
 
 function palette_set(palette: PaletteChoice): void {
@@ -167,28 +154,38 @@ function palette_set(palette: PaletteChoice): void {
     palette_apply_to_html(palette)
 }
 
-function theme_set(choice: ThemeChoice): void {
-    assert(choice.length > 0)
-    assert(typeof update === 'function')
+function settings_apply(current: Readonly<Settings>): void {
+    assert(typeof current === 'object')
+    assert(current === settings.value)
 
-    const next = choice === 'system' ? null : choice
+    appearance_apply(current)
 
-    void update({ theme: next })
-    theme_apply_to_html(theme_resolve(next))
-    theme_storage_write(next)
+    storage_write(MODE_STORAGE_KEY, current.mode)
+    storage_write(PALETTE_STORAGE_KEY, current.palette)
+    storage_write(THEME_STORAGE_KEY, current.theme)
 }
 
-const api = Object.freeze({
-    theme_set,
-    theme_toggle,
-    theme_effective,
-    palette_set,
-    palette_effective,
-})
+export function theme_resolve(saved: string | null): ThemeChoice {
+    assert(saved === null || typeof saved === 'string')
+    assert(THEMES.some((candidate) => candidate.id === THEME_DEFAULT))
 
-function theme_toggle(): void {
-    assert(theme_effective.value.length > 0)
-    assert(typeof settings.value === 'object')
+    const known = THEMES.find((candidate) => candidate.id === saved)
 
-    theme_set(theme_effective.value === 'light' ? 'dark' : 'light')
+    return known === undefined ? THEME_DEFAULT : known.id
+}
+
+function theme_set(theme: ThemeChoice): void {
+    assert(theme.length > 0)
+    assert(THEMES.some((candidate) => candidate.id === theme))
+
+    void update({ theme, palette: null })
+    theme_apply_to_html(theme)
+    palette_apply_to_html(palette_resolve(null, theme))
+}
+
+export function use_theme(): typeof api {
+    assert(THEMES.some((candidate) => candidate.id === theme_effective.value))
+    assert(typeof palette_effective.value === 'string')
+
+    return api
 }

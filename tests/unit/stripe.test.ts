@@ -44,6 +44,7 @@ const STARTED = Object.freeze<CheckoutStarted>({
 
 const THEME_TOKENS = Object.freeze<Record<string, string>>({
     '--color-accent': 'rgb(10, 20, 30)',
+    '--color-accent-soft': 'rgba(10, 20, 30, 0.2)',
     '--color-content': 'rgb(230, 230, 230)',
     '--color-content-meta': 'rgb(138, 138, 138)',
     '--color-content-muted': 'rgb(160, 160, 160)',
@@ -108,7 +109,7 @@ function key_new(): string {
 }
 
 async function started_now(): Promise<CheckoutStarted> {
-    assert(Object.isFrozen(STARTED))
+    assert(STARTED.session_id.startsWith('cs_'))
     assert(STARTED.client_secret.startsWith(STARTED.session_id))
 
     return Promise.resolve({ ...STARTED })
@@ -185,7 +186,8 @@ afterEach(() => {
     vi.unstubAllEnvs()
     vi.unstubAllGlobals()
     document.body.replaceChildren()
-    document.documentElement.classList.remove('theme-dark', 'theme-light')
+    document.documentElement.classList.remove('mode-dark', 'mode-light')
+    delete document.documentElement.dataset['theme']
     document.documentElement.removeAttribute('style')
 })
 
@@ -244,11 +246,11 @@ describe('checkout_preload before the form opens', () => {
     it('takes the theme the page shows when the form opens, not when it was prepared', async () => {
         const fake = stripe_fake_install('ready')
 
-        document.documentElement.classList.add('theme-light')
+        document.documentElement.classList.add('mode-light')
 
         const preloaded = await checkout_preload(key_new(), started_now())
 
-        document.documentElement.classList.replace('theme-light', 'theme-dark')
+        document.documentElement.classList.replace('mode-light', 'mode-dark')
         await preloaded.open(host_new())
 
         const [appearance] = fake.change_appearance.mock.calls[0] ?? []
@@ -471,12 +473,12 @@ describe('checkout_preload when Stripe refuses a form', () => {
 })
 
 describe('stripe_appearance', () => {
-    it('follows the light or dark theme remi is showing', () => {
-        document.documentElement.classList.add('theme-light')
+    it('follows the light or dark mode remi is showing', () => {
+        document.documentElement.classList.add('mode-light')
 
         expect(stripe_appearance().theme).toBe('stripe')
 
-        document.documentElement.classList.replace('theme-light', 'theme-dark')
+        document.documentElement.classList.replace('mode-light', 'mode-dark')
 
         expect(stripe_appearance().theme).toBe('night')
     })
@@ -497,6 +499,16 @@ describe('stripe_appearance', () => {
 
         expect(focus['boxShadow']).toBe('0 0 0 1px rgb(10, 20, 30), 3px 3px 0 rgb(40, 50, 60)')
         expect(appearance.variables?.fontFamily?.startsWith('"Geist"')).toBe(true)
+        expect(document.body.childElementCount).toBe(0)
+    })
+
+    it('draws the soft focus ring of the Standard theme instead of the offset plane', () => {
+        document.documentElement.dataset['theme'] = 'standard'
+
+        const focus = stripe_appearance().rules?.['.Input:focus'] ?? {}
+
+        expect(focus['boxShadow']).toBe('0 0 0 3px rgba(10, 20, 30, 0.2)')
+        expect(focus['borderColor']).toBe('rgb(10, 20, 30)')
         expect(document.body.childElementCount).toBe(0)
     })
 })

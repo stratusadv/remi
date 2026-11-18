@@ -111,7 +111,7 @@ describe('citations_split', () => {
             const cited = parts.filter((part) => part.marker !== null)
 
             expect(parts.map((part) => part.text).join('')).toBe(answer)
-            expect(cited.every((part) => /M\d+/.exec(part.text)?.[0] === part.marker)).toBe(true)
+            expect(cited.every((part) => /M\d+/u.exec(part.text)?.[0] === part.marker)).toBe(true)
             expect(cited.every((part) => part.marker !== 'M9')).toBe(true)
             expect(parts.every((part) => part.text.length > 0)).toBe(true)
         }

@@ -19,12 +19,15 @@ parameter-exempt-types = [
     "ChatExchanges",
     "ChatID",
     "CheckoutSessionID",
+    "Client",
     "ClipEnd",
     "ClipStart",
     "DateTime<Local>",
+    "DjangoCaptureOnCommitCallbacks",
     "EndpointID",
     "EngineID",
     "EnvironmentVariable",
+    "FakesServer",
     "FolderName",
     "FolderRename",
     "Group",
@@ -34,6 +37,7 @@ parameter-exempt-types = [
     "JobMetaPatch",
     "Markdown",
     "MediaStream",
+    "MetricExecutorFake",
     "MicrophoneRate",
     "ModelWrapValidatorHandler[Self]",
     "NaiveDate",
@@ -60,13 +64,16 @@ parameter-exempt-types = [
     "QuerySet[Account]",
     "QuerySet[PromoCode]",
     "RecordID",
+    "RemiWorld",
     "Request<'_>",
     "Scope",
     "SearchQuery",
+    "SendgridFake",
     "Settings",
     "SignInCode",
     "State<'_, AppState>",
     "StreamID",
+    "StripeFake",
     "TemplateID",
     "TextRaw",
     "Title",
@@ -80,7 +87,10 @@ parameter-exempt-types = [
     "Vec<String>",
     "WebviewWindow",
     "Weekday",
+    "World",
     "docmux::Error",
+    "pytest.LogCaptureFixture",
+    "pytest.MonkeyPatch",
     "reqwest::Error",
     "reqwest::Response",
     "rusqlite::Error",
@@ -93,15 +103,27 @@ select = ["ALL"]
 
 [per-file-ignores]
 "eslint.config.ts" = ["TS025", "TS032", "TS037"]
-"playwright.config.ts" = ["TS032", "TS037"]
-"server/**/*.py" = ["TS004"]
-"server/**/tests/**" = ["TS014", "TS017", "TS022", "TS026"]
+"playwright*.config.ts" = ["TS032", "TS037"]
+"server/*.py" = ["TS004"]
+"server/app/*.py" = ["TS004"]
+"server/app/*/*.py" = ["TS004"]
 "server/app/**/admin.py" = ["TS037"]
-"server/app/**/services/*.py" = ["TS037"]
-"server/app/**/urls/*.py" = ["TS005"]
+"server/app/**/services/*.py" = ["TS004", "TS037"]
+"server/app/**/urls/*.py" = ["TS004", "TS005"]
+"server/app/*/views/*.py" = ["TS004"]
+"server/app/account/ledger/*.py" = ["TS004"]
+"server/app/account/payment/*.py" = ["TS004"]
+"server/app/account/question/*.py" = ["TS004"]
+"server/app/account/transcription/*.py" = ["TS004"]
 "server/app/api/auth.py" = ["TS037"]
-"server/harness/**" = ["TS014", "TS017", "TS022", "TS026"]
-"server/system/*/settings.py" = ["TS005", "TS011", "TS037"]
+"server/app/api/v1/**" = ["TS004"]
+"server/harness/*.py" = ["TS004"]
+"server/harness/simulation/*.py" = ["TS004"]
+"server/harness/simulation/fault.py" = ["TS034"]
+"server/harness/simulation/interleaver.py" = ["TS034"]
+"server/harness/world/*.py" = ["TS004"]
+"server/system/*.py" = ["TS004"]
+"server/system/*/settings.py" = ["TS004", "TS005", "TS011", "TS037"]
 "server/system/base_settings.py" = ["TS005", "TS037"]
 "server/system/urls.py" = ["TS005"]
 "src/lib/assert.ts" = ["TS004", "TS022"]

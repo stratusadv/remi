@@ -19,7 +19,7 @@ from django.utils import timezone
 
 from app.core.exceptions import EmailUnavailableError
 from app.funnel.choices import CampaignChoices
-from app.funnel.constants import FUNNEL_PAGE_URL_GENERAL, FUNNEL_PAGE_URL_WIB_DOWNLOAD
+from app.funnel.constants import FUNNEL_PAGE_URL_GENERAL_DOWNLOAD, FUNNEL_PAGE_URL_WIB_DOWNLOAD
 from app.funnel.promo import funnel_promo_issue
 
 
@@ -45,7 +45,7 @@ class FunnelEmail(NamedTuple):
 FUNNEL_EMAILS = MappingProxyType({
     CampaignChoices.GENERAL: FunnelEmail(
         eyebrow='Meeting notes, written for you',
-        page_url=FUNNEL_PAGE_URL_GENERAL,
+        page_url=FUNNEL_PAGE_URL_GENERAL_DOWNLOAD,
         subject='Download remi',
     ),
     CampaignChoices.WIB: FunnelEmail(
@@ -76,7 +76,13 @@ def funnel_email_address_clean(address: str) -> str:
     return address_clean
 
 
-def funnel_email_build(*, address: str, campaign: str) -> EmailMultiAlternatives:
+def funnel_email_build(
+    *,
+    address: str,
+    campaign: str,
+    name_first: str = '',
+    name_last: str = '',
+) -> EmailMultiAlternatives:
     if campaign not in CampaignChoices.values:
         message = f'campaign must be one of {CampaignChoices.values}: {campaign!r}'
         raise ValueError(message)
@@ -85,8 +91,23 @@ def funnel_email_build(*, address: str, campaign: str) -> EmailMultiAlternatives
         message = 'address must arrive stripped and validated'
         raise ValueError(message)
 
+    if name_first != name_first.strip():
+        message = 'name_first must arrive stripped'
+        raise ValueError(message)
+
+    if name_last != name_last.strip():
+        message = 'name_last must arrive stripped'
+        raise ValueError(message)
+
     content = FUNNEL_EMAILS[CampaignChoices(campaign)]
-    promo = funnel_promo_issue(address=address, campaign=campaign)
+
+    promo = funnel_promo_issue(
+        address=address,
+        campaign=campaign,
+        name_first=name_first,
+        name_last=name_last,
+    )
+
     query = {'utm_source': FUNNEL_EMAIL_SOURCE}
 
     if promo is not None:
@@ -160,7 +181,13 @@ def funnel_email_deliver(
         raise EmailUnavailableError(FUNNEL_EMAIL_FAILED_MESSAGE) from None
 
 
-def funnel_email_send(*, address: str, campaign: str) -> None:
+def funnel_email_send(
+    *,
+    address: str,
+    campaign: str,
+    name_first: str = '',
+    name_last: str = '',
+) -> None:
     if campaign not in CampaignChoices.values:
         message = f'campaign must be one of {CampaignChoices.values}: {campaign!r}'
         raise ValueError(message)
@@ -169,10 +196,24 @@ def funnel_email_send(*, address: str, campaign: str) -> None:
         message = 'address must arrive stripped and validated'
         raise ValueError(message)
 
+    if name_first != name_first.strip():
+        message = 'name_first must arrive stripped'
+        raise ValueError(message)
+
+    if name_last != name_last.strip():
+        message = 'name_last must arrive stripped'
+        raise ValueError(message)
+
     if not funnel_email_configured():
         raise EmailUnavailableError(FUNNEL_EMAIL_UNCONFIGURED_MESSAGE)
 
-    email = funnel_email_build(address=address, campaign=campaign)
+    email = funnel_email_build(
+        address=address,
+        campaign=campaign,
+        name_first=name_first,
+        name_last=name_last,
+    )
+
     digest = hashlib.sha256(address.casefold().encode()).hexdigest()
     address_key = f'funnel-email-address:{digest}'
 

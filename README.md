@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-    <a href="https://remirememberthat.com/install/"><img alt="platforms" src="https://img.shields.io/badge/platforms-windows%20%7C%20linux-blue.svg?style=flat-square"></a>
+    <a href="https://remirememberthat.com/install/"><img alt="platforms" src="https://img.shields.io/badge/platforms-windows%20%7C%20macos%20%7C%20linux-blue.svg?style=flat-square"></a>
     <a href="https://github.com/stratusadv/remi/blob/main/LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square"></a>
 </p>
 

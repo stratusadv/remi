@@ -1,11 +1,7 @@
 use super::chunk::CHUNKS_MAX;
 use super::{LIST_CHUNKS_MAX, MEETINGS_MAX, Scope, index_open};
 use crate::blocking;
-use crate::endpoints::storage::{
-    MODEL_EMBEDDINGS,
-    embeddings_model_resolve,
-    embeddings_target_load,
-};
+use crate::endpoints::storage::{MODEL_EMBEDDINGS, embeddings_target_load};
 use crate::endpoints::types::EmbeddingsTarget;
 use crate::error::{AppError, AppResult};
 use crate::http::{
@@ -17,7 +13,6 @@ use crate::http::{
     response_json_bounded,
     retry_run,
 };
-use crate::settings::settings_load;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, Rows, Transaction, TransactionBehavior, named_params};
 use serde::{Deserialize, Serialize};
@@ -185,8 +180,6 @@ struct Scored {
 #[derive(Debug, Serialize)]
 pub(crate) struct SearchStatus {
     error: Option<String>,
-    model: Option<String>,
-    model_default: &'static str,
     passages: u32,
     passages_embedded: u32,
 }
@@ -598,7 +591,7 @@ fn embeddings_parse(response: &EmbeddingResponse, expected: usize) -> AppResult<
     assert!(expected <= usize_of!(BATCH_PASSAGES_MAX));
 
     if response.data.len() != expected {
-        return Err(AppError::Service(format!(
+        return Err(AppError::Internal(format!(
             "the search model returned {} vectors for {expected} passages",
             response.data.len(),
         )));
@@ -611,7 +604,7 @@ fn embeddings_parse(response: &EmbeddingResponse, expected: usize) -> AppResult<
     let dimensions = ordered.first().map_or(0, |datum| datum.embedding.len());
 
     if dimensions > usize_of!(DIMENSIONS_MAX) {
-        return Err(AppError::Service(format!(
+        return Err(AppError::Internal(format!(
             "the search model returned {dimensions} values, over the {DIMENSIONS_MAX} kept",
         )));
     }
@@ -620,15 +613,17 @@ fn embeddings_parse(response: &EmbeddingResponse, expected: usize) -> AppResult<
 
     for (position, datum) in ordered.into_iter().enumerate() {
         if usize_of!(datum.index) != position {
-            return Err(AppError::Service("the search model skipped or repeated a passage".into()));
+            return Err(AppError::Internal(
+                "the search model skipped or repeated a passage".into(),
+            ));
         }
 
         if datum.embedding.len() != dimensions {
-            return Err(AppError::Service("the search model mixed vector lengths".into()));
+            return Err(AppError::Internal("the search model mixed vector lengths".into()));
         }
 
         let Some(normalized) = vector_normalize(&datum.embedding) else {
-            return Err(AppError::Service("the search model returned an empty vector".into()));
+            return Err(AppError::Internal("the search model returned an empty vector".into()));
         };
 
         vectors.push(normalized);
@@ -680,24 +675,11 @@ fn scored_keep(
 }
 
 fn status_load() -> AppResult<SearchStatus> {
-    let model = embeddings_model_resolve(&settings_load()?);
-    let connection = index_open()?;
-    let space = model.as_deref().map_or_default(space_of);
-
-    let (passages, passages_embedded): (u32, u32) =
-        connection.query_row(SQL_VECTOR_COUNTS, named_params! { ":space": space }, |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
-
+    let space = space_of(MODEL_EMBEDDINGS);
+    let (passages, passages_embedded) = vector_counts(&index_open()?, &space)?;
     let error = WORKER.get().and_then(|worker| worker.failure.borrow().clone());
 
-    assert!(passages_embedded <= passages);
-
-    if model.is_none() {
-        assert_eq!(passages_embedded, 0);
-    }
-
-    Ok(SearchStatus { error, model, model_default: MODEL_EMBEDDINGS, passages, passages_embedded })
+    Ok(SearchStatus { error, passages, passages_embedded })
 }
 
 fn vector_bytes(values: &[f32]) -> Vec<u8> {
@@ -708,6 +690,19 @@ fn vector_bytes(values: &[f32]) -> Vec<u8> {
     assert_eq!(bytes.len(), values.len() * usize_of!(VALUE_BYTES));
 
     bytes
+}
+
+fn vector_counts(connection: &Connection, space: &str) -> AppResult<(u32, u32)> {
+    assert_ne!(space, "");
+
+    let (passages, passages_embedded): (u32, u32) =
+        connection.query_row(SQL_VECTOR_COUNTS, named_params! { ":space": space }, |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+
+    assert!(passages_embedded <= passages);
+
+    Ok((passages, passages_embedded))
 }
 
 fn vector_dot(query: &[f32], blob: &[u8]) -> Option<f32> {
@@ -822,7 +817,6 @@ mod tests {
     use super::super::test_support::{ranked_jobs, transcript_saved};
     use super::super::{RankPlan, meaning_rank, reconcile, weight_meaning};
     use super::*;
-    use crate::settings::{Settings, settings_save};
     use crate::workspace;
     use crate::workspace::test_support::{meta_with, root_scoped};
     use chrono::Local;
@@ -918,24 +912,17 @@ mod tests {
         let unprompted = embedded_all("nomic-embed-text");
         let space = space_of("nomic-embed-text");
 
-        let settings = Settings {
-            embeddings_model: Some("nomic-embed-text".to_owned()),
-            ..Settings::initial()
-        };
-
-        settings_save(&settings).unwrap();
-
         assert_ne!(unprompted, 0);
         assert_eq!(space, "nomic-embed-text | search_document:");
         assert_eq!(space_of("qwen3-embedding:0.6b"), "qwen3-embedding:0.6b");
         assert_eq!(space_of(MODEL), MODEL);
         assert_eq!(usize_of!(unprompted), vectors_pending(&space).unwrap().len());
-        assert_eq!(status_load().unwrap().passages_embedded, 0);
+        assert_eq!(vector_counts(&index_open().unwrap(), &space).unwrap().1, 0);
         assert_eq!(embedded_all(&space), unprompted);
 
-        let ready = status_load().unwrap();
+        let (passages, passages_embedded) = vector_counts(&index_open().unwrap(), &space).unwrap();
 
-        assert_eq!(ready.passages_embedded, ready.passages);
+        assert_eq!(passages_embedded, passages);
         assert_eq!(vectors_pending("nomic-embed-text").unwrap().len(), usize_of!(unprompted));
     }
 
@@ -1075,14 +1062,10 @@ mod tests {
         workspace::job_delete(&radios).unwrap();
 
         let _report = reconcile().unwrap();
-        let settings = Settings { embeddings_model: Some(MODEL.to_owned()), ..Settings::initial() };
+        let (passages, passages_embedded) = vector_counts(&index_open().unwrap(), MODEL).unwrap();
 
-        settings_save(&settings).unwrap();
-
-        let status = status_load().unwrap();
-
-        assert!(status.passages < embedded);
-        assert_eq!(status.passages_embedded, status.passages);
+        assert!(passages < embedded);
+        assert_eq!(passages_embedded, passages);
         assert_eq!(vectors_prune_orphans(&index_open().unwrap()).unwrap(), 0);
     }
 
@@ -1166,35 +1149,23 @@ mod tests {
     }
 
     #[test]
-    fn the_status_counts_passages_and_the_vectors_ready_for_the_chosen_model() {
+    fn the_status_counts_passages_and_only_the_vectors_ready_for_the_search_model() {
         let _root = root_scoped();
         let _meetings = meetings_saved();
-        let unset = status_load().unwrap();
+        let pending = status_load().unwrap();
 
-        assert_eq!(unset.model.as_deref(), Some(MODEL_EMBEDDINGS));
-        assert_eq!(unset.model_default, MODEL_EMBEDDINGS);
-        assert_ne!(unset.passages, 0);
-        assert_eq!(unset.passages_embedded, 0);
+        assert_ne!(pending.passages, 0);
+        assert_eq!(pending.passages_embedded, 0);
 
-        let emptied = Settings { embeddings_model: Some(String::new()), ..Settings::initial() };
+        let other = embedded_all(MODEL);
+        let unread = status_load().unwrap();
 
-        settings_save(&emptied).unwrap();
+        assert_eq!(other, pending.passages);
+        assert_eq!(unread.passages_embedded, 0);
 
-        let off = status_load().unwrap();
-
-        assert!(off.model.is_none());
-        assert_eq!(off.model_default, MODEL_EMBEDDINGS);
-        assert_eq!(off.passages, unset.passages);
-        assert_eq!(off.passages_embedded, 0);
-
-        let settings = Settings { embeddings_model: Some(MODEL.to_owned()), ..Settings::initial() };
-
-        settings_save(&settings).unwrap();
-
-        let embedded = embedded_all(MODEL);
+        let embedded = embedded_all(&space_of(MODEL_EMBEDDINGS));
         let ready = status_load().unwrap();
 
-        assert_eq!(ready.model.as_deref(), Some(MODEL));
         assert_eq!(ready.passages, embedded);
         assert_eq!(ready.passages_embedded, embedded);
     }

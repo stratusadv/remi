@@ -1,6 +1,8 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { KeepAlive, h, ref } from 'vue'
 import TranscriptPane from '../../src/components/transcript_pane.vue'
+import { use_ask } from '../../src/composables/use_ask'
 import { use_context_menu } from '../../src/composables/use_context_menu'
 import { use_pipeline } from '../../src/composables/use_pipeline'
 import { assert } from '../../src/lib/assert'
@@ -10,9 +12,11 @@ import {
     PROPERTIES,
     TO_FAKE,
     WRITE_TEXT,
+    mount_auto_unmount,
     transcript_build,
 } from './fixtures'
 import type { VueWrapper } from '@vue/test-utils'
+import type { ComponentOptions, Ref } from 'vue'
 import type { Transcript } from '../../src/types'
 
 
@@ -31,7 +35,6 @@ const TITLE_CLIP_ATTACHED = 'attaches the clip for a line to the audio element '
 
 const LINE_SECOND = 'The retry work (v2) is close.'
 const context_menu = use_context_menu()
-const mounted = new Set<VueWrapper>()
 const pipeline = use_pipeline()
 
 
@@ -40,7 +43,7 @@ class HighlightStub {
 
     constructor(...ranges: Range[]) {
         assert(Array.isArray(ranges))
-        assert(ranges.length >= 0)
+        assert(ranges.every((range) => !range.collapsed))
 
         this.ranges = ranges
     }
@@ -60,6 +63,26 @@ function core_mock(): Record<string, unknown> {
     ])
 }
 
+function keep_alive_host(shown: Ref<boolean>): ComponentOptions {
+    assert(typeof shown.value === 'boolean')
+    assert(LINES.length > 0)
+
+    const transcript = transcript_build([...LINES])
+
+    return {
+        render() {
+            assert(typeof shown.value === 'boolean')
+            assert(transcript.segments.length === LINES.length)
+
+            return h(
+                KeepAlive,
+                null,
+                () => (shown.value ? h(TranscriptPane, { transcript }) : null),
+            )
+        },
+    }
+}
+
 function menu_ids(): string[] {
     const shown = context_menu.menu.value
 
@@ -74,44 +97,42 @@ function mount_pane(
     segment_indexes_highlighted?: number[],
 ): VueWrapper {
     assert(transcript === null || Array.isArray(transcript.segments))
-    assert(segment_indexes_highlighted === undefined || segment_indexes_highlighted.length >= 0)
-    assert(mounted.size >= 0)
+    assert(segment_indexes_highlighted === undefined || segment_indexes_highlighted.length > 0)
+    assert(segment_indexes_highlighted === undefined || transcript !== null)
     assert(LINES.length > 0)
 
-    const wrapper = mount(TranscriptPane, {
-        [PROPERTIES]: segment_indexes_highlighted !== undefined
-            ? { transcript, segment_indexes_highlighted }
-            : { transcript },
+    const wrapper = mount_auto_unmount(TranscriptPane, {
+        [PROPERTIES]: segment_indexes_highlighted === undefined
+            ? { transcript }
+            : { transcript, segment_indexes_highlighted },
         [ATTACH_TO]: document.body,
     })
-
-    mounted.add(wrapper)
 
     return wrapper
 }
 
 function row_texts(wrapper: VueWrapper): string[] {
     assert(wrapper.exists())
-    assert(mounted.has(wrapper))
 
-    return wrapper.findAll('.transcript-pane-row-text').map((row) => row.text())
+    const texts = wrapper.findAll('.transcript-pane-row-text')
+
+    assert(wrapper.findAll('.transcript-pane-row').length === texts.length)
+
+    return texts.map((row) => row.text())
 }
 
 beforeEach(() => {
+    onTestFinished(() => {
+        context_menu.close()
+        vi.restoreAllMocks()
+        document.body.innerHTML = ''
+    })
+
     vi.resetAllMocks()
     vi.mocked(ipc.job_audio_path_get).mockResolvedValue(null)
     pipeline.pipeline_reset()
     pipeline.job_id_current.value = 'job-1'
     pipeline.transcript.value = transcript_build([...LINES])
-})
-
-afterEach(() => {
-    for (const wrapper of mounted) wrapper.unmount()
-
-    context_menu.close()
-    mounted.clear()
-    vi.restoreAllMocks()
-    document.body.innerHTML = ''
 })
 
 describe('TranscriptPane', () => {
@@ -392,7 +413,7 @@ describe('TranscriptPane', () => {
         await flushPromises()
 
         expect(dialog.current.value?.title).toBe('The server rejected the request')
-        expect(dialog.current.value?.message).toBe('locked')
+        expect(dialog.current.value?.message).toBe('Locked.')
 
         dialog.close(true)
     })
@@ -494,6 +515,67 @@ describe('TranscriptPane', () => {
         expect(wrapper.find('audio').exists()).toBe(false)
         expect(wrapper.get('.transcript-pane-row').attributes('data-playing')).toBe('false')
         expect(revoke).toHaveBeenCalledWith('blob:clip')
+
+        vi.unstubAllGlobals()
+    })
+})
+
+describe('TranscriptPane kept alive', () => {
+    it('pauses the clip it is playing when its view is left', async () => {
+        const fetch_mock = vi.fn().mockResolvedValue(new Response(new Blob(['wav'])))
+
+        vi.spyOn(HTMLMediaElement.prototype, 'paused', 'get').mockReturnValue(false)
+        vi.mocked(ipc.job_audio_path_get).mockResolvedValue('/tmp/take.wav')
+        vi.mocked(ipc.job_audio_clip_get).mockResolvedValue('/tmp/clip.wav')
+        vi.stubGlobal('fetch', fetch_mock)
+        vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:clip')
+
+        const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+        const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockReturnValue()
+        const shown = ref(true)
+        const wrapper = mount_auto_unmount(keep_alive_host(shown), { [ATTACH_TO]: document.body })
+
+        await flushPromises()
+        await wrapper.get('.transcript-pane-play').trigger('click')
+        await flushPromises()
+
+        expect(play).toHaveBeenCalledOnce()
+        expect(pause).not.toHaveBeenCalled()
+
+        shown.value = false
+        await flushPromises()
+
+        expect(pause).toHaveBeenCalledOnce()
+
+        vi.unstubAllGlobals()
+    })
+
+    it('hands back its filter highlights while away and restores them on return', async () => {
+        const registry = new Map<string, HighlightStub>()
+        const shown = ref(true)
+
+        vi.stubGlobal('CSS', { highlights: registry })
+        vi.stubGlobal('Highlight', HighlightStub)
+
+        const wrapper = mount_auto_unmount(keep_alive_host(shown), { [ATTACH_TO]: document.body })
+
+        await flushPromises()
+        await wrapper.get('.transcript-pane-filter').setValue('is')
+        await flushPromises()
+
+        expect(registry.has('transcript-filter')).toBe(true)
+
+        shown.value = false
+        await flushPromises()
+
+        expect(registry.has('transcript-filter')).toBe(false)
+
+        shown.value = true
+        await flushPromises()
+
+        const highlight = registry.get('transcript-filter')
+
+        expect(highlight?.ranges.map((range) => range.toString())).toEqual(['is', 'is', 'is'])
 
         vi.unstubAllGlobals()
     })
@@ -681,5 +763,53 @@ describe('TranscriptPane row menu', () => {
         expect(wrapper.get('.transcript-pane-row').attributes('data-playing')).toBe('true')
 
         vi.unstubAllGlobals()
+    })
+})
+
+describe('TranscriptPane row menu', () => {
+    it('asks about the meeting it was opened for after that meeting has closed', async () => {
+        const { use_dialog } = await import('../../src/composables/use_dialog')
+        const ask = use_ask()
+        const dialog = use_dialog()
+
+        onTestFinished(() => {
+            dialog.close(false)
+            ask.scope.value = { kind: 'all' }
+        })
+
+        const wrapper = mount_pane()
+
+        await flushPromises()
+        await wrapper.findAll('.transcript-pane-row')[1]?.trigger('contextmenu')
+
+        expect(menu_ids()).toContain('ask')
+
+        pipeline.pipeline_reset()
+
+        const chosen = context_menu.choose('ask')
+
+        await flushPromises()
+
+        expect(dialog.current.value).toBeNull()
+        expect(ask.scope.value).toEqual({ kind: 'meeting', job_id: 'job-1' })
+        expect(pipeline.view_current.value).toBe('ask')
+
+        await chosen
+    })
+
+    it('drops a line edit chosen after another meeting has opened', async () => {
+        const transcript_other = transcript_build(['Budget review starts.', 'Numbers are final.'])
+        const wrapper = mount_pane()
+
+        await flushPromises()
+        await wrapper.findAll('.transcript-pane-row')[1]?.trigger('contextmenu')
+        pipeline.job_id_current.value = 'job-2'
+        pipeline.transcript.value = transcript_other
+        await wrapper.setProps({ transcript: transcript_other })
+        await context_menu.choose('line_edit')
+        await flushPromises()
+
+        expect(wrapper.find('textarea').exists()).toBe(false)
+        expect(row_texts(wrapper)).toEqual(['Budget review starts.', 'Numbers are final.'])
     })
 })

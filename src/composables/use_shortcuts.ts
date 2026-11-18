@@ -1,5 +1,6 @@
-import { onActivated, onDeactivated, onMounted, onUnmounted } from 'vue'
+import { onActivated, onDeactivated, onMounted, onUnmounted, shallowRef } from 'vue'
 import { assert } from '../lib/assert'
+import { use_modal_shown } from './use_modal'
 
 
 type Handler = (event: KeyboardEvent) => void
@@ -21,8 +22,8 @@ const INPUT_TYPES_NON_TEXT = Object.freeze([
     'file',
 ])
 
-const handlers_by_combo = new Map<string, Handler[]>()
-const registrations_active = new Set<ShortcutRegistration>()
+const SHORTCUT_REGISTRATIONS_MAX = 6
+const registrations_active = shallowRef<readonly ShortcutRegistration[]>(Object.freeze([]))
 
 
 export function use_shortcuts(shortcuts: Record<string, Handler>): void {
@@ -50,7 +51,7 @@ export function use_shortcuts(shortcuts: Record<string, Handler>): void {
 
 function combo_key_from(event: KeyboardEvent): string {
     assert(event.type.length > 0)
-    assert(event.key.length >= 0)
+    assert(event.key.length > 0)
 
     const parts: string[] = []
 
@@ -95,22 +96,37 @@ function event_target_is_text_input(event: KeyboardEvent): boolean {
 window.addEventListener('keydown', listener_global_keydown)
 window.addEventListener('keydown', listener_select_all)
 
+function handler_topmost(combo: string): Handler | undefined {
+    assert(combo.length > 0)
+    assert(registrations_active.value.length <= SHORTCUT_REGISTRATIONS_MAX)
+
+    const registrations = registrations_active.value
+
+    for (let index = registrations.length - 1; index >= 0; index -= 1) {
+        const registration = registrations[index]
+
+        assert(registration !== undefined)
+
+        if (Object.hasOwn(registration.shortcuts, combo)) return registration.shortcuts[combo]
+    }
+
+    return undefined
+}
+
 function listener_global_keydown(event: KeyboardEvent): void {
     assert(event.type.length > 0)
-    assert(handlers_by_combo.size >= 0)
+    assert(registrations_active.value.length <= SHORTCUT_REGISTRATIONS_MAX)
+
+    if (use_modal_shown().value) return
 
     const combo = combo_key_from(event)
-    const handlers = handlers_by_combo.get(combo)
+    const topmost = handler_topmost(combo)
 
-    if (handlers === undefined) return
+    if (topmost === undefined) return
 
     if (!event_has_control(event)) {
         if (event_target_is_text_input(event)) return
     }
-
-    const topmost = handlers[handlers.length - 1]
-
-    if (topmost === undefined) return
 
     event.preventDefault()
     topmost(event)
@@ -128,34 +144,24 @@ function listener_select_all(event: KeyboardEvent): void {
 
 function registration_register(registration: ShortcutRegistration): void {
     assert(typeof registration.shortcuts === 'object')
-    assert(registrations_active.size >= 0)
+    assert(registrations_active.value.length <= SHORTCUT_REGISTRATIONS_MAX)
 
-    if (registrations_active.has(registration)) return
+    if (registrations_active.value.includes(registration)) return
 
-    registrations_active.add(registration)
+    registrations_active.value = Object.freeze([...registrations_active.value, registration])
 
-    for (const [combo, handler] of Object.entries(registration.shortcuts)) {
-        const existing = handlers_by_combo.get(combo) ?? []
-
-        existing.push(handler)
-        handlers_by_combo.set(combo, existing)
-    }
+    assert(registrations_active.value.length <= SHORTCUT_REGISTRATIONS_MAX)
 }
 
 function registration_unregister(registration: ShortcutRegistration): void {
     assert(typeof registration.shortcuts === 'object')
-    assert(registrations_active.size >= 0)
+    assert(registrations_active.value.length <= SHORTCUT_REGISTRATIONS_MAX)
 
-    if (!registrations_active.delete(registration)) return
+    if (!registrations_active.value.includes(registration)) return
 
-    for (const [combo, handler] of Object.entries(registration.shortcuts)) {
-        const existing = handlers_by_combo.get(combo)
+    const kept = registrations_active.value.filter((candidate) => candidate !== registration)
 
-        if (existing === undefined) continue
+    registrations_active.value = Object.freeze(kept)
 
-        const index = existing.indexOf(handler)
-
-        if (index >= 0) existing.splice(index, 1)
-        if (existing.length === 0) void handlers_by_combo.delete(combo)
-    }
+    assert(!registrations_active.value.includes(registration))
 }

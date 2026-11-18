@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from typing_extensions import NamedTuple
 
 from app.account.question.pace import AskLimits, AskPace, AskUsage, ask_pace
@@ -40,6 +41,10 @@ def _usage(
     question_count: int,
     tokens: int,
 ) -> AskUsage:
+    assert all(moment.tzinfo is not None for moment in asked_burst)
+    assert question_count >= 0
+    assert tokens >= 0
+
     asked_last = START if question_count > 0 else None
 
     if asked_burst:
@@ -54,6 +59,10 @@ def _usage(
 
 
 def _usage_of(asked: list[Asked], limits: AskLimits, now: datetime) -> AskUsage:
+    assert all(earlier.moment < later.moment for earlier, later in pairwise(asked))
+    assert limits.burst_count > 0
+    assert now.tzinfo is not None
+
     window_start = now - timedelta(days=limits.window_days)
     burst_start = now - timedelta(seconds=limits.burst_seconds)
     window = [entry for entry in asked if window_start < entry.moment <= now]
@@ -68,6 +77,8 @@ def _usage_of(asked: list[Asked], limits: AskLimits, now: datetime) -> AskUsage:
 
 
 def _simulate(limits: AskLimits) -> Simulation:
+    assert limits.tokens_soft_cap <= SIMULATION_STEPS * TOKENS_PER_QUESTION
+
     asked = []
     now = START
     waits_burst = 0
@@ -194,13 +205,15 @@ def test_usage_and_limits_that_cannot_happen_are_refused() -> None:
     outside = START - timedelta(seconds=LIMITS.burst_seconds)
     naive = START.replace(tzinfo=None)
     disagreeing = AskUsage(asked_burst=(), asked_last=START, question_count=0, tokens=0)
+    question_count_negative = AskUsage(asked_burst=(), asked_last=None, question_count=-1, tokens=0)
+    tokens_negative = AskUsage(asked_burst=(), asked_last=START, question_count=1, tokens=-1)
     empty = _usage(question_count=0, tokens=0)
     limits_zero = LIMITS._replace(pace_seconds=0)
     limits_long = LIMITS._replace(burst_seconds=2 * 86_400)
 
     cases = [
-        (LIMITS, START, _usage(question_count=-1, tokens=0), 'question_count must not be'),
-        (LIMITS, START, _usage(question_count=1, tokens=-1), 'tokens must not be negative'),
+        (LIMITS, START, question_count_negative, 'question_count must not be'),
+        (LIMITS, START, tokens_negative, 'tokens must not be negative'),
         (LIMITS, START, _usage(asked_burst=(outside,), question_count=1, tokens=1), 'outside'),
         (LIMITS, START, _usage(asked_burst=(START, inside), question_count=2, tokens=1), 'order'),
         (LIMITS, START, _usage(asked_burst=(inside,), question_count=0, tokens=0), 'more than'),

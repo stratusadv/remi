@@ -1,8 +1,7 @@
-import { mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import CheckoutOffers from '../../src/components/checkout_offers.vue'
 import { assert } from '../../src/lib/assert'
-import { ATTACH_TO, PROPERTIES, TO_FAKE } from './fixtures'
+import { ATTACH_TO, PROPERTIES, TO_FAKE, mount_auto_unmount } from './fixtures'
 import type { DOMWrapper, VueWrapper } from '@vue/test-utils'
 import type { AccountOffer } from '../../src/types'
 
@@ -16,11 +15,9 @@ const OFFERS = Object.freeze<AccountOffer[]>([
     { currency: 'cad', hours: 200, price_cents: 3000 },
 ])
 
-const mounted = new Set<VueWrapper>()
-
 
 function card_at(wrapper: VueWrapper, index: number): DOMWrapper<Element> {
-    assert(mounted.has(wrapper))
+    assert(!wrapper.vm.$.isUnmounted)
     assert(Number.isSafeInteger(index))
     assert(index < OFFERS.length)
 
@@ -32,28 +29,23 @@ function card_at(wrapper: VueWrapper, index: number): DOMWrapper<Element> {
 }
 
 function offers_mount(): VueWrapper {
-    assert(mounted.size === 0)
+    assert(document.body.childElementCount === 0)
     assert(OFFERS.length === 3)
 
-    const wrapper = mount(CheckoutOffers, {
+    const wrapper = mount_auto_unmount(CheckoutOffers, {
         [PROPERTIES]: { balance_seconds: BALANCE_SECONDS, offers: OFFERS },
         [ATTACH_TO]: document.body,
     })
-
-    mounted.add(wrapper)
 
     return wrapper
 }
 
 beforeEach(() => {
+    onTestFinished(() => {
+        vi.useRealTimers()
+    })
+
     vi.useFakeTimers({ [TO_FAKE]: ['setTimeout', 'clearTimeout'] })
-})
-
-afterEach(() => {
-    for (const wrapper of mounted) wrapper.unmount()
-
-    mounted.clear()
-    vi.useRealTimers()
 })
 
 describe('CheckoutOffers considering a pack', () => {

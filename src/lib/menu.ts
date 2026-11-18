@@ -6,6 +6,7 @@ export type MenuIconName =
     | 'delete'
     | 'edit'
     | 'folder'
+    | 'folder_minus'
     | 'open'
     | 'pause'
     | 'person'
@@ -90,6 +91,7 @@ export const MENU_ICON_PATHS: Readonly<Record<MenuIconName, readonly string[]>> 
     ],
     edit: [ICON_PATH_PEN, 'M16.862 4.487 19.5 7.125'],
     folder: [ICON_PATH_FOLDER],
+    folder_minus: [ICON_PATH_FOLDER, 'M9.75 13.5h4.5'],
     open: ['M7.5 16.5l9-9', 'M9.75 7.5h6.75v6.75'],
     pause: ['M8.25 5.25v13.5', 'M15.75 5.25v13.5'],
     person: [ICON_PATH_PERSON_HEAD, ICON_PATH_PERSON_BODY],
@@ -119,6 +121,12 @@ export const MENU_ITEM_DELETE = Object.freeze<MenuItem>({
     label: 'Delete',
     icon: 'delete',
     danger: true,
+})
+
+export const MENU_ITEM_FOLDER_LEAVE = Object.freeze<MenuItem>({
+    id: 'folder_leave',
+    label: 'Remove from folder',
+    icon: 'folder_minus',
 })
 
 export const MENU_ITEM_MOVE = Object.freeze<MenuItem>({

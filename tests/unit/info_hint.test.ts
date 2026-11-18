@@ -1,34 +1,24 @@
-import { mount } from '@vue/test-utils'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import InfoHint from '../../src/components/info_hint.vue'
 import { assert } from '../../src/lib/assert'
-import { ATTACH_TO, PROPERTIES } from './fixtures'
+import { ATTACH_TO, PROPERTIES, mount_auto_unmount } from './fixtures'
 import type { VueWrapper } from '@vue/test-utils'
 
 
 const TEXT_HINT = 'Helpful detail'
-const mounted = new Set<VueWrapper>()
 
 
 function mount_hint(label?: string): VueWrapper {
     assert(label === undefined || label.length > 0)
-    assert(mounted.size >= 0)
+    assert(document.body.querySelector('.info-hint-popover') === null)
 
-    const wrapper = mount(InfoHint, {
+    const wrapper = mount_auto_unmount(InfoHint, {
         [PROPERTIES]: label === undefined ? { text: TEXT_HINT } : { text: TEXT_HINT, label },
         [ATTACH_TO]: document.body,
     })
 
-    mounted.add(wrapper)
-
     return wrapper
 }
-
-afterEach(() => {
-    for (const wrapper of mounted) wrapper.unmount()
-
-    mounted.clear()
-})
 
 describe('InfoHint', () => {
     it('starts closed with the default label', () => {
@@ -83,8 +73,6 @@ describe('InfoHint', () => {
         const hint = mount_hint()
 
         hint.unmount()
-
-        void mounted.delete(hint)
 
         expect(removed).toHaveBeenCalledWith('click', expect.any(Function), true)
 

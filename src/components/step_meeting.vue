@@ -1,23 +1,30 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { use_folders } from '../composables/use_folders'
 import { use_jobs } from '../composables/use_jobs'
 import { use_notes_templates } from '../composables/use_notes_templates'
 import { person_label, person_name_full, use_people } from '../composables/use_people'
 import { use_pipeline } from '../composables/use_pipeline'
 import { assert } from '../lib/assert'
-import { error_dialog_show } from '../lib/errors'
-import { folder_compare, folder_key } from '../lib/folders'
+import { error_dialog_show, error_shown } from '../lib/errors'
+import { FOLDERS_LISTED_MAX, folder_compare, folder_key } from '../lib/folders'
 import { ipc } from '../lib/ipc'
 import MonogramTile from './monogram_tile.vue'
 import NoticeBanner from './notice_banner.vue'
 import PeoplePicker from './people_picker.vue'
 import StepBar from './step_bar.vue'
-import type { FolderName, JobMetaPatch, Person } from '../types'
+import StepCitation from './step_citation.vue'
+import type { FolderName, JobID, JobMeta, JobMetaPatch, Person } from '../types'
 
 
 type PickerTarget = 'present' | 'mentioned'
 type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved'
+
+interface MeetingDraft {
+    job_id: JobID
+    patch: JobMetaPatch
+}
+
 const AUTOSAVE_DEBOUNCE_MS = 800
 
 const PICKER_HINT_MENTIONED = 'Tick people who came up in conversation but were not there. '
@@ -30,6 +37,7 @@ const {
     job_id_current,
     meta_current,
     template_id_selected,
+    view_current,
     meta_refresh,
     template_id_ensure,
     view_set,
@@ -48,54 +56,79 @@ const project_input = ref('')
 const tags_current = ref<string[]>([])
 const status = ref<SaveStatus>('idle')
 const error_message = ref<string | null>(null)
-let timer_id: ReturnType<typeof setTimeout> | null = null
-let job_id_pending: string | null = null
-let patch_pending: JobMetaPatch | null = null
-let patch_synced = ''
+const timer_id = shallowRef<ReturnType<typeof setTimeout> | null>(null)
+const autosave_draft = shallowRef<MeetingDraft | null>(null)
+const patch_synced = shallowRef('')
+const flush_count = shallowRef(0)
+const meta_writes = shallowRef<Promise<unknown>>(Promise.resolve())
 
 
 async function autosave_flush(): Promise<void> {
-    const job_id = job_id_pending
-    const patch = patch_pending
+    assert(timer_id.value !== null)
+    assert(autosave_draft.value !== null)
 
-    timer_id = null
-    job_id_pending = null
-    patch_pending = null
+    const { job_id, patch } = autosave_draft.value
+    const flush_number = flush_count.value + 1
 
-    if (job_id === null || patch === null) return
+    assert(job_id.length > 0)
 
+    timer_id.value = null
+    autosave_draft.value = null
+    flush_count.value = flush_number
     status.value = 'saving'
     error_message.value = null
 
-    try {
-        const updated = await ipc.job_meta_update(job_id, patch)
+    return meta_write(job_id, patch)
+        .then(async (updated) => {
+            assert(updated.id === job_id)
 
-        if (job_id_current.value !== job_id || autosave_pending()) return
+            if (flush_count.value !== flush_number) return
+            if (autosave_pending()) return
 
-        const folder_before = folder_key(meta_current.value?.project ?? '')
+            if (job_id_current.value !== job_id) {
+                status.value = 'idle'
 
-        meta_current.value = updated
-        status.value = 'saved'
+                return
+            }
 
-        if (folder_key(updated.project ?? '') !== folder_before) await jobs_refresh()
-    } catch (error) {
-        status.value = 'idle'
-        error_message.value = String(error)
+            const folder_before = folder_key(meta_current.value?.project ?? '')
 
-        await meta_refresh()
-    }
+            meta_current.value = updated
+            status.value = 'saved'
+
+            if (folder_key(updated.project ?? '') === folder_before) return
+
+            return jobs_refresh()
+        })
+        .catch(async (error: unknown) => {
+            error_message.value = error_shown(error)
+
+            if (flush_count.value !== flush_number) return
+            if (autosave_pending()) return
+
+            status.value = 'idle'
+
+            if (job_id_current.value !== job_id) return
+
+            return meta_refresh()
+        })
 }
 
 const people_present = computed(() => people_resolve(person_ids_current.value))
 const people_mentioned = computed(() => people_resolve(person_ids_mentioned.value))
 
 const picker_ids = computed({
-    get: () => {
+    get() {
+        assert(picker_target.value !== null)
+
         if (picker_target.value === 'mentioned') return person_ids_mentioned.value
 
         return person_ids_current.value
     },
-    set: (ids: string[]) => {
+    set(ids: string[]) {
+        assert(picker_target.value !== null)
+        assert(ids.every((id) => id.length > 0))
+
         if (picker_target.value === 'mentioned') {
             person_ids_mentioned.value = ids
 
@@ -131,16 +164,16 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-    if (timer_id === null) return
+    if (timer_id.value === null) return
 
-    clearTimeout(timer_id)
-
-    void autosave_flush().then(jobs_refresh)
+    autosave_release()
 })
 
 watch(
     () => meta_current.value,
     (meta) => {
+        if (autosave_pending()) autosave_release()
+
         if (meta === null) {
             title_input.value = ''
             person_ids_current.value = []
@@ -148,7 +181,7 @@ watch(
             attendees_legacy.value = []
             project_input.value = ''
             tags_current.value = []
-            patch_synced = ''
+            patch_synced.value = ''
 
             return
         }
@@ -159,7 +192,7 @@ watch(
         attendees_legacy.value = meta.person_ids.length === 0 ? [...meta.attendees] : []
         project_input.value = folder_canonical(meta.project ?? '')
         tags_current.value = [...meta.tags]
-        patch_synced = JSON.stringify(patch_build())
+        patch_synced.value = JSON.stringify(patch_build())
     },
     { immediate: true },
 )
@@ -168,7 +201,10 @@ watch(
     [title_input, person_ids_current, person_ids_mentioned, project_input, tags_current],
     () => {
         if (job_id_current.value === null) return
-        if (!autosave_pending() && JSON.stringify(patch_build()) === patch_synced) return
+
+        if (!autosave_pending()) {
+            if (JSON.stringify(patch_build()) === patch_synced.value) return
+        }
 
         autosave_schedule()
     },
@@ -176,26 +212,56 @@ watch(
 )
 
 function autosave_pending(): boolean {
-    return timer_id !== null
+    assert((timer_id.value === null) === (autosave_draft.value === null))
+
+    return timer_id.value !== null
+}
+
+function autosave_release(): void {
+    assert(timer_id.value !== null)
+    assert(autosave_draft.value !== null)
+
+    clearTimeout(timer_id.value)
+
+    void autosave_flush().then(jobs_refresh)
 }
 
 function autosave_schedule(): void {
+    const job_id = job_id_current.value
+
+    assert(job_id !== null)
+    assert(job_id.length > 0)
+    assert(autosave_draft.value === null || autosave_draft.value.job_id === job_id)
+
     status.value = 'pending'
-    job_id_pending = job_id_current.value
-    patch_pending = patch_build()
+    autosave_draft.value = { job_id, patch: patch_build() }
 
-    if (timer_id !== null) clearTimeout(timer_id)
+    if (timer_id.value !== null) clearTimeout(timer_id.value)
 
-    timer_id = setTimeout(() => {
-        void autosave_flush()
-    }, AUTOSAVE_DEBOUNCE_MS)
+    timer_id.value = setTimeout(autosave_timer_fire, AUTOSAVE_DEBOUNCE_MS)
+}
+
+function autosave_timer_fire(): void {
+    assert(timer_id.value !== null)
+    assert(autosave_draft.value !== null)
+
+    void autosave_flush()
 }
 
 function back(): void {
+    const view_previous = view_current.value
+
+    assert(view_previous === 'details')
+
     view_set('transcribe')
+
+    assert(view_current.value === 'transcribe')
 }
 
 function folder_canonical(project: string): string {
+    assert(typeof project === 'string')
+    assert(folders.value.length <= FOLDERS_LISTED_MAX)
+
     const key = folder_key(project)
     const found = folders.value.find((folder) => folder_key(folder) === key)
 
@@ -205,25 +271,47 @@ function folder_canonical(project: string): string {
 }
 
 async function folder_new(): Promise<void> {
-    try {
-        const created = await folder_create()
+    return folder_create()
+        .then((created) => {
+            if (created === null) return
 
-        if (created === null) return
+            assert(created === created.trim())
+            assert(folder_key(created).length > 0)
 
-        project_input.value = created
-    } catch (error) {
-        await error_dialog_show(error)
-    }
+            project_input.value = created
+        })
+        .catch(error_dialog_show)
+}
+
+async function meta_write(job_id: JobID, patch: JobMetaPatch): Promise<JobMeta> {
+    assert(job_id.length > 0)
+    assert(Object.keys(patch).length > 0)
+
+    const written = Promise.allSettled([meta_writes.value])
+        .then(async () => ipc.job_meta_update(job_id, patch))
+
+    meta_writes.value = written
+
+    return written
 }
 
 async function next(): Promise<void> {
-    if (timer_id !== null) {
-        clearTimeout(timer_id)
+    assert(template_id_selected.value !== null)
+    assert(status.value !== 'saving')
 
-        await autosave_flush()
+    if (timer_id.value !== null) {
+        clearTimeout(timer_id.value)
+
+        return autosave_flush().then(() => {
+            view_set('notes')
+
+            assert(view_current.value === 'notes')
+        })
     }
 
     view_set('notes')
+
+    assert(view_current.value === 'notes')
 }
 
 function patch_build(): JobMetaPatch {
@@ -240,14 +328,22 @@ function patch_build(): JobMetaPatch {
 }
 
 function people_resolve(ids: string[]): Person[] {
+    assert(ids.every((id) => id.length > 0))
+
     return ids.map(person_by_id).filter((person): person is Person => person !== null)
 }
 
 function person_mentioned_remove(id: string): void {
+    assert(id.length > 0)
+    assert(person_ids_mentioned.value.includes(id))
+
     person_ids_mentioned.value = person_ids_mentioned.value.filter((selected) => selected !== id)
 }
 
 function person_remove(id: string): void {
+    assert(id.length > 0)
+    assert(person_ids_current.value.includes(id))
+
     person_ids_current.value = person_ids_current.value.filter((selected) => selected !== id)
 }
 </script>
@@ -255,6 +351,7 @@ function person_remove(id: string): void {
 <template>
     <section class="view-fill step-view">
         <StepBar />
+        <StepCitation />
 
         <NoticeBanner v-if="error_message" @dismiss="error_message = null">
             {{ error_message }}
@@ -401,10 +498,17 @@ function person_remove(id: string): void {
 
         <footer class="step-footer">
             <div class="step-footer-start">
-                <button class="btn-default" @click="back">Back</button>
+                <button type="button" class="btn-default" @click="back">Back</button>
             </div>
             <div class="actions-row">
-                <button class="btn-primary" :disabled="!can_continue" @click="next">Next</button>
+                <button
+                    type="button"
+                    class="btn-primary"
+                    :disabled="!can_continue"
+                    @click="next"
+                >
+                    Next
+                </button>
             </div>
         </footer>
 

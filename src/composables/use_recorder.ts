@@ -47,12 +47,16 @@ registerProcessor('${WORKLET_NAME}', RemiRecorderProcessor)
 `
 
 const recording = ref(false)
+const starting = ref(false)
+const stopping = ref(false)
 const elapsed_seconds = ref(0)
 const capture = capture_new()
 
 
 export function use_recorder(): typeof api {
-    assert(Object.isFrozen(api))
+    assert(recording.value || capture.flush_timer_id === null)
+    assert(!starting.value || !recording.value)
+    assert(!stopping.value || recording.value)
 
     capture_assert()
 
@@ -108,11 +112,27 @@ async function capture_open(): Promise<void> {
     return navigator.mediaDevices.getUserMedia({ audio: true }).then(capture_stream_attach)
 }
 
+async function capture_open_failed(error: unknown): Promise<never> {
+    assert(starting.value)
+    assert(!recording.value)
+
+    capture_teardown()
+
+    return discard_quietly().then(() => {
+        starting.value = false
+
+        throw error_friendly(error)
+    })
+}
+
 function capture_started(): void {
     assert(Number.isInteger(FLUSH_INTERVAL_MS))
     assert(typeof flush_tick === 'function')
+    assert(starting.value)
+    assert(!recording.value)
 
     capture.flush_timer_id = setInterval(flush_tick, FLUSH_INTERVAL_MS)
+    starting.value = false
     recording.value = true
 }
 
@@ -198,13 +218,18 @@ function context_create(): AudioContext {
 
     try {
         return new AudioContext({ [KEY_SAMPLE_RATE]: SAMPLE_RATE_PREFERRED })
-    } catch {
+    } catch (error: unknown) {
+        log_warn('[recorder] the preferred sample rate was refused, so the default is used', error)
+
         return new AudioContext()
     }
 }
 
 async function discard(): Promise<void> {
     if (!recording.value) return
+    if (stopping.value) return
+
+    stopping.value = true
 
     capture_teardown()
 
@@ -305,21 +330,14 @@ function samples_to_pcm16(input: Float32Array): Int16Array {
 
 async function start(): Promise<void> {
     if (recording.value) return
+    if (starting.value) return
     if (!('mediaDevices' in navigator)) throw new Error(MESSAGE_UNAVAILABLE)
 
     state_reset()
 
-    try {
-        await capture_open()
-    } catch (error) {
-        capture_teardown()
+    starting.value = true
 
-        await discard_quietly()
-
-        throw error_friendly(error)
-    }
-
-    capture_started()
+    return capture_open().then(capture_started, capture_open_failed)
 }
 
 function state_reset(): void {
@@ -327,6 +345,7 @@ function state_reset(): void {
 
     elapsed_seconds.value = 0
     recording.value = false
+    stopping.value = false
 
     assert(capture.chunks_pending.length === 0)
     assert(capture.samples_total === 0)
@@ -334,6 +353,9 @@ function state_reset(): void {
 
 async function stop(): Promise<string> {
     if (!recording.value) throw new Error(MESSAGE_NOT_RECORDING)
+    if (stopping.value) throw new Error(MESSAGE_NOT_RECORDING)
+
+    stopping.value = true
 
     capture_teardown()
     pending_flush()
@@ -374,7 +396,7 @@ async function stop_after_failure(failure: Error): Promise<string> {
         })
 }
 
-const api = Object.freeze({ recording, elapsed_seconds, start, stop, discard })
+const api = Object.freeze({ recording, starting, stopping, elapsed_seconds, start, stop, discard })
 
 function worklet_url_create(): string {
     assert(WORKLET_SOURCE.includes(WORKLET_NAME))

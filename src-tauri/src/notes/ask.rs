@@ -1,6 +1,7 @@
 use super::remote::{
     ChatPrompts,
     Completion,
+    HEDGE_DELAY_STRUCTURED,
     ReplySchema,
     chat_completion_streaming,
     chat_completion_streaming_counted,
@@ -55,6 +56,7 @@ const SNIPPET_CHARS_MAX: u32 = 200;
 const TITLE_UNTITLED: &str = "Untitled recording";
 const WARM_INTERVAL_SECONDS: u64 = 30;
 
+const _: () = assert!(HEDGE_DELAY_STRUCTURED.as_secs() < PARSE_TIMEOUT_SECONDS);
 const _: () = assert!(PARSE_QUERIES_MAX < QUERIES_MAX);
 const _: () = assert!(WARM_INTERVAL_SECONDS > PARSE_TIMEOUT_SECONDS);
 const _: () = assert!(NAMES_PARSED_MAX < NAMES_KNOWN_MAX);
@@ -223,6 +225,10 @@ impl AskSource {
         &self.job_id
     }
 
+    pub(super) fn marker(&self) -> &str {
+        &self.marker
+    }
+
     fn of(marker: String, excerpt: &Excerpt) -> Self {
         assert!(marker.starts_with('M'));
         assert!(workspace::job_id_is_valid(&excerpt.job_id));
@@ -251,6 +257,18 @@ impl QuestionAdmitted {
         assert!(bounded <= tokens.max(1));
 
         Some(QuestionFinish::new(self.question_id, bounded))
+    }
+
+    async fn finish_logged(self) {
+        let Some(finish) = self.finish() else {
+            return;
+        };
+
+        let finished = account::question_finish(&self.account, &finish).await;
+
+        if let Err(error) = finished {
+            tracing::warn!(%error, "the tokens of question {} were not recorded", self.question_id);
+        }
     }
 
     fn tally_answer(&mut self, completion: &Completion) {
@@ -332,9 +350,12 @@ pub(crate) async fn notes_ask_streaming(
     endpoint.reasoning_effort = Some(REASONING_EFFORT_ASK.to_owned());
 
     let cancel = AskCancel::register(&app, &stream_id);
-    let mut admitted = question_admit(&app, &stream_id, &endpoint_id, &cancel).await?;
     let now = Local::now();
-    let found = excerpts_find(&endpoint, &text, &turns, scope, now).await?;
+
+    let (mut admitted, found) = tokio::try_join!(
+        question_admit(&app, &stream_id, &cancel),
+        excerpts_find(&endpoint, &text, &turns, scope, now),
+    )?;
 
     if cancel.cancelled() {
         return Err(AppError::Service(MESSAGE_CANCELLED.to_owned()));
@@ -361,8 +382,8 @@ pub(crate) async fn notes_ask_streaming(
     sources_emit(&app, sources);
 
     if !answerable {
-        if let Some(turn) = admitted.as_ref() {
-            question_finish_logged(turn).await;
+        if let Some(turn) = admitted {
+            question_finish_spawn(turn);
         }
 
         return Ok(MESSAGE_NOTHING_INDEXED.to_owned());
@@ -377,7 +398,7 @@ pub(crate) async fn notes_ask_streaming(
     let completion = chat_completion_streaming_counted(app, stream_id, &endpoint, &prompts).await?;
 
     turn.tally_answer(&completion);
-    question_finish_logged(&turn).await;
+    question_finish_spawn(turn);
 
     Ok(completion.text)
 }
@@ -403,7 +424,7 @@ fn citation_group_is(inner: &str) -> bool {
     parts.len() <= markers_max && parts.iter().all(|part| citation_marker_is(part))
 }
 
-fn citation_marker_is(text: &str) -> bool {
+pub(super) fn citation_marker_is(text: &str) -> bool {
     text.strip_prefix('M').is_some_and(|digits| {
         !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
     })
@@ -460,16 +481,18 @@ fn clock_format(seconds: f64) -> String {
 }
 
 async fn connections_warm() {
-    match endpoint_load(ENDPOINT_ID_NOTES) {
-        Ok(endpoint) => {
-            if let Err(error) = models_list(&endpoint).await {
-                tracing::debug!(%error, "the notes service connection was not warmed");
+    let notes = async {
+        match endpoint_load(ENDPOINT_ID_NOTES) {
+            Ok(endpoint) => {
+                if let Err(error) = models_list(&endpoint).await {
+                    tracing::debug!(%error, "the notes service connection was not warmed");
+                }
             }
+            Err(error) => tracing::debug!(%error, "the notes service has no endpoint to warm"),
         }
-        Err(error) => tracing::debug!(%error, "the notes service has no endpoint to warm"),
-    }
+    };
 
-    vector::connection_warm().await;
+    let ((), (), ()) = tokio::join!(notes, vector::connection_warm(), account::connection_warm(),);
 }
 
 fn excerpt_block(marker: &str, excerpt: &Excerpt) -> String {
@@ -557,7 +580,7 @@ fn history_prefix(turns: &[AskTurn]) -> String {
 
 fn history_validate(history: &[AskTurn]) -> AppResult<Vec<AskTurn>> {
     if history.len() > usize_of!(HISTORY_TURNS_MAX) {
-        return Err(AppError::Config(format!(
+        return Err(AppError::Internal(format!(
             "the conversation carries {} earlier questions, over the {HISTORY_TURNS_MAX} this \
              app sends",
             history.len(),
@@ -686,7 +709,13 @@ fn parse_reply(text: &str) -> AppResult<QuestionParse> {
     let json = bounds
         .filter(|(first, last)| first < last)
         .and_then(|(first, last)| text.get(first..=last))
-        .ok_or_else(|| AppError::Service("the notes service did not reply with JSON".into()))?;
+        .ok_or_else(|| {
+            tracing::warn!("the notes service did not reply with JSON ({} bytes)", text.len());
+
+            AppError::Service(
+                "the notes service sent a reply the app could not read; try again".into(),
+            )
+        })?;
 
     let parsed: QuestionParse = serde_json::from_str(json)?;
 
@@ -824,10 +853,9 @@ pub(super) fn prompt_build(
 async fn question_admit(
     app: &AppHandle,
     stream_id: &StreamID,
-    endpoint_id: &EndpointID,
     cancel: &AskCancel,
 ) -> AppResult<Option<QuestionAdmitted>> {
-    let Some(account) = account::question_account(endpoint_id).await? else {
+    let Some(account) = account::question_account().await? else {
         return Ok(None);
     };
 
@@ -849,16 +877,10 @@ async fn question_admit(
     Err(AppError::Service(MESSAGE_TURN_MISSED.to_owned()))
 }
 
-async fn question_finish_logged(turn: &QuestionAdmitted) {
-    let Some(finish) = turn.finish() else {
-        return;
-    };
+fn question_finish_spawn(turn: QuestionAdmitted) {
+    assert!(turn.question_id > 0);
 
-    let finished = account::question_finish(&turn.account, &finish).await;
-
-    if let Err(error) = finished {
-        tracing::warn!(%error, "the tokens of question {} were not recorded", turn.question_id);
-    }
+    let _finishing = tauri::async_runtime::spawn(turn.finish_logged());
 }
 
 async fn question_parse(
@@ -879,8 +901,10 @@ async fn question_parse(
     let completion = chat_completion_structured(endpoint, &prompts, &reply);
     let limit = Duration::from_secs(PARSE_TIMEOUT_SECONDS);
 
-    let completed = tokio::time::timeout(limit, completion).await.map_err(|elapsed| {
-        AppError::Service(format!("the notes service did not read the question in time: {elapsed}"))
+    let completed = tokio::time::timeout(limit, completion).await.map_err(|_elapsed| {
+        tracing::warn!("the notes service did not read the question within {limit:?}");
+
+        AppError::Service("the notes service did not answer in time; try again".into())
     })??;
 
     let parsed = parse_reply(&completed.text)?;
@@ -1033,7 +1057,7 @@ mod tests {
 
         let standup = workspace::job_id_from_text("standup");
         let spoken =
-            Transcript { text: "Quick update on hiring.".to_owned(), segments: Vec::new() };
+            Transcript { segments: Vec::new(), text: "Quick update on hiring.".to_owned() };
         let slot = TranscriptSlot { engine_id: "imported", job_id: &standup };
 
         workspace::meta_save(&meta_with(&standup, local("2026-11-09 09:00").timestamp())).unwrap();
@@ -1216,8 +1240,11 @@ mod tests {
         let backwards = parse_reply("} backwards {").unwrap_err();
         let mistyped = parse_reply(r#"{"queries": "not a list"}"#).unwrap_err();
 
-        assert!(prose.to_string().contains("did not reply with JSON"));
-        assert!(backwards.to_string().contains("did not reply with JSON"));
+        let unreadable =
+            "api error: the notes service sent a reply the app could not read; try again";
+
+        assert_eq!(prose.to_string(), unreadable);
+        assert_eq!(backwards.to_string(), unreadable);
         assert!(mistyped.to_string().contains("expected a sequence"));
     }
 
@@ -1283,11 +1310,11 @@ mod tests {
         workspace::meta_save(&meta).unwrap();
 
         let person = Person {
+            description: String::new(),
             id: "p1".to_owned(),
             name_first: "Ana".to_owned(),
             name_last: "Lopez".to_owned(),
             role: String::new(),
-            description: String::new(),
         };
 
         crate::people::storage::person_upsert(&person).unwrap();

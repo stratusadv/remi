@@ -1,23 +1,31 @@
-import { KeepAlive, defineComponent, h, nextTick, ref } from 'vue'
-import { mount } from '@vue/test-utils'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { KeepAlive, defineComponent, getCurrentInstance, h, nextTick, ref } from 'vue'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { use_shortcuts } from '../../src/composables/use_shortcuts'
 import { assert } from '../../src/lib/assert'
-import { ALT_KEY, ATTACH_TO, CTRL_KEY, META_KEY, SHIFT_KEY } from './fixtures'
+import {
+    ALT_KEY,
+    ATTACH_TO,
+    CTRL_KEY,
+    META_KEY,
+    SHIFT_KEY,
+    mount_auto_unmount,
+} from './fixtures'
+import { modal_mount } from './modal'
 import type { ComponentOptions, DefineComponent, Ref, VNode } from 'vue'
 import type { VueWrapper } from '@vue/test-utils'
 
 
 const KEY_A = 'a'
+const KEY_G = 'g'
+const KEY_G_CTRL = 'ctrl+g'
 const KEY_S = 's'
-const mounted = new Set<VueWrapper>()
 
 
 type Handler = (event: KeyboardEvent) => void
 
 function div_render(): VNode {
     assert(typeof h === 'function')
-    assert(mounted.size >= 0)
+    assert(getCurrentInstance() !== null)
 
     return h('div')
 }
@@ -65,11 +73,12 @@ function key_press(
 
 function mount_shortcuts(shortcuts: Record<string, Handler>): VueWrapper {
     assert(typeof shortcuts === 'object')
-    assert(mounted.size >= 0)
+    assert(Object.keys(shortcuts).length > 0)
 
-    const wrapper = mount(shortcut_component(shortcuts), { [ATTACH_TO]: document.body })
-
-    mounted.add(wrapper)
+    const wrapper = mount_auto_unmount(
+        shortcut_component(shortcuts),
+        { [ATTACH_TO]: document.body },
+    )
 
     return wrapper
 }
@@ -84,21 +93,21 @@ function shortcut_component(shortcuts: Record<string, Handler>): DefineComponent
             assert(Object.keys(shortcuts).length > 0)
 
             use_shortcuts(shortcuts)
+
+            return div_render
         },
-        render: div_render,
     })
 }
 
-afterEach(() => {
-    for (const wrapper of mounted) wrapper.unmount()
-
-    mounted.clear()
-    document.body.innerHTML = ''
+beforeEach(() => {
+    onTestFinished(() => {
+        document.body.innerHTML = ''
+    })
 })
 
 describe('use_shortcuts', () => {
     it('runs the handler for a plain key and prevents the default', () => {
-        const handler = vi.fn()
+        const handler = vi.fn<Handler>()
 
         mount_shortcuts({ [KEY_S]: handler })
 
@@ -109,7 +118,7 @@ describe('use_shortcuts', () => {
     })
 
     it('builds the combo as ctrl, shift, alt then the key', () => {
-        const handler = vi.fn()
+        const handler = vi.fn<Handler>()
 
         mount_shortcuts({ 'ctrl+shift+alt+k': handler })
         key_press('k', { [CTRL_KEY]: true, [SHIFT_KEY]: true, [ALT_KEY]: true })
@@ -118,7 +127,7 @@ describe('use_shortcuts', () => {
     })
 
     it('treats the meta key as ctrl', () => {
-        const handler = vi.fn()
+        const handler = vi.fn<Handler>()
 
         mount_shortcuts({ 'ctrl+n': handler })
         key_press('n', { [META_KEY]: true })
@@ -127,7 +136,7 @@ describe('use_shortcuts', () => {
     })
 
     it('names the space bar space', () => {
-        const handler = vi.fn()
+        const handler = vi.fn<Handler>()
 
         mount_shortcuts({ space: handler })
         key_press(' ')
@@ -136,7 +145,7 @@ describe('use_shortcuts', () => {
     })
 
     it('leaves an unregistered key untouched', () => {
-        void mount_shortcuts({ [KEY_S]: vi.fn() })
+        void mount_shortcuts({ [KEY_S]: vi.fn<Handler>() })
 
         const event = key_press('x')
 
@@ -144,7 +153,7 @@ describe('use_shortcuts', () => {
     })
 
     it('ignores plain keys typed into text inputs, textareas and editable elements', () => {
-        const handler = vi.fn()
+        const handler = vi.fn<Handler>()
 
         mount_shortcuts({ [KEY_S]: handler })
 
@@ -164,7 +173,7 @@ describe('use_shortcuts', () => {
 
 describe('use_shortcuts', () => {
     it('still fires a ctrl combo from inside a text input', () => {
-        const handler = vi.fn()
+        const handler = vi.fn<Handler>()
 
         mount_shortcuts({ 'ctrl+s': handler })
 
@@ -176,7 +185,7 @@ describe('use_shortcuts', () => {
     })
 
     it('fires a plain key from a non-text input such as a checkbox', () => {
-        const handler = vi.fn()
+        const handler = vi.fn<Handler>()
 
         mount_shortcuts({ [KEY_S]: handler })
 
@@ -189,8 +198,8 @@ describe('use_shortcuts', () => {
     })
 
     it('gives the most recently mounted registration priority and restores on unmount', () => {
-        const first = vi.fn()
-        const second = vi.fn()
+        const first = vi.fn<Handler>()
+        const second = vi.fn<Handler>()
 
         mount_shortcuts({ [KEY_S]: first })
 
@@ -202,9 +211,6 @@ describe('use_shortcuts', () => {
         expect(second).toHaveBeenCalledTimes(1)
 
         wrapper_second.unmount()
-
-        void mounted.delete(wrapper_second)
-
         key_press('s')
 
         expect(first).toHaveBeenCalledTimes(1)
@@ -214,11 +220,11 @@ describe('use_shortcuts', () => {
 
 describe('use_shortcuts', () => {
     it('unregisters while deactivated in KeepAlive and re-registers on activation', async () => {
-        const handler = vi.fn()
+        const handler = vi.fn<Handler>()
         const shown = ref(true)
         const child = shortcut_component({ [KEY_S]: handler })
 
-        mounted.add(mount(keep_alive_host(child, shown), { [ATTACH_TO]: document.body }))
+        void mount_auto_unmount(keep_alive_host(child, shown), { [ATTACH_TO]: document.body })
         key_press('s')
 
         expect(handler).toHaveBeenCalledTimes(1)
@@ -234,6 +240,25 @@ describe('use_shortcuts', () => {
         key_press('s')
 
         expect(handler).toHaveBeenCalledTimes(2)
+    })
+})
+
+describe('use_shortcuts under a dialog', () => {
+    it('runs no shortcut while a dialog is open, even with focus on body', () => {
+        const generate = vi.fn<Handler>()
+
+        mount_shortcuts({ [KEY_G_CTRL]: generate })
+
+        const modal = modal_mount()
+        const blocked = key_press(KEY_G, { [CTRL_KEY]: true }, document.body)
+
+        modal.unmount()
+
+        const dispatched = key_press(KEY_G, { [CTRL_KEY]: true }, document.body)
+
+        expect(blocked.defaultPrevented).toBe(false)
+        expect(dispatched.defaultPrevented).toBe(true)
+        expect(generate).toHaveBeenCalledExactlyOnceWith(dispatched)
     })
 })
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useTemplateRef } from 'vue'
+import { assert } from '../lib/assert'
 
 
 interface ClearableInputEmits {
@@ -15,19 +16,23 @@ interface ClearableInputProps {
     type?: string
 }
 
-const props = defineProps<ClearableInputProps>()
+const properties = defineProps<ClearableInputProps>()
 const emit = defineEmits<ClearableInputEmits>()
+const KEY_INHERIT_ATTRIBUTES = 'inheritAttrs'
 
-defineOptions({ inheritAttrs: false })
+defineOptions({ [KEY_INHERIT_ATTRIBUTES]: false })
 
 const model = defineModel<string>({ required: true })
 const ICON_CLEAR = 'M6 6l12 12M18 6L6 18'
 const input = useTemplateRef<HTMLInputElement>('input')
 
 function clear(): void {
+    assert(model.value !== '')
+    assert(input.value !== null)
+
     model.value = ''
 
-    input.value?.focus()
+    input.value.focus()
 }
 </script>
 
@@ -37,10 +42,10 @@ function clear(): void {
             ref="input"
             v-model="model"
             v-bind="$attrs"
-            :autocomplete="props.autocomplete"
-            :placeholder="props.placeholder"
-            :spellcheck="props.spellcheck"
-            :type="props.type"
+            :autocomplete="properties.autocomplete"
+            :placeholder="properties.placeholder"
+            :spellcheck="properties.spellcheck"
+            :type="properties.type"
             @blur="emit('blur', $event)"
             @focus="emit('focus', $event)"
             @keydown="emit('keydown', $event)"

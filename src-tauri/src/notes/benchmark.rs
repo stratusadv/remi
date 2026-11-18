@@ -273,6 +273,36 @@ fn probe_prompt(layout: Layout, parts: ProbeParts<'_>) -> String {
     prompt
 }
 
+fn probe_round(
+    live: &Live,
+    endpoint: &APIEndpoint,
+    document: &str,
+    layout: Layout,
+    reading: Reading,
+) -> String {
+    assert_ne!(document, "");
+    assert!(endpoint.reasoning_effort.is_none());
+
+    let marker = nonce();
+
+    let seconds: Vec<String> = PROBE_QUESTIONS
+        .iter()
+        .map(|question| {
+            let parts = ProbeParts { document, marker: &marker, question };
+            let user = probe_prompt(layout, parts);
+            let chat = ChatPrompts { system: PROMPT_ASK_SYSTEM, user: &user };
+            let timed = stream_timed(&live.client, endpoint, &chat, reading);
+            let timing = live.runtime.block_on(timed);
+
+            format!("{:.2} s", timing.content_first.unwrap().as_secs_f64())
+        })
+        .collect();
+
+    assert_eq!(seconds.len(), PROBE_QUESTIONS.len());
+
+    seconds.join(", ")
+}
+
 fn probe_time(live: &Live, prompts: &[String]) {
     let corpus_text = prompts.join("\n\n");
     let endpoint = endpoint_with(&live.endpoint, &live.endpoint.model, None);
@@ -283,35 +313,20 @@ fn probe_time(live: &Live, prompts: &[String]) {
         let document = document_of(&corpus_text, characters);
 
         for layout in [Layout::DocumentFirst, Layout::QuestionFirst] {
-            let marker = nonce();
+            let seconds = probe_round(live, &endpoint, &document, layout, Reading::FirstWord);
 
-            let seconds: Vec<String> = PROBE_QUESTIONS
-                .iter()
-                .map(|question| {
-                    let parts = ProbeParts { document: &document, marker: &marker, question };
-                    let user = probe_prompt(layout, parts);
-                    let chat = ChatPrompts { system: PROMPT_ASK_SYSTEM, user: &user };
-
-                    let timing = live.runtime.block_on(stream_timed(
-                        &live.client,
-                        &endpoint,
-                        &chat,
-                        Reading::FirstWord,
-                    ));
-
-                    format!("{:.2} s", timing.content_first.unwrap().as_secs_f64())
-                })
-                .collect();
-
-            assert_eq!(seconds.len(), PROBE_QUESTIONS.len());
-
-            println!(
-                "BENCH first word at {characters} characters, {}: {}",
-                layout.label(),
-                seconds.join(", "),
-            );
+            println!("BENCH first word at {characters} characters, {}: {seconds}", layout.label());
         }
     }
+
+    let characters = search::EXCERPTS_RANKED_CHARS_MAX;
+    let document = document_of(&corpus_text, characters);
+    let seconds = probe_round(live, &endpoint, &document, Layout::DocumentFirst, Reading::Whole);
+
+    println!(
+        "BENCH first word at {characters} characters, document first, each answer read whole so \
+         the next question reuses its connection: {seconds}",
+    );
 }
 
 fn prompts_build(plans: &[(&'static str, RankPlan)]) -> Vec<String> {

@@ -90,7 +90,7 @@ describe('PersonForm', () => {
             description: 'First programmer',
         })
 
-        expect(saved?.id).toMatch(/^[0-9a-f-]{36}$/)
+        expect(saved?.id).toMatch(/^[0-9a-f-]{36}$/u)
     })
 
     it('keeps the id of an existing person on save', async () => {

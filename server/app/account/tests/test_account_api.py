@@ -23,7 +23,7 @@ pytestmark = pytest.mark.django_db
 
 def test_account_create_names_the_field_a_request_lacks_or_gets_wrong(client: Client) -> None:
     body_missing = {'email': 'a@example.com', 'name': 'Avery'}
-    body_wrong = {'email': 'a@example.com', 'name': 7, 'promo_code': ''}
+    body_wrong = {'email': 'a@example.com', 'name': 7, 'promo_code': '', 'region': 'CA-AB'}
     body_listed = [1, 2]
     missing = api_post(client, ACCOUNT_PATH, body=body_missing)
     wrong = api_post(client, ACCOUNT_PATH, body=body_wrong)
@@ -52,12 +52,12 @@ def test_account_create_refuses_a_bad_name_email_or_body(client: Client) -> None
     email_overlong = 'a' * 245 + '@example.com'
 
     bodies = [
-        {'email': 'avery@example.com', 'name': '   ', 'promo_code': ''},
-        {'email': 'not-an-email', 'name': 'Avery', 'promo_code': ''},
-        {'email': email_overlong, 'name': 'Avery', 'promo_code': ''},
-        {'email': 'avery@example.com', 'name': 7, 'promo_code': ''},
-        {'email': 'avery@example.com', 'name': 'x' * 400, 'promo_code': ''},
-        {'email': 'avery@example.com', 'name': 'Avery'},
+        {'email': 'avery@example.com', 'name': '   ', 'promo_code': '', 'region': 'CA-AB'},
+        {'email': 'not-an-email', 'name': 'Avery', 'promo_code': '', 'region': 'CA-AB'},
+        {'email': email_overlong, 'name': 'Avery', 'promo_code': '', 'region': 'CA-AB'},
+        {'email': 'avery@example.com', 'name': 7, 'promo_code': '', 'region': 'CA-AB'},
+        {'email': 'avery@example.com', 'name': 'x' * 400, 'promo_code': '', 'region': 'CA-AB'},
+        {'email': 'avery@example.com', 'name': 'Avery', 'region': 'CA-AB'},
         [1, 2],
     ]
 

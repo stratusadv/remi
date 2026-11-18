@@ -1,4 +1,4 @@
-use super::remote::{ChatPrompts, chat_completion, chat_completion_streaming, models_list};
+use super::remote::{ChatPrompts, chat_completion, chat_completion_streaming};
 use super::templates::{
     NotesTemplate,
     PROMPT_NOTES_SYSTEM,
@@ -7,6 +7,7 @@ use super::templates::{
     template_upsert,
     templates_load_all,
 };
+use crate::account::MESSAGE_SIGNED_OUT;
 use crate::blocking;
 use crate::contract::{
     EndpointID,
@@ -17,12 +18,7 @@ use crate::contract::{
     TemplateID,
     TranscriptText,
 };
-use crate::endpoints::storage::{
-    ENDPOINT_ID_NOTES,
-    MODEL_NOTES,
-    MODEL_TRANSCRIPTION,
-    endpoint_load,
-};
+use crate::endpoints::storage::{ENDPOINT_ID_NOTES, endpoint_load};
 use crate::error::{AppError, AppResult};
 use crate::people::storage::{Person, people_load_all};
 use crate::workspace::{self, JobMeta, NOTES_BYTES_MAX};
@@ -137,12 +133,6 @@ const PROMPT_TRANSCRIPT_CORRECT_SYSTEM: &str = concat!(
 );
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct NotesModels {
-    pub(crate) models: Vec<String>,
-    pub(crate) model_default: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub(crate) struct LineCorrection {
     pub(crate) index: u32,
     pub(crate) text: String,
@@ -186,21 +176,6 @@ pub(crate) async fn notes_generate_remote_streaming(
 #[tauri::command(rename_all = "snake_case")]
 pub(crate) async fn notes_load(job_id: JobID) -> AppResult<Option<String>> {
     blocking::run(move || workspace::notes_load(&job_id)).await
-}
-
-#[tauri::command]
-pub(crate) async fn notes_models_list() -> AppResult<NotesModels> {
-    let endpoint = endpoint_load(ENDPOINT_ID_NOTES)?;
-
-    let models: Vec<String> = models_list(&endpoint)
-        .await?
-        .into_iter()
-        .filter(|model| model != MODEL_TRANSCRIPTION)
-        .collect();
-
-    assert!(models.iter().all(|model| model != MODEL_TRANSCRIPTION));
-
-    Ok(NotesModels { models, model_default: MODEL_NOTES.to_owned() })
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -301,7 +276,7 @@ pub(crate) async fn title_generate(transcript_text: &str) -> AppResult<String> {
     endpoint.reasoning_effort = None;
 
     if !endpoint.has_api_key {
-        return Err(AppError::Config("no notes API key is set".into()));
+        return Err(AppError::Config(MESSAGE_SIGNED_OUT.into()));
     }
 
     let excerpt: String =
@@ -631,11 +606,11 @@ mod tests {
         assert_ne!(id, "");
 
         Person {
+            description: description.to_owned(),
             id: id.to_owned(),
             name_first: name_first.to_owned(),
             name_last: String::new(),
             role: role.to_owned(),
-            description: description.to_owned(),
         }
     }
 
@@ -844,35 +819,35 @@ mod tests {
     #[test]
     fn every_meeting_detail_is_sent_with_the_instructions() {
         let meta = JobMeta {
-            id: "abc".to_owned(),
-            source_path: "/tmp/a.wav".to_owned(),
-            source_size_bytes: 1,
-            created_at_unix: 1_737_460_800,
-            recorded_at_unix: Some(1_736_596_800),
-            label: None,
-            title: Some("Kickoff".to_owned()),
             attendees: vec!["Dana".to_owned(), "Sam".to_owned()],
+            created_at_unix: 1_737_460_800,
+            favourite: false,
+            id: "abc".to_owned(),
+            label: None,
             person_ids: vec!["p-dana".to_owned(), "p-gone".to_owned()],
             person_ids_mentioned: vec!["p-sam".to_owned()],
             project: Some("Website".to_owned()),
+            recorded_at_unix: Some(1_736_596_800),
+            source_path: "/tmp/a.wav".to_owned(),
+            source_size_bytes: 1,
             tags: vec!["weekly".to_owned()],
-            favourite: false,
+            title: Some("Kickoff".to_owned()),
         };
 
         let people = vec![
             Person {
+                description: "runs the delivery side".to_owned(),
                 id: "p-dana".to_owned(),
                 name_first: "Jane".to_owned(),
                 name_last: "Doe".to_owned(),
                 role: "project manager".to_owned(),
-                description: "runs the delivery side".to_owned(),
             },
             Person {
+                description: String::new(),
                 id: "p-sam".to_owned(),
                 name_first: "Sam".to_owned(),
                 name_last: String::new(),
                 role: String::new(),
-                description: String::new(),
             },
         ];
 

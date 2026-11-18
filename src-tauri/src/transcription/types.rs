@@ -9,29 +9,29 @@ pub(crate) const EVENT_TRANSCRIPTION_STAGE: &str = "transcription_stage";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct TranscriptSegment {
-    pub(crate) text: String,
-    pub(crate) start_seconds: f64,
     pub(crate) end_seconds: f64,
+    pub(crate) start_seconds: f64,
+    pub(crate) text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Transcript {
-    pub(crate) text: String,
     pub(crate) segments: Vec<TranscriptSegment>,
+    pub(crate) text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SegmentChunk {
+    pub(crate) end_seconds: f64,
+    pub(crate) start_seconds: f64,
     pub(crate) stream_id: String,
     pub(crate) text: String,
-    pub(crate) start_seconds: f64,
-    pub(crate) end_seconds: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct StageChunk {
-    pub(crate) stream_id: String,
     pub(crate) stage: String,
+    pub(crate) stream_id: String,
 }
 
 #[derive(Debug)]
@@ -59,7 +59,7 @@ impl TranscribeProgress {
         assert_ne!(stage, "");
         assert_ne!(self.stream_id, "");
 
-        let chunk = StageChunk { stream_id: self.stream_id.clone(), stage: stage.to_owned() };
+        let chunk = StageChunk { stage: stage.to_owned(), stream_id: self.stream_id.clone() };
 
         if let Err(error) = self.app.emit(EVENT_TRANSCRIPTION_STAGE, chunk) {
             tracing::warn!(

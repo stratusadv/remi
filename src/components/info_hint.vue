@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, useTemplateRef } from 'vue'
+import { assert } from '../lib/assert'
 
 
 defineProps<{
@@ -8,17 +9,28 @@ defineProps<{
 }>()
 
 const open = ref(false)
-const root = ref<HTMLElement | null>(null)
+const root = useTemplateRef<HTMLElement>('root')
 
 function close_on_outside(event: MouseEvent): void {
+    assert(event.type === 'click')
+    assert(event.currentTarget === document)
+
     if (!open.value) return
     if (root.value === null) return
-    if (event.target instanceof Node && root.value.contains(event.target)) return
+
+    if (event.target instanceof Node) {
+        if (root.value.contains(event.target)) return
+    }
 
     open.value = false
 }
 
-function toggle(): void {
+function toggle(event: MouseEvent): void {
+    assert(event.type === 'click')
+    assert(event.target instanceof Node)
+    assert(root.value !== null)
+    assert(root.value.contains(event.target))
+
     open.value = !open.value
 }
 

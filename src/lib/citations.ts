@@ -8,17 +8,17 @@ export interface CitationPart {
 
 const CITATION_GROUP_MAX = 8
 const CITATION_PARTS_MAX = 2000
-const MARKER_PATTERN = /M\d+/g
+const MARKER_PATTERN = /M\d+/gu
 
 const CITATION_PATTERN = new RegExp(
     String.raw`\[M\d+(?:,\s*M\d+){0,${String(CITATION_GROUP_MAX - 1)}}\]`,
-    'g',
+    'gu',
 )
 
 
 export function citations_split(answer: string, markers: readonly string[]): CitationPart[] {
     assert(typeof answer === 'string')
-    assert(markers.every((marker) => /^M\d+$/.test(marker)))
+    assert(markers.every((marker) => /^M\d+$/u.test(marker)))
 
     const parts: CitationPart[] = []
     let cursor = 0

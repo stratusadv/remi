@@ -1,18 +1,19 @@
 import { ref } from 'vue'
 import { assert } from '../lib/assert'
+import { error_shown } from '../lib/errors'
 import { ipc } from '../lib/ipc'
-import { use_endpoints } from './use_endpoints'
+import { MESSAGE_ENDPOINT_MISSING, use_endpoints } from './use_endpoints'
 import type { Instruction, NotesTemplate, TemplateID } from '../types'
 
 
-const MESSAGE_KEY_MISSING = 'Add your notes API key under Settings first.'
+const TEMPLATE_COUNT_MAX = 256
 const templates = ref<NotesTemplate[]>([])
 const error_message = ref<string | null>(null)
 const api = Object.freeze({ templates, error_message, refresh, save, remove, generate })
 
 
 export function use_notes_templates(): typeof api {
-    assert(Object.isFrozen(api))
+    assert(templates.value.length <= TEMPLATE_COUNT_MAX)
     assert(Array.isArray(templates.value))
 
     return api
@@ -24,7 +25,7 @@ async function generate(description: Instruction): Promise<string> {
     const { endpoints_by_purpose } = use_endpoints()
     const endpoint_id = endpoints_by_purpose('notes')[0]?.id
 
-    if (endpoint_id === undefined) throw new Error(MESSAGE_KEY_MISSING)
+    if (endpoint_id === undefined) throw new Error(MESSAGE_ENDPOINT_MISSING)
 
     assert(typeof endpoint_id === 'string')
 
@@ -43,7 +44,7 @@ async function refresh(): Promise<void> {
 
         assert(templates.value.length === fetched.length)
     } catch (error) {
-        error_message.value = String(error)
+        error_message.value = error_shown(error)
     }
 }
 
@@ -56,7 +57,7 @@ async function remove(id: TemplateID): Promise<void> {
     return ipc.notes_template_delete(id)
         .then(refresh)
         .catch((error: unknown) => {
-            error_message.value = String(error)
+            error_message.value = error_shown(error)
         })
 }
 
@@ -69,6 +70,6 @@ async function save(template: NotesTemplate): Promise<void> {
     return ipc.notes_template_save(template)
         .then(refresh)
         .catch((error: unknown) => {
-            error_message.value = String(error)
+            error_message.value = error_shown(error)
         })
 }

@@ -1,3 +1,4 @@
+import { posix } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { documentDir, homeDir, join } from '@tauri-apps/api/path'
 import {
@@ -10,6 +11,8 @@ import {
 
 
 vi.mock('@tauri-apps/api/path')
+
+const CHARACTER_SUPPLEMENTARY = '\u{20BB7}'
 
 
 describe('path_file_name', () => {
@@ -44,6 +47,14 @@ describe('path_file_name_short', () => {
         expect(short).toBe(`${'b'.repeat(57)}…`)
         expect(short.length).toBe(58)
     })
+
+    it('truncates a long name without splitting a surrogate pair', () => {
+        const name = `${'c'.repeat(56)}${CHARACTER_SUPPLEMENTARY}${'c'.repeat(20)}.wav`
+        const short = path_file_name_short(`/tmp/${name}`)
+
+        expect(short).toBe(`${'c'.repeat(56)}…`)
+        expect(new TextDecoder().decode(new TextEncoder().encode(short))).toBe(short)
+    })
 })
 
 describe('path_file_stem', () => {
@@ -57,6 +68,14 @@ describe('path_file_stem', () => {
 
     it('leaves a name without an extension alone', () => {
         expect(path_file_stem('/var/log/syslog')).toBe('syslog')
+    })
+
+    it('reads a leading dot as part of the name, as node:path does', () => {
+        const names = ['.wav', '.hidden.wav', '..wav', 'weekly-sync.m4a']
+
+        for (const name of names) {
+            expect(path_file_stem(`/home/you/${name}`)).toBe(posix.parse(name).name)
+        }
     })
 })
 

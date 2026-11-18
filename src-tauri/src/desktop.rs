@@ -162,18 +162,28 @@ fn path_open_default(path: &Path) -> AppResult<()> {
 
     assert!(uri.starts_with("file://"));
 
-    AppInfo::launch_default_for_uri(&uri, None::<&AppLaunchContext>).map_err(|error| {
-        AppError::Export(format!("{} could not be opened: {error}", path.display()))
-    })
+    AppInfo::launch_default_for_uri(&uri, None::<&AppLaunchContext>)
+        .map_err(|error| path_open_failure(path, &error.to_string()))
 }
 
 #[cfg(not(target_os = "linux"))]
 fn path_open_default(path: &Path) -> AppResult<()> {
     assert!(path.file_name().is_some());
 
-    tauri_plugin_opener::open_path(path, None::<&str>).map_err(|error| {
-        AppError::Export(format!("{} could not be opened: {error}", path.display()))
-    })
+    tauri_plugin_opener::open_path(path, None::<&str>)
+        .map_err(|error| path_open_failure(path, &error.to_string()))
+}
+
+fn path_open_failure(path: &Path, detail: &str) -> AppError {
+    assert!(path.file_name().is_some());
+    assert_ne!(detail, "");
+
+    tracing::warn!("{} could not be opened: {detail}", path.display());
+
+    AppError::Export(format!(
+        "{} could not be opened; open it from its folder instead",
+        path.display(),
+    ))
 }
 
 fn text_bounded(text: &str) -> String {

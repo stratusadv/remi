@@ -1,9 +1,9 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import RecordingTile from '../../src/components/recording_tile.vue'
 import { assert } from '../../src/lib/assert'
 import { ipc } from '../../src/lib/ipc'
-import { ATTACH_TO, PROPERTIES, job_listing_build } from './fixtures'
+import { ATTACH_TO, PROPERTIES, job_listing_build, mount_auto_unmount } from './fixtures'
 import type { VueWrapper } from '@vue/test-utils'
 import type { JobListing } from '../../src/types'
 
@@ -11,7 +11,6 @@ import type { JobListing } from '../../src/types'
 vi.mock('../../src/lib/ipc')
 
 const MENU_ITEMS = Object.freeze([{ id: 'rename', label: 'Rename', icon: 'edit' }] as const)
-const mounted = new Set<VueWrapper>()
 
 
 type TilePeople = string | null
@@ -23,11 +22,10 @@ function mount_tile(
     snippet: TileSnippet = null,
 ): VueWrapper {
     assert(job.id.length > 0)
-    assert(mounted.size >= 0)
     assert(people === null || people.length > 0)
     assert(snippet === null || snippet.length > 0)
 
-    const wrapper = mount(RecordingTile, {
+    const wrapper = mount_auto_unmount(RecordingTile, {
         [PROPERTIES]: {
             job,
             title: 'Weekly sync',
@@ -39,41 +37,42 @@ function mount_tile(
         [ATTACH_TO]: document.body,
     })
 
-    mounted.add(wrapper)
-
     return wrapper
 }
 
 function bar_levels(wrapper: VueWrapper): number[] {
     assert(wrapper.exists())
-    assert(mounted.has(wrapper))
 
     return wrapper.findAll('.recording-tile-bars i').map((bar) => {
-        const match = /--level:\s*([\d.]+)/.exec(bar.attributes('style') ?? '')
+        const match = /--level:\s*(?<level>[\d.]+)/u.exec(bar.attributes('style') ?? '')
 
         assert(match !== null)
 
-        return Number(match[1])
+        const level = Number(match.groups?.['level'])
+
+        assert(level <= 1)
+
+        return level
     })
 }
 
 function shape_of(wrapper: VueWrapper): string {
     assert(wrapper.exists())
-    assert(mounted.has(wrapper))
 
-    return wrapper.findAll('rect').map((word) => word.attributes('width')).join(',')
+    const words = wrapper.findAll('rect')
+
+    assert(wrapper.findAll('.recording-tile-glyph rect').length === words.length)
+
+    return words.map((word) => word.attributes('width')).join(',')
 }
 
 beforeEach(() => {
+    onTestFinished(() => {
+        document.body.innerHTML = ''
+    })
+
     vi.resetAllMocks()
     vi.mocked(ipc.job_waveform_get).mockResolvedValue(null)
-})
-
-afterEach(() => {
-    for (const wrapper of mounted) wrapper.unmount()
-
-    mounted.clear()
-    document.body.innerHTML = ''
 })
 
 describe('RecordingTile', () => {

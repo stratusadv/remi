@@ -120,6 +120,8 @@ test('a copy with no account signs up and is credited its promo code', async ({ 
     await page.getByLabel('Name', { exact: true }).fill('Avery Quinn')
     await page.getByLabel('Email', { exact: true }).fill('avery@example.com')
     await page.getByLabel('Promo code (optional)').fill(' wib2026 ')
+    await expect(page.getByRole('button', { name: 'Get started' })).toBeDisabled()
+    await page.getByLabel('Province or state').selectOption({ label: 'Alberta' })
     await page.getByRole('button', { name: 'Get started' }).click()
 
     await expect(sidebar_balance(page)).toHaveText('250 hours left')

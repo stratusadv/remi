@@ -89,7 +89,7 @@ describe('refresh', () => {
         await people_state.refresh()
 
         expect(people_state.people.value).toEqual([])
-        expect(people_state.error_message.value).toBe('Error: groups gone')
+        expect(people_state.error_message.value).toBe('groups gone')
     })
 })
 
@@ -122,7 +122,7 @@ describe('save and remove', () => {
 
         await people_state.save(JOHN)
 
-        expect(people_state.error_message.value).toBe('Error: duplicate')
+        expect(people_state.error_message.value).toBe('duplicate')
         expect(ipc.people_list).not.toHaveBeenCalled()
     })
 })
@@ -156,7 +156,7 @@ describe('group_save and group_remove', () => {
 
         await people_state.group_remove('group-team')
 
-        expect(people_state.error_message.value).toBe('Error: missing')
+        expect(people_state.error_message.value).toBe('missing')
         expect(ipc.groups_list).not.toHaveBeenCalled()
     })
 })

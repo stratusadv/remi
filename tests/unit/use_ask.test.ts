@@ -7,6 +7,7 @@ import { use_pipeline } from '../../src/composables/use_pipeline'
 import { assert } from '../../src/lib/assert'
 import { ipc } from '../../src/lib/ipc'
 import { ask_source_build, deferred_new, job_meta_build } from './fixtures'
+import type { UnlistenFn } from '@tauri-apps/api/event'
 import type { Exchange } from '../../src/composables/use_ask'
 import type {
     APIEndpoint,
@@ -50,7 +51,7 @@ const ENDPOINT_NOTES = Object.freeze<APIEndpoint>({
 const ask_state = use_ask()
 const { endpoints } = use_endpoints()
 const { view_current } = use_pipeline()
-const unlisten = vi.fn()
+const unlisten = vi.fn<UnlistenFn>()
 
 
 function chat_exchange_build(turn: AskTurn): ChatExchange {
@@ -282,13 +283,16 @@ describe('ask within a conversation', () => {
 })
 
 describe('ask when it cannot answer', () => {
-    it('fails at once when no notes service is set', async () => {
+    it('fails at once when the notes service did not load', async () => {
         endpoints.value = []
 
         await ask_state.ask('Who drafts the banner?', SCOPE_ALL)
 
         expect(ask_state.exchanges.value[0]?.state).toBe('failed')
-        expect(ask_state.exchanges.value[0]?.error).toContain('Settings')
+
+        expect(ask_state.exchanges.value[0]?.error)
+            .toBe('remi could not load its AI service. Restart remi and try again.')
+
         expect(ipc.notes_ask_streaming).not.toHaveBeenCalled()
     })
 
@@ -298,7 +302,7 @@ describe('ask when it cannot answer', () => {
         await ask_state.ask('Who drafts the banner?', SCOPE_ALL)
 
         expect(ask_state.exchanges.value[0]?.state).toBe('failed')
-        expect(ask_state.exchanges.value[0]?.error).toBe('Error: api error: overloaded')
+        expect(ask_state.exchanges.value[0]?.error).toBe('Overloaded.')
         expect(ask_state.busy.value).toBe(false)
     })
 })

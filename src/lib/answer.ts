@@ -11,6 +11,12 @@ export type AnswerBlock =
 
 export interface AnswerPart {
     cited: SourceCited | null
+    strong: boolean
+    text: string
+}
+
+interface AnswerRun {
+    strong: boolean
     text: string
 }
 
@@ -21,12 +27,14 @@ export interface SourceCited {
 }
 
 const ANSWER_LINES_MAX = 400
-const CITATION_TAIL_PATTERN = /\[(?:M\d*(?:,\s*(?:M\d*)?)*)?$/
-const LIST_ITEM_PATTERN = /^\s*(?:([-*\u2022])|(\d{1,3})[.)])\s+(.*)$/
-const LIST_TAIL_PATTERN = /\n[ \t]*(?:[-*\u2022]|\d{1,3}[.)]?)?[ \t]*$/
-const MARKER_PATTERN = /M\d+/g
+const CITATION_TAIL_PATTERN = /\[(?:M\d*(?:,\s*(?:M\d*)?)*)?$/u
+const LIST_ITEM_PATTERN = /^\s*(?:(?<bullet>[-*\u2022])|\d{1,3}[.)])\s+(?<text>.*)$/u
+const LIST_TAIL_PATTERN = /\n[ \t]*(?:[-*\u2022]|\d{1,3}[.)]?)?[ \t]*$/u
+const MARKER_PATTERN = /M\d+/gu
 const MILLISECONDS_PER_SECOND = 1000
-const SPACE_TAIL_PATTERN = /[ \t]+$/
+const SPACE_TAIL_PATTERN = /[ \t]+$/u
+const STRONG_OPEN_PATTERN = /\*\*(?=[^\s*]|$)|\*$/u
+const STRONG_PATTERN = /\*\*(?=\S)(?<text>[^\n]*?\S)\*\*/gu
 
 
 export function answer_blocks(answer: string): AnswerBlock[] {
@@ -41,7 +49,7 @@ export function answer_blocks(answer: string): AnswerBlock[] {
 
         if (item !== null) {
             paragraph_flush(blocks, paragraph)
-            list_push(blocks, item[1] === undefined, item[3] ?? '')
+            list_push(blocks, item.groups?.['bullet'] === undefined, item.groups?.['text'] ?? '')
         } else if (line.trim().length === 0) {
             paragraph_flush(blocks, paragraph)
         } else {
@@ -60,6 +68,33 @@ export function answer_blocks(answer: string): AnswerBlock[] {
     return blocks
 }
 
+export function answer_claim(item: readonly AnswerPart[], offset: number): string {
+    assert(offset >= 0, `a claim offset ${String(offset)} falls outside its answer item`)
+    assert(offset < item.length, `a claim offset ${String(offset)} falls outside its answer item`)
+
+    const cite = item[offset]
+
+    assert(cite !== undefined, `a claim offset ${String(offset)} falls outside its answer item`)
+    assert(cite.cited !== null, `a claim offset ${String(offset)} names text, not a citation`)
+
+    let claim = ''
+
+    for (const part of item.slice(0, offset).reverse()) {
+        if (part.cited === null) {
+            claim = `${part.text}${claim}`
+            continue
+        }
+
+        if (claim.trim().length > 0) break
+    }
+
+    const spoken = claim.trim()
+
+    if (spoken.length > 0) return spoken
+
+    return item.map((part) => part.text).join('').trim()
+}
+
 export function answer_parts(text: string, cited: readonly SourceCited[]): AnswerPart[] {
     assert(typeof text === 'string')
     assert(cited.every((entry) => entry.number > 0))
@@ -69,24 +104,26 @@ export function answer_parts(text: string, cited: readonly SourceCited[]): Answe
     const parts: AnswerPart[] = []
     let hidden = false
 
-    for (const part of citations_split(text, markers)) {
-        if (part.marker === null) {
-            if (hidden) space_trim(parts)
+    for (const run of strong_runs(text)) {
+        for (const part of citations_split(run.text, markers)) {
+            if (part.marker === null) {
+                if (hidden) space_trim(parts)
 
-            parts.push({ cited: null, text: part.text })
+                parts.push({ cited: null, strong: run.strong, text: part.text })
+                hidden = false
+                continue
+            }
+
+            const entry = numbered.get(part.marker)
+
+            if (entry === undefined) {
+                hidden ||= parts.at(-1)?.cited === null
+                continue
+            }
+
+            parts.push({ cited: entry, strong: run.strong, text: '' })
             hidden = false
-            continue
         }
-
-        const entry = numbered.get(part.marker)
-
-        if (entry === undefined) {
-            hidden = hidden || parts.at(-1)?.cited === null
-            continue
-        }
-
-        parts.push({ cited: entry, text: '' })
-        hidden = false
     }
 
     if (hidden) space_trim(parts)
@@ -121,7 +158,8 @@ export function answer_settled(answer: string, streaming: boolean): string {
 
     if (!streaming) return answer
 
-    const settled = answer.replace(CITATION_TAIL_PATTERN, '').replace(LIST_TAIL_PATTERN, '')
+    const cited = answer.replace(CITATION_TAIL_PATTERN, '')
+    const settled = strong_tail_cut(cited).replace(LIST_TAIL_PATTERN, '')
 
     assert(answer.startsWith(settled))
 
@@ -219,4 +257,37 @@ function space_trim(parts: AnswerPart[]): void {
     assert(last?.cited === null)
 
     last.text = last.text.replace(SPACE_TAIL_PATTERN, '')
+}
+
+function strong_runs(text: string): AnswerRun[] {
+    assert(typeof text === 'string')
+
+    const runs: AnswerRun[] = []
+    let start = 0
+
+    for (const match of text.matchAll(STRONG_PATTERN)) {
+        runs.push({ strong: false, text: text.slice(start, match.index) })
+        runs.push({ strong: true, text: match.groups?.['text'] ?? '' })
+        start = match.index + match[0].length
+    }
+
+    runs.push({ strong: false, text: text.slice(start) })
+
+    assert(runs.every((run) => !run.strong || run.text.trim() === run.text))
+
+    return runs
+}
+
+function strong_tail_cut(answer: string): string {
+    assert(typeof answer === 'string')
+
+    const line = answer.lastIndexOf('\n') + 1
+    const pair = [...answer.slice(line).matchAll(STRONG_PATTERN)].at(-1)
+    const paired = pair === undefined ? line : line + pair.index + pair[0].length
+    const opening = STRONG_OPEN_PATTERN.exec(answer.slice(paired))
+    const cut = opening === null ? answer : answer.slice(0, paired + opening.index)
+
+    assert(answer.startsWith(cut))
+
+    return cut
 }

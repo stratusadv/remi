@@ -1,9 +1,9 @@
 import { computed, ref } from 'vue'
 import { assert } from '../lib/assert'
+import { error_shown } from '../lib/errors'
 import { ipc } from '../lib/ipc'
 import { path_file_name_short } from '../lib/paths'
-import { use_endpoints } from './use_endpoints'
-import { use_service } from './use_service'
+import { MESSAGE_ENDPOINT_MISSING, use_endpoints } from './use_endpoints'
 import { use_tasks } from './use_tasks'
 import type { AudioPath, TranscriptionResult } from '../types'
 
@@ -17,7 +17,6 @@ interface QueueEntry {
     job_id: string | null
 }
 
-const MESSAGE_KEY_MISSING = 'Add your transcription key under Settings, then drop the files again.'
 const QUEUE_LENGTH_MAX = 256
 const MESSAGE_QUEUE_FULL = `Drop at most ${String(QUEUE_LENGTH_MAX)} files at a time.`
 const QUEUE_DRAIN_SLOTS = QUEUE_LENGTH_MAX * 16
@@ -41,11 +40,12 @@ const api = Object.freeze({
     error_message_last,
     enqueue,
     entries_clear_finished,
+    error_dismiss,
 })
 
 
 export function use_batch_transcribe(): typeof api {
-    assert(Object.isFrozen(api))
+    assert(!running.value || queue.value.length > 0)
     assert(queue.value.length <= QUEUE_LENGTH_MAX)
 
     return api
@@ -57,8 +57,10 @@ async function enqueue(paths: string[]): Promise<void> {
 
     error_message_last.value = null
 
+    entries_clear_finished()
+
     if (!transcription_configured()) {
-        error_message_last.value = MESSAGE_KEY_MISSING
+        error_message_last.value = MESSAGE_ENDPOINT_MISSING
 
         return
     }
@@ -119,6 +121,13 @@ function entry_replace(path: AudioPath, patch: Partial<QueueEntry>): void {
     assert(queue.value.length <= QUEUE_LENGTH_MAX)
 }
 
+function error_dismiss(): void {
+    assert(error_message_last.value !== null)
+    assert(queue.value.length <= QUEUE_LENGTH_MAX)
+
+    error_message_last.value = null
+}
+
 async function queue_drain(): Promise<void> {
     assert(running.value)
     assert(queue.value.length <= QUEUE_LENGTH_MAX)
@@ -159,7 +168,7 @@ async function transcribe_one(path: AudioPath): Promise<void> {
         async runner() {
             assert(typeof path === 'string')
 
-            if (endpoint_id === null) throw new Error(MESSAGE_KEY_MISSING)
+            if (endpoint_id === null) throw new Error(MESSAGE_ENDPOINT_MISSING)
 
             assert(typeof endpoint_id === 'string')
 
@@ -175,7 +184,7 @@ async function transcribe_one(path: AudioPath): Promise<void> {
     })
 
     return finished.then(() => undefined).catch((error: unknown) => {
-        entry_replace(path, { status: 'failed', error_message: String(error) })
+        entry_replace(path, { status: 'failed', error_message: error_shown(error) })
     })
 }
 
@@ -183,13 +192,11 @@ function transcription_configured(): boolean {
     assert(queue.value.length <= QUEUE_LENGTH_MAX)
 
     const { endpoints_by_purpose } = use_endpoints()
-    const { transcription_ready } = use_service()
+    const matching = endpoints_by_purpose('transcription')
 
-    assert(typeof transcription_ready.value === 'boolean')
+    assert(matching.every((endpoint) => endpoint.purpose === 'transcription'))
 
-    if (!transcription_ready.value) return false
-
-    return endpoints_by_purpose('transcription').length > 0
+    return matching.length > 0
 }
 
 function transcription_job_id(result: TranscriptionResult): string {

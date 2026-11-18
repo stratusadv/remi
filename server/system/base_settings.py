@@ -27,6 +27,9 @@ DJANGO_SPIRE_REMOTE_API_KEY = environment_text(EnvironmentVariable.DJANGO_SPIRE_
 DJANGO_SPIRE_REMOTE_API_URL = environment_text(EnvironmentVariable.DJANGO_SPIRE_REMOTE_API_URL)
 EMAIL_BACKEND = 'app.core.mail.SendgridTimeoutBackend'
 LANGUAGE_CODE = 'en-us'
+REMI_API_HOST = environment_text(EnvironmentVariable.REMI_API_HOST)
+REMI_API_KEY_NOTES = environment_text(EnvironmentVariable.REMI_API_KEY_NOTES)
+REMI_API_KEY_TRANSCRIPTION = environment_text(EnvironmentVariable.REMI_API_KEY_TRANSCRIPTION)
 ROOT_URLCONF = 'system.urls'
 SECRET_KEY = environment_text(EnvironmentVariable.DJANGO_SECRET_KEY) or 'MUST_BE_SET_IN_PRODUCTION'
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
@@ -36,6 +39,7 @@ SENDGRID_TRACK_CLICKS_PLAIN = False
 SITE_ID = 1
 STATIC_ROOT = BASE_DIR / 'static'
 STATIC_URL = 'static/'
+STRIPE_API_BASE = ''
 STRIPE_PUBLISHABLE_KEY = environment_publishable_key(EnvironmentVariable.STRIPE_PUBLISHABLE_KEY)
 STRIPE_SECRET_KEY = environment_text(EnvironmentVariable.STRIPE_SECRET_KEY)
 STRIPE_WEBHOOK_SECRET = environment_text(EnvironmentVariable.STRIPE_WEBHOOK_SECRET)
@@ -99,6 +103,34 @@ REMI_ASK_WINDOW_DAYS = environment_integer(
     minimum=1,
 )
 
+REMI_CHAT_DAY_MAX = environment_integer(
+    EnvironmentVariable.REMI_CHAT_DAY_MAX,
+    default=1_000,
+    maximum=1_000_000,
+    minimum=1,
+)
+
+REMI_CHAT_MINUTE_MAX = environment_integer(
+    EnvironmentVariable.REMI_CHAT_MINUTE_MAX,
+    default=30,
+    maximum=10_000,
+    minimum=1,
+)
+
+REMI_EMBEDDINGS_DAY_MAX = environment_integer(
+    EnvironmentVariable.REMI_EMBEDDINGS_DAY_MAX,
+    default=5_000,
+    maximum=1_000_000,
+    minimum=1,
+)
+
+REMI_EMBEDDINGS_MINUTE_MAX = environment_integer(
+    EnvironmentVariable.REMI_EMBEDDINGS_MINUTE_MAX,
+    default=120,
+    maximum=10_000,
+    minimum=1,
+)
+
 REMI_OFFERS = environment_offers(
     EnvironmentVariable.REMI_OFFERS,
     default='10:1000,50:5000,200:20000',
@@ -125,7 +157,9 @@ INSTALLED_APPS = [
     'django_spire.metric.domain',
     'app.account.apps.AccountConfig',
     'app.account.ledger.apps.AccountLedgerConfig',
+    'app.account.payment.apps.AccountPaymentConfig',
     'app.account.question.apps.AccountQuestionConfig',
+    'app.account.transcription.apps.AccountTranscriptionConfig',
     'app.checkout.apps.CheckoutConfig',
     'app.funnel.apps.FunnelConfig',
     'app.promo_code.apps.PromoCodeConfig',
@@ -133,6 +167,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'app.core.middleware.RequestLogMiddleware',
     'app.funnel.middleware.FunnelCorsMiddleware',
     'django.middleware.csp.ContentSecurityPolicyMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -175,7 +210,9 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LOGGING = {
     'disable_existing_loggers': False,
-    'handlers': {'console': {'class': 'logging.StreamHandler'}},
+    'formatters': {'line': {'format': '%(asctime)s %(levelname)s %(name)s %(message)s'}},
+    'handlers': {'console': {'class': 'logging.StreamHandler', 'formatter': 'line'}},
+    'loggers': {'django.request': {'level': 'ERROR'}},
     'root': {'handlers': ['console'], 'level': 'INFO'},
     'version': 1,
 }

@@ -75,7 +75,7 @@ pub(crate) fn is_cancelled(flag: &AtomicBool) -> bool {
 
 pub(crate) fn stream_id_validate(stream_id: &str) -> AppResult<()> {
     if stream_id.is_empty() {
-        return Err(AppError::Config("the stream id is empty".into()));
+        return Err(AppError::Internal("the stream id is empty".into()));
     }
 
     Ok(())

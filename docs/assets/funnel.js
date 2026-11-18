@@ -1,5 +1,5 @@
 const campaigns = Object.freeze(['general', 'wib']);
-const code_pattern = /^[A-Za-z0-9-]{1,64}$/;
+const code_pattern = /^[A-Za-z0-9-]{1,64}$/u;
 const email_timeout_milliseconds = 15_000;
 const funnel_origin = '';
 const platforms = Object.freeze(['linux', 'macos', 'windows']);
@@ -105,11 +105,19 @@ function email_outcome(status) {
     return 'failed';
 }
 
-function email_send(address) {
-    assert(typeof address === 'string', 'an email address is text');
+function email_send(fields) {
+    assert(typeof fields.email === 'string', 'an email address is text');
+    assert(typeof fields.name_first === 'string', 'a first name is text');
+    assert(typeof fields.name_last === 'string', 'a last name is text');
     assert(funnel_origin.startsWith('https://'), 'the funnel origin is not https');
 
-    const body = new URLSearchParams({ campaign, email: address });
+    const body = new URLSearchParams({
+        campaign,
+        email: fields.email,
+        name_first: fields.name_first,
+        name_last: fields.name_last,
+    });
+
     const endpoint = `${funnel_origin}/api/v1/funnel/email/`;
     const signal = AbortSignal.timeout?.(email_timeout_milliseconds);
 
@@ -130,13 +138,25 @@ function email_submit(event) {
 
     const form = event.currentTarget;
     const button = form.querySelector('button[type="submit"]');
-    const input = form.elements.namedItem('email');
+    const address = form.elements.namedItem('email');
+    const name_first = form.elements.namedItem('name_first');
+    const name_last = form.elements.namedItem('name_last');
     const status = document.getElementById('email-status');
+
+    assert(address instanceof HTMLInputElement, 'the email form has an address field');
+    assert(name_first instanceof HTMLInputElement, 'the email form has a first name field');
+    assert(name_last instanceof HTMLInputElement, 'the email form has a last name field');
+
+    const fields = {
+        email: address.value,
+        name_first: name_first.value.trim(),
+        name_last: name_last.value.trim(),
+    };
 
     button.disabled = true;
     status.textContent = email_statuses.sending;
 
-    return email_send(input.value).then((outcome) => {
+    return email_send(fields).then((outcome) => {
         const mailto = document.getElementById('mailto');
 
         button.disabled = false;

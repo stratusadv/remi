@@ -9,25 +9,33 @@ from django.utils import timezone
 from django_spire.contrib.constructor.service import BaseDjangoModelService
 
 from app.account.constants import (
+    ACCOUNT_LEDGER_ENTRY_REFERENCE_LENGTH_MAX,
     CHARGE_JOB_ID_PATTERN,
     CHARGE_SECONDS_MAX,
+    MILLISECONDS_PER_SECOND,
     QUESTION_TOKENS_MAX,
     QUESTION_UNKNOWN_MESSAGE,
     SECONDS_PER_HOUR,
     SECONDS_PER_MINUTE,
     TENTHS_PER_HOUR,
     TOPUP_BALANCE_SECONDS,
+    TRANSCRIPTION_CHUNK_DIGEST_PATTERN,
+    TRANSCRIPTION_CHUNK_MILLISECONDS_MAX,
+    TRANSCRIPTION_PADDING_MILLISECONDS,
 )
 from app.account.ledger.models import AccountLedgerEntry
 from app.account.question.models import AccountQuestion
 from app.account.question.pace import AskUsage, ask_limits, ask_pace
 from app.account.tokens import token_generate, token_hash
+from app.account.transcription.models import AccountTranscriptionChunk
 from app.core.exceptions import (
     AskInactiveError,
     BalanceInsufficientError,
+    GatewayInactiveError,
     PromoInvalidError,
     QuestionUnknownError,
     RequestInvalidError,
+    TranscriptionUnpaidError,
 )
 from app.promo_code.constants import (
     PROMO_CODE_INVALID_MESSAGE,
@@ -137,6 +145,14 @@ class AccountProcessorService(BaseDjangoModelService['Account']):
         return self.obj_class.objects.by_id(self.obj.pk).locked().get()
 
     def balance_topup(self, *, reference: str) -> int:
+        if not 0 < len(reference) <= ACCOUNT_LEDGER_ENTRY_REFERENCE_LENGTH_MAX:
+            message = (
+                f'reference must be 1 to {ACCOUNT_LEDGER_ENTRY_REFERENCE_LENGTH_MAX} '
+                f'characters: {reference!r}'
+            )
+
+            raise ValueError(message)
+
         with transaction.atomic():
             account = self._account_locked()
             balance_seconds = account.ledger_entries.balance_seconds()
@@ -149,6 +165,10 @@ class AccountProcessorService(BaseDjangoModelService['Account']):
                 return 0
 
             seconds = TOPUP_BALANCE_SECONDS - balance_seconds
+
+            if not 0 < seconds <= TOPUP_BALANCE_SECONDS:
+                message = f'account {account.pk} would be topped up by {seconds} seconds'
+                raise RuntimeError(message)
 
             AccountLedgerEntry.services.factory.grant_create(
                 account=account,
@@ -219,12 +239,48 @@ class AccountProcessorService(BaseDjangoModelService['Account']):
             account.services.save_model_obj()
 
     def complimentary_start(self, *, reference: str) -> int:
+        if not 0 < len(reference) <= ACCOUNT_LEDGER_ENTRY_REFERENCE_LENGTH_MAX:
+            message = (
+                f'reference must be 1 to {ACCOUNT_LEDGER_ENTRY_REFERENCE_LENGTH_MAX} '
+                f'characters: {reference!r}'
+            )
+
+            raise ValueError(message)
+
         with transaction.atomic():
             account = self._account_locked()
             account.is_complimentary = True
             account.services.save_model_obj()
 
             return self.balance_topup(reference=reference)
+
+    def gateway_authorize(self) -> None:
+        if self.obj.pk is None:
+            message = f'the account must be saved: {self.obj!r}'
+            raise ValueError(message)
+
+        limits = ask_limits()
+        window_start = timezone.now() - timedelta(days=limits.window_days)
+        entries = self.obj.ledger_entries
+        balance_seconds = entries.balance_seconds()
+
+        if balance_seconds < 0:
+            message = f'account {self.obj.pk} holds {balance_seconds} seconds'
+            raise RuntimeError(message)
+
+        if balance_seconds == 0:
+            message = 'This account has no hours left. Buy more hours to keep using remi.'
+            raise BalanceInsufficientError(message)
+
+        if entries.charges().since(window_start).exists():
+            return
+
+        message = (
+            f'remi writes notes, answers questions, and searches for {limits.window_days} days '
+            f'after each recording it processes. Process a recording to keep using them.'
+        )
+
+        raise GatewayInactiveError(message)
 
     def promo_redeem(self, code: str) -> Account:
         if code.strip() == '':
@@ -305,3 +361,66 @@ class AccountProcessorService(BaseDjangoModelService['Account']):
             account.services.save_model_obj()
 
         return token
+
+    def transcription_reserve(self, *, digest: str, job_id: str, milliseconds: int) -> None:
+        if CHARGE_JOB_ID_PATTERN.fullmatch(job_id) is None:
+            message = 'A transcription needs the 32-character job id of its recording.'
+            raise RequestInvalidError(message)
+
+        if TRANSCRIPTION_CHUNK_DIGEST_PATTERN.fullmatch(digest) is None:
+            message = f'digest must be 32 lowercase hexadecimal characters: {digest!r}'
+            raise ValueError(message)
+
+        if not 0 < milliseconds <= TRANSCRIPTION_CHUNK_MILLISECONDS_MAX:
+            message = (
+                'A piece of audio runs up to '
+                f'{TRANSCRIPTION_CHUNK_MILLISECONDS_MAX // MILLISECONDS_PER_SECOND} seconds.'
+            )
+
+            raise RequestInvalidError(message)
+
+        with transaction.atomic():
+            account = self._account_locked()
+            charge = account.ledger_entries.charges().by_reference(job_id).first()
+
+            if charge is None:
+                message = 'This recording was not charged to the account before transcribing.'
+                raise TranscriptionUnpaidError(message)
+
+            seconds_charged = -charge.seconds
+
+            if seconds_charged <= 0:
+                message = f'charge {charge.pk} took {seconds_charged} seconds'
+                raise RuntimeError(message)
+
+            chunks = account.transcription_chunks.by_job(job_id)
+
+            if chunks.by_digest(digest).exists():
+                return
+
+            milliseconds_allowed = (
+                seconds_charged * MILLISECONDS_PER_SECOND + TRANSCRIPTION_PADDING_MILLISECONDS
+            )
+
+            milliseconds_used = chunks.milliseconds_total()
+
+            if milliseconds_used + milliseconds > milliseconds_allowed:
+                message = 'This recording has already used the transcription it was charged for.'
+                raise TranscriptionUnpaidError(message)
+
+            AccountTranscriptionChunk.services.factory.create(
+                account=account,
+                digest=digest,
+                job_id=job_id,
+                milliseconds=milliseconds,
+            )
+
+            milliseconds_after = chunks.milliseconds_total()
+
+            if milliseconds_after != milliseconds_used + milliseconds:
+                message = (
+                    f'reserving {milliseconds} ms of recording {job_id} moved its total from '
+                    f'{milliseconds_used} to {milliseconds_after}'
+                )
+
+                raise RuntimeError(message)

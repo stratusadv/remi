@@ -1,82 +1,75 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, ref, useTemplateRef } from 'vue'
 import { use_ask } from '../composables/use_ask'
 import { use_context_menu } from '../composables/use_context_menu'
-import { use_dialog } from '../composables/use_dialog'
+import { use_modal } from '../composables/use_modal'
 import { assert } from '../lib/assert'
 import { chats_grouped } from '../lib/chat_groups'
 import { error_dialog_show } from '../lib/errors'
 import { MENU_ITEM_DELETE } from '../lib/menu'
+import { transition_leave_inert } from '../lib/transition'
 import MenuIcon from './menu_icon.vue'
-import type { ChatSummary } from '../types'
+import type { ChatID, ChatSummary } from '../types'
 
 
 const emit = defineEmits<{
     opened: []
 }>()
 
-const PANEL_GAP_PX = 6
 const { chat_id, chats, chat_open, chat_remove, chats_refresh } = use_ask()
-const { menu: context_menu, open: context_menu_open } = use_context_menu()
-const { confirm: dialog_confirm } = use_dialog()
+const { open: context_menu_open } = use_context_menu()
+const busy = ref(false)
 const open = ref(false)
-const trigger_ref = ref<HTMLButtonElement | null>(null)
-const panel_ref = ref<HTMLElement | null>(null)
-const panel_top_px = ref(0)
-const panel_right_px = ref(0)
+const pending = ref<ChatID[]>([])
+const selected = ref<ChatID[]>([])
+const confirm_button = useTemplateRef<HTMLButtonElement>('confirm_button')
+const dialog_element = useTemplateRef<HTMLElement>('dialog_element')
+const trigger_button = useTemplateRef<HTMLButtonElement>('trigger_button')
 const groups = computed(() => chats_grouped(chats.value, Date.now()))
+const covered = use_modal('dialog', () => open.value)
 
-const panel_style = computed(() => ({
-    top: `${String(panel_top_px.value)}px`,
-    right: `${String(panel_right_px.value)}px`,
-}))
+const selected_all = computed(() => (
+    chats.value.length > 0 && selected.value.length === chats.value.length
+))
 
+const selected_some = computed(() => selected.value.length > 0 && !selected_all.value)
 
-watch(open, (shown) => {
-    if (shown) {
-        listeners_attach()
+const pending_text = computed(() => {
+    const count = pending.value.length
 
-        return
+    if (count === 1) {
+        const [first] = pending.value
+        const chat = chats.value.find((candidate) => candidate.id === first)
+
+        if (chat !== undefined) return `Delete "${chat.title}"? This cannot be undone.`
     }
 
-    listeners_detach()
+    return `Delete ${String(count)} chat${count === 1 ? '' : 's'}? This cannot be undone.`
 })
 
-onBeforeUnmount(listeners_detach)
 
 function chat_context_menu(event: MouseEvent, chat: ChatSummary): void {
     assert(event.type === 'contextmenu')
+    assert(chat.id.length > 0)
     assert(open.value)
+
+    if (busy.value) return
 
     context_menu_open(event, [MENU_ITEM_DELETE], chat_menu_select.bind(undefined, chat))
 }
 
-async function chat_delete(chat: ChatSummary): Promise<void> {
-    assert(chat.id.length > 0)
-    assert(chat.title.length > 0)
-
-    open.value = false
-
-    const message = `Delete "${chat.title}"? Its questions and answers are removed. This cannot `
-        + 'be undone.'
-
-    return dialog_confirm(message, { title: 'Delete chat', kind: 'warning', ok_label: 'Delete' })
-        .then(async (confirmed) => (confirmed ? chat_remove(chat.id) : Promise.resolve()))
-        .catch(error_dialog_show)
-}
-
 async function chat_menu_select(chat: ChatSummary, id: string): Promise<void> {
     assert(chat.id.length > 0)
-    assert(id === MENU_ITEM_DELETE.id)
+    assert(id === MENU_ITEM_DELETE.id, `the chat has no action for ${id}`)
 
-    return chat_delete(chat)
+    return delete_request([chat.id])
 }
 
 async function chat_pick(chat: ChatSummary): Promise<void> {
     assert(chat.id.length > 0)
-    assert(open.value)
+    assert(!busy.value)
 
-    open.value = false
+    close()
 
     return chat_open(chat.id)
         .then(() => {
@@ -85,105 +78,152 @@ async function chat_pick(chat: ChatSummary): Promise<void> {
         .catch(error_dialog_show)
 }
 
-function close_on_escape(event: KeyboardEvent): void {
-    assert(event.type === 'keydown')
+function chat_toggle(chat: ChatSummary, event: Event): void {
+    assert(chat.id.length > 0)
+    assert(event.currentTarget instanceof HTMLInputElement)
 
-    if (event.key !== 'Escape') return
-    if (context_menu.value !== null) return
+    const box = event.currentTarget
+    const others = selected.value.filter((id) => id !== chat.id)
+
+    selected.value = box.checked ? [...others, chat.id] : others
+    pending.value = []
+}
+
+function close(): void {
+    assert(trigger_button.value !== null)
+
+    if (!open.value) return
+    if (busy.value) return
 
     open.value = false
-    trigger_ref.value?.focus()
+    pending.value = []
+    selected.value = []
+
+    void nextTick(trigger_focus)
 }
 
-function close_on_focus_leave(event: FocusEvent): void {
-    assert(event.type === 'focusout')
+function delete_cancel(): void {
+    assert(pending.value.length > 0)
+    assert(!busy.value)
 
-    const next = event.relatedTarget
-
-    if (context_menu.value !== null) return
-    if (!(next instanceof Node)) return
-    if (panel_ref.value?.contains(next) === true) return
-    if (trigger_ref.value?.contains(next) === true) return
-
-    open.value = false
+    pending.value = []
+    dialog_element.value?.focus()
 }
 
-function close_on_outside(event: MouseEvent): void {
-    assert(event.type === 'mousedown')
+async function delete_confirm(): Promise<void> {
+    const doomed = pending.value
 
-    if (context_menu.value !== null) return
-    if (!(event.target instanceof Node)) return
-    if (panel_ref.value?.contains(event.target) === true) return
-    if (trigger_ref.value?.contains(event.target) === true) return
+    assert(doomed.length > 0)
+    assert(!busy.value)
 
-    open.value = false
+    busy.value = true
+
+    return Promise.allSettled(doomed.map(async (id) => chat_remove(id)))
+        .then(async (results) => delete_settle(doomed, results))
 }
 
-function close_on_resize(event: UIEvent): void {
-    assert(event.type === 'resize')
-    assert(trigger_ref.value !== null)
+async function delete_settle(
+    doomed: readonly ChatID[],
+    results: readonly PromiseSettledResult<void>[],
+): Promise<void> {
+    assert(busy.value)
+    assert(results.length === doomed.length)
 
-    open.value = false
+    const failure = results.find((result) => result.status === 'rejected')
+
+    selected.value = selected.value.filter((id) => !doomed.includes(id))
+    pending.value = []
+    busy.value = false
+    dialog_element.value?.focus()
+
+    if (failure === undefined) return
+
+    return chats_refresh()
+        .catch(error_dialog_show)
+        .then(async () => error_dialog_show(failure.reason))
 }
 
-function focus_first(): void {
-    const panel = panel_ref.value
+async function delete_request(ids: readonly ChatID[]): Promise<void> {
+    assert(ids.length > 0)
+    assert(ids.every((id) => chats.value.some((chat) => chat.id === id)))
 
-    if (panel === null) return
+    pending.value = [...ids]
 
-    const current = panel.querySelector<HTMLButtonElement>('[aria-current="true"]')
-    const target = current ?? panel.querySelector<HTMLButtonElement>('.ask-history-open')
-
-    assert(target === null || panel.contains(target))
-
-    target?.focus({ preventScroll: true })
+    return nextTick().then(() => {
+        confirm_button.value?.focus()
+    })
 }
 
-function listeners_attach(): void {
-    assert(open.value)
-    assert(trigger_ref.value !== null)
+function escape_press(event: KeyboardEvent): void {
+    assert(event.key === 'Escape')
+    assert(trigger_button.value !== null)
 
-    document.addEventListener('mousedown', close_on_outside, true)
-    document.addEventListener('keydown', close_on_escape, true)
-    window.addEventListener('resize', close_on_resize)
-}
+    if (busy.value) return
 
-function listeners_detach(): void {
-    document.removeEventListener('mousedown', close_on_outside, true)
-    document.removeEventListener('keydown', close_on_escape, true)
-    window.removeEventListener('resize', close_on_resize)
-}
-
-function toggle(): void {
-    assert(trigger_ref.value !== null)
-
-    if (open.value) {
-        open.value = false
+    if (pending.value.length > 0) {
+        delete_cancel()
 
         return
     }
 
-    const rect = trigger_ref.value.getBoundingClientRect()
+    close()
+}
 
-    panel_top_px.value = rect.bottom + PANEL_GAP_PX
-    panel_right_px.value = window.innerWidth - rect.right
+function focus_first(): void {
+    const dialog = dialog_element.value
+
+    if (dialog === null) return
+
+    assert(dialog.isConnected)
+
+    const current = dialog.querySelector<HTMLElement>('.ask-history-open[aria-current="true"]')
+    const target = current ?? dialog.querySelector<HTMLElement>('.ask-history-open') ?? dialog
+
+    assert(dialog.contains(target))
+
+    target.focus()
+}
+
+async function history_open(): Promise<void> {
+    assert(!open.value)
+    assert(!busy.value)
+
+    pending.value = []
+    selected.value = []
     open.value = true
 
-    void chats_refresh()
+    void nextTick(focus_first)
+
+    return chats_refresh()
         .then(nextTick)
         .then(focus_first)
         .catch(error_dialog_show)
+}
+
+function selection_toggle(): void {
+    assert(chats.value.length > 0)
+    assert(!busy.value)
+
+    selected.value = selected_all.value ? [] : chats.value.map((chat) => chat.id)
+    pending.value = []
+}
+
+function trigger_focus(): void {
+    assert(!open.value)
+    assert(!busy.value)
+
+    trigger_button.value?.focus()
 }
 </script>
 
 <template>
     <button
-        ref="trigger_ref"
+        ref="trigger_button"
         type="button"
         class="btn-default"
         aria-haspopup="dialog"
         :aria-expanded="open"
-        @click="toggle"
+        @click="history_open"
     >
         <svg
             class="ask-history-icon"
@@ -202,54 +242,156 @@ function toggle(): void {
         History
     </button>
     <Teleport to="body">
-        <section
-            v-if="open"
-            ref="panel_ref"
-            class="menu-popover menu-popover-fixed ask-history"
-            role="dialog"
-            aria-label="Chat history"
-            :style="panel_style"
-            @focusout="close_on_focus_leave"
-        >
-            <p v-if="chats.length === 0" class="ask-history-empty">
-                Each chat is saved here as you ask, so you can come back to it later.
-            </p>
-            <section
-                v-for="group in groups"
-                :key="group.label"
-                class="ask-history-group"
-                :aria-label="group.label"
+        <Transition name="app-dialog" @before-leave="transition_leave_inert">
+            <div
+                v-if="open"
+                ref="dialog_element"
+                class="app-dialog-backdrop ask-history-backdrop"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="ask-history-title"
+                tabindex="-1"
+                :inert="covered"
+                @mousedown.left.self.prevent="close"
+                @keydown.esc="escape_press"
             >
-                <h3 class="ask-history-label">{{ group.label }}</h3>
-                <ul class="ask-history-list">
-                    <li
-                        v-for="chat in group.chats"
-                        :key="chat.id"
-                        class="ask-history-row"
-                        @contextmenu="chat_context_menu($event, chat)"
+                <section class="app-dialog ask-history">
+                    <button
+                        type="button"
+                        class="app-dialog-close"
+                        aria-label="Close"
+                        title="Close"
+                        :disabled="busy"
+                        @click="close"
                     >
-                        <button
-                            type="button"
-                            class="ask-history-open"
-                            :aria-current="chat.id === chat_id ? 'true' : undefined"
-                            :title="chat.title"
-                            @click="chat_pick(chat)"
+                        <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.75"
+                            stroke-linecap="round"
+                            aria-hidden="true"
                         >
-                            {{ chat.title }}
-                        </button>
-                        <button
-                            type="button"
-                            class="menu-icon-btn ask-history-delete"
-                            :aria-label="`Delete chat: ${chat.title}`"
-                            title="Delete chat"
-                            @click="chat_delete(chat)"
-                        >
-                            <MenuIcon name="delete" />
-                        </button>
-                    </li>
-                </ul>
-            </section>
-        </section>
+                            <path d="M6 6l12 12" />
+                            <path d="M18 6L6 18" />
+                        </svg>
+                    </button>
+                    <h3 id="ask-history-title" class="app-dialog-title">Chat history</h3>
+
+                    <p v-if="chats.length === 0" class="app-dialog-message">
+                        Each chat is saved here as you ask, so you can come back to it later.
+                    </p>
+
+                    <template v-else>
+                        <p class="app-dialog-message">
+                            Open a chat to pick it up again, or select chats to delete them.
+                        </p>
+
+                        <div class="ask-history-list">
+                            <section
+                                v-for="group in groups"
+                                :key="group.label"
+                                class="ask-history-group"
+                                :aria-label="group.label"
+                            >
+                                <h4 class="ask-history-label">{{ group.label }}</h4>
+                                <ul class="ask-history-rows">
+                                    <li
+                                        v-for="chat in group.chats"
+                                        :key="chat.id"
+                                        class="ask-history-row"
+                                        :data-selected="selected.includes(chat.id)"
+                                        :data-pending="pending.includes(chat.id)"
+                                        @contextmenu="chat_context_menu($event, chat)"
+                                    >
+                                        <label class="ask-history-pick">
+                                            <input
+                                                type="checkbox"
+                                                :checked="selected.includes(chat.id)"
+                                                :aria-label="`Select chat: ${chat.title}`"
+                                                :disabled="busy"
+                                                @change="chat_toggle(chat, $event)"
+                                            >
+                                        </label>
+                                        <button
+                                            type="button"
+                                            class="ask-history-open"
+                                            :aria-current="chat.id === chat_id ? 'true' : undefined"
+                                            :title="chat.title"
+                                            :disabled="busy"
+                                            @click="chat_pick(chat)"
+                                        >
+                                            {{ chat.title }}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="menu-icon-btn ask-history-delete"
+                                            :aria-label="`Delete chat: ${chat.title}`"
+                                            title="Delete chat"
+                                            :disabled="busy"
+                                            @click="delete_request([chat.id])"
+                                        >
+                                            <MenuIcon name="delete" />
+                                        </button>
+                                    </li>
+                                </ul>
+                            </section>
+                        </div>
+
+                        <div v-if="pending.length > 0" class="ask-history-footer">
+                            <p id="ask-history-question" class="ask-history-question">
+                                {{ pending_text }}
+                            </p>
+                            <div class="app-dialog-actions">
+                                <button
+                                    type="button"
+                                    class="btn-default"
+                                    :disabled="busy"
+                                    @click="delete_cancel"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    ref="confirm_button"
+                                    type="button"
+                                    class="btn-danger"
+                                    aria-describedby="ask-history-question"
+                                    :disabled="busy"
+                                    @click="delete_confirm"
+                                >
+                                    Delete
+                                </button>
+                            </div>
+                        </div>
+
+                        <div v-else class="ask-history-footer">
+                            <div class="ask-history-selection">
+                                <label class="ask-history-all">
+                                    <input
+                                        type="checkbox"
+                                        :checked="selected_all"
+                                        :indeterminate="selected_some"
+                                        @change="selection_toggle"
+                                    >
+                                    Select all
+                                </label>
+                                <span v-if="selected.length > 0" class="ask-history-count">
+                                    {{ selected.length }} of {{ chats.length }} selected
+                                </span>
+                            </div>
+                            <button
+                                type="button"
+                                class="btn-danger"
+                                :disabled="selected.length === 0"
+                                @click="delete_request(selected)"
+                            >
+                                Delete selected
+                            </button>
+                        </div>
+                    </template>
+                </section>
+            </div>
+        </Transition>
     </Teleport>
 </template>
 
@@ -259,29 +401,33 @@ function toggle(): void {
     height: 1rem;
 }
 
+.ask-history-backdrop:focus {
+    outline: none;
+}
+
 .ask-history {
-    width: min(22rem, calc(100vw - 2rem));
-    max-height: min(28rem, 70vh);
+    max-width: 40rem;
+    max-height: min(42rem, 88vh);
+}
+
+.ask-history-list {
+    flex: 1 1 auto;
+    min-height: 0;
     padding: 0.375rem;
     overflow-y: auto;
     overscroll-behavior: contain;
-}
-
-.ask-history-empty {
-    margin: 0;
-    padding: 0.75rem 0.625rem;
-    color: var(--color-content-muted);
-    font-size: 0.8125rem;
-    line-height: 1.5;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    scrollbar-gutter: stable;
 }
 
 .ask-history-group + .ask-history-group {
-    margin-top: 0.375rem;
+    margin-top: 0.5rem;
 }
 
 .ask-history-label {
     margin: 0;
-    padding: 0.375rem 0.625rem 0.25rem;
+    padding: 0.5rem 0.625rem 0.25rem;
     color: var(--color-content-subtle);
     font-size: 0.6875rem;
     font-weight: 600;
@@ -289,8 +435,9 @@ function toggle(): void {
     text-transform: uppercase;
 }
 
-.ask-history-list {
+.ask-history-rows {
     display: grid;
+    gap: 0.125rem;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -299,8 +446,10 @@ function toggle(): void {
 .ask-history-row {
     display: flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.125rem;
+    padding-right: 0.25rem;
     border-radius: var(--radius-sm);
+    transition: background-color 100ms ease, box-shadow 100ms ease;
 }
 
 .ask-history-row:hover,
@@ -308,19 +457,40 @@ function toggle(): void {
     background: var(--color-row-hover);
 }
 
+.ask-history-row[data-selected="true"] {
+    background: var(--color-row-active);
+}
+
+.ask-history-row[data-pending="true"] {
+    background: var(--color-danger);
+    box-shadow: inset 2px 0 0 var(--color-danger-text);
+}
+
+.ask-history-pick {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    padding: 0.5rem 0.375rem 0.5rem 0.625rem;
+    cursor: pointer;
+}
+
 .ask-history-open {
     flex: 1;
     min-width: 0;
-    padding: 0.4375rem 0.625rem;
+    padding: 0.5rem 0.375rem;
     overflow: hidden;
-    border: none;
     border-radius: var(--radius-sm);
-    background: transparent;
     color: var(--color-content);
-    font-size: 0.8125rem;
+    font-size: 0.875rem;
     text-align: left;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.ask-history-open:hover:enabled {
+    color: var(--color-content-strong);
+    text-decoration: underline;
+    text-underline-offset: 3px;
 }
 
 .ask-history-open[aria-current="true"] {
@@ -329,11 +499,59 @@ function toggle(): void {
 }
 
 .ask-history-delete {
-    opacity: 0;
+    flex: none;
 }
 
-.ask-history-row:hover .ask-history-delete,
-.ask-history-delete:focus-visible {
-    opacity: 1;
+.ask-history-delete:hover:enabled {
+    color: var(--color-danger-text);
+}
+
+.ask-history-footer {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    min-height: var(--control-height);
+    margin-top: 1rem;
+}
+
+.ask-history-footer .app-dialog-actions {
+    margin: 0;
+}
+
+.ask-history-selection {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.ask-history-all {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--color-content);
+    font-size: 0.875rem;
+    cursor: pointer;
+}
+
+.ask-history-count {
+    color: var(--color-content-muted);
+    font-size: 0.8125rem;
+}
+
+.ask-history-count::before {
+    margin-right: 0.5rem;
+    color: var(--color-content-subtle);
+    content: "\00b7";
+}
+
+.ask-history-question {
+    min-width: 0;
+    margin: 0;
+    color: var(--color-content-strong);
+    font-size: 0.875rem;
+    line-height: 1.45;
 }
 </style>

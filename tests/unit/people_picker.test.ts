@@ -1,11 +1,20 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import PeoplePicker from '../../src/components/people_picker.vue'
 import { use_dialog } from '../../src/composables/use_dialog'
+import { use_modal_shown } from '../../src/composables/use_modal'
 import { use_people } from '../../src/composables/use_people'
 import { assert } from '../../src/lib/assert'
 import { ipc } from '../../src/lib/ipc'
-import { ATTACH_TO, PROPERTIES, group_build, person_build } from './fixtures'
+import {
+    ATTACH_TO,
+    PROPERTIES,
+    deferred_new,
+    group_build,
+    mount_auto_unmount,
+    person_build,
+} from './fixtures'
+import { escape_press, pointer_press } from './modal'
 import type { VueWrapper } from '@vue/test-utils'
 import type { Group, Person } from '../../src/types'
 
@@ -20,13 +29,13 @@ const EMPTY = group_build({ id: 'empty', name: 'Alumni', person_ids: ['ghost'] }
 const EVENT_UPDATE_IDS = 'onUpdate:ids_selected'
 const FILTER_INPUT = 'input[aria-label="Find a person"]'
 const NAME_FIRST_INPUT = 'input[placeholder="e.g. John"]'
-const mounted = new Set<VueWrapper>()
 const people_state = use_people()
 const dialog = use_dialog()
+const modal_shown = use_modal_shown()
 
 function checkbox_at(index: number): HTMLInputElement | null {
     assert(index >= 0)
-    assert(mounted.size > 0)
+    assert(document.body.querySelector('.app-dialog-backdrop') !== null)
 
     return rows()[index]?.querySelector<HTMLInputElement>('input[type="checkbox"]') ?? null
 }
@@ -47,9 +56,12 @@ function press(target: Element | null | undefined): void {
 
 function emitted_ids(wrapper: VueWrapper): (string[] | undefined)[] | undefined {
     assert(wrapper.exists())
-    assert(mounted.has(wrapper))
 
-    return wrapper.emitted<string[][]>('update:ids_selected')?.map((call) => call[0])
+    const calls = wrapper.emitted<string[][]>('update:ids_selected')
+
+    assert(calls === undefined || calls.every((call) => call.length === 1))
+
+    return calls?.map((call) => call[0])
 }
 
 async function mount_picker(
@@ -66,7 +78,7 @@ async function mount_picker(
     vi.mocked(ipc.people_list).mockResolvedValue(people)
     vi.mocked(ipc.groups_list).mockResolvedValue(groups)
 
-    const wrapper = mount(PeoplePicker, {
+    const wrapper = mount_auto_unmount(PeoplePicker, {
         [PROPERTIES]: {
             ids_selected,
             title: 'Who was there?',
@@ -77,7 +89,6 @@ async function mount_picker(
         [ATTACH_TO]: document.body,
     })
 
-    mounted.add(wrapper)
     await flushPromises()
 
     return wrapper
@@ -85,14 +96,14 @@ async function mount_picker(
 
 function root(): Element | null {
     assert(document.body.isConnected)
-    assert(mounted.size > 0)
+    assert(document.body.querySelector('.app-dialog-backdrop') !== null)
 
     return document.body.querySelector('.people-picker')
 }
 
 function row_texts(): string[] {
     assert(document.body.isConnected)
-    assert(mounted.size > 0)
+    assert(document.body.querySelector('.app-dialog-backdrop') !== null)
 
     return rows().map((row) =>
         Array.from(row.querySelectorAll('span'))
@@ -103,24 +114,21 @@ function row_texts(): string[] {
 
 function rows(): Element[] {
     assert(document.body.isConnected)
-    assert(mounted.size > 0)
+    assert(document.body.querySelector('.app-dialog-backdrop') !== null)
 
     return Array.from(root()?.querySelectorAll('.people-picker-row') ?? [])
 }
 
 beforeEach(() => {
+    onTestFinished(() => {
+        dialog.close(false)
+        document.body.innerHTML = ''
+    })
+
     vi.resetAllMocks()
     people_state.people.value = []
     people_state.groups.value = []
     people_state.error_message.value = null
-})
-
-afterEach(() => {
-    for (const wrapper of mounted) wrapper.unmount()
-
-    mounted.clear()
-    dialog.close(false)
-    document.body.innerHTML = ''
 })
 
 describe('PeoplePicker', () => {
@@ -312,7 +320,51 @@ describe('PeoplePicker', () => {
         click(root()?.querySelector('.btn-primary'))
         await flushPromises()
 
-        expect(dialog.current.value?.message).toBe('Error: duplicate')
+        expect(dialog.current.value?.message).toBe('duplicate')
         expect(root()?.querySelector('input[placeholder="e.g. John"]')).not.toBeNull()
+    })
+})
+
+describe('PeoplePicker as a modal', () => {
+    it('makes the app behind it inert until it closes', async () => {
+        const wrapper = await mount_picker()
+
+        expect(modal_shown.value).toBe(true)
+
+        wrapper.unmount()
+
+        expect(modal_shown.value).toBe(false)
+    })
+
+    it('closes on Escape after a click on a part of it that takes no focus', async () => {
+        const wrapper = await mount_picker()
+        const title = root()?.querySelector('.app-dialog-title') ?? null
+
+        assert(title !== null)
+
+        pointer_press(title)
+        escape_press()
+
+        expect(wrapper.emitted('close')).toHaveLength(1)
+    })
+
+    it('focuses the filter before the people arrive', async () => {
+        const people = deferred_new<Person[]>()
+
+        vi.mocked(ipc.people_list).mockReturnValue(people.promise)
+        vi.mocked(ipc.groups_list).mockResolvedValue([])
+
+        void mount_auto_unmount(PeoplePicker, {
+            [PROPERTIES]: { ids_selected: [], title: 'Who was there?', hint: 'Tick everyone.' },
+            [ATTACH_TO]: document.body,
+        })
+
+        expect(document.activeElement).toBe(root()?.querySelector(FILTER_INPUT))
+
+        people.resolve([JOHN])
+        await flushPromises()
+
+        expect(row_texts()).toEqual(['John Doe (Developer)'])
+        expect(document.activeElement).toBe(root()?.querySelector(FILTER_INPUT))
     })
 })

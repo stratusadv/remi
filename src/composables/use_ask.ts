@@ -2,9 +2,10 @@ import { computed, ref, shallowRef } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { sources_cited } from '../lib/answer'
 import { assert } from '../lib/assert'
+import { error_shown } from '../lib/errors'
 import { ipc } from '../lib/ipc'
 import { log_warn } from '../lib/log'
-import { use_endpoints } from './use_endpoints'
+import { MESSAGE_ENDPOINT_MISSING, use_endpoints } from './use_endpoints'
 import { use_pipeline } from './use_pipeline'
 import type { Event } from '@tauri-apps/api/event'
 import type {
@@ -43,13 +44,17 @@ export interface Exchange {
     stream_id: StreamID
 }
 
-const CHAT_ID_PATTERN = /^[0-9a-f-]{36}$/
+interface ThreadScroll {
+    chat_id: ChatID
+    top_px: number
+}
+
+const CHAT_ID_PATTERN = /^[0-9a-f-]{36}$/u
 const EVENT_ASK_SOURCES = 'notes_ask_sources'
 const EVENT_ASK_WAIT = 'notes_ask_wait'
 const EVENT_NOTES_CHUNK = 'notes_generate_chunk'
 const EXCHANGES_MAX = 30
 const HISTORY_TURNS_MAX = 4
-const MESSAGE_ENDPOINT_MISSING = 'No notes service is set. Add one on the AI tab of Settings.'
 const SCOPE_ALL = Object.freeze<AskScope>({ kind: 'all' })
 const SCOPE_KINDS: readonly AskScope['kind'][] = Object.freeze(['all', 'meeting', 'project'])
 const STATES_SETTLED: readonly ChatExchangeState[] = Object.freeze(['done', 'failed', 'stopped'])
@@ -57,6 +62,8 @@ const exchanges = ref<Exchange[]>([])
 const chat_id = ref<ChatID>(crypto.randomUUID())
 const chats = ref<ChatSummary[]>([])
 const scope = ref<AskScope>(SCOPE_ALL)
+const sources_open = ref<ExchangeID[]>([])
+const thread_scroll = shallowRef<ThreadScroll | null>(null)
 const busy = computed(() => exchanges.value.some(exchange_live))
 const { endpoints_by_purpose } = use_endpoints()
 const { view_set } = use_pipeline()
@@ -68,6 +75,8 @@ const api = Object.freeze({
     chat_id,
     chats,
     scope,
+    sources_open,
+    thread_scroll,
     ask,
     chat_open,
     chat_remove,
@@ -81,7 +90,7 @@ const api = Object.freeze({
 
 
 export function use_ask(): typeof api {
-    assert(Object.isFrozen(api))
+    assert(CHAT_ID_PATTERN.test(chat_id.value))
     assert(exchanges.value.length <= EXCHANGES_MAX)
 
     return api
@@ -148,6 +157,7 @@ function chat_show(opened: ChatOpened): void {
     exchanges.value = shown
     chat_id.value = opened.id
     scope.value = shown.at(-1)?.scope ?? SCOPE_ALL
+    sources_open.value = []
 
     assert(!busy.value)
 }
@@ -191,6 +201,7 @@ async function clear(): Promise<void> {
         exchanges.value = []
         chat_id.value = crypto.randomUUID()
         scope.value = SCOPE_ALL
+        sources_open.value = []
 
         assert(!busy.value)
     })
@@ -252,7 +263,7 @@ async function exchange_run(exchange: Exchange): Promise<void> {
             exchange_update(id, stream_id, () => ({ answer, state: 'done' }))
         })
         .catch((error: unknown) => {
-            exchange_update(id, stream_id, () => ({ state: 'failed', error: String(error) }))
+            exchange_update(id, stream_id, () => ({ state: 'failed', error: error_shown(error) }))
         })
         .then(async () => chat_persist(chat))
 }

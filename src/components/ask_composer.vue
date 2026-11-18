@@ -1,14 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, useTemplateRef } from 'vue'
 import { use_network } from '../composables/use_network'
-import { use_pipeline } from '../composables/use_pipeline'
-import { use_service } from '../composables/use_service'
 import { assert } from '../lib/assert'
 import { ICON_PATH_FOLDER } from '../lib/menu'
+import { text_truncate } from '../lib/text'
 import type { AskScopeChip } from '../types'
 
 
-const props = defineProps<{
+const properties = defineProps<{
     busy: boolean
     scope: AskScopeChip | null
 }>()
@@ -37,17 +36,13 @@ const SCOPE_PLACEHOLDERS: Readonly<Record<AskScopeChip['kind'], string>> = Objec
 })
 
 const { online } = use_network()
-const { notes_ready } = use_service()
-const { view_set } = use_pipeline()
 const draft = ref('')
-const input_ref = ref<HTMLTextAreaElement | null>(null)
+const input_element = useTemplateRef<HTMLTextAreaElement>('input_element')
 
-const sendable = computed(
-    () => draft.value.trim().length > 0 && online.value && notes_ready.value,
-)
+const sendable = computed(() => draft.value.trim().length > 0 && online.value)
 
 const placeholder = computed(() => {
-    const chosen = props.scope
+    const chosen = properties.scope
 
     return chosen === null ? 'Ask about your meetings' : SCOPE_PLACEHOLDERS[chosen.kind]
 })
@@ -58,33 +53,57 @@ onMounted(focus)
 defineExpose({ focus })
 
 function focus(): void {
-    input_ref.value?.focus()
+    assert(input_element.value !== null)
+    assert(input_element.value.maxLength === QUESTION_CHARS_MAX)
+
+    input_element.value.focus()
 }
 
 function grow(): void {
-    const input = input_ref.value
+    const input = input_element.value
 
     if (input === null) return
 
     input.style.height = 'auto'
-    input.style.height = `${String(Math.min(input.scrollHeight, INPUT_HEIGHT_MAX_PX))}px`
+
+    const height_px = Math.min(input.scrollHeight, INPUT_HEIGHT_MAX_PX)
+
+    assert(height_px >= 0)
+    assert(height_px <= INPUT_HEIGHT_MAX_PX)
+
+    input.style.height = `${String(height_px)}px`
 }
 
 function input_changed(): void {
+    const input = input_element.value
+
+    assert(input !== null)
+
+    if (draft.value.length > QUESTION_CHARS_MAX) {
+        draft.value = text_truncate(draft.value, QUESTION_CHARS_MAX)
+        input.value = draft.value
+    }
+
+    assert(draft.value.length <= QUESTION_CHARS_MAX)
+
     grow()
     emit('typing')
 }
 
 function keydown(event: KeyboardEvent): void {
+    assert(event.type === 'keydown')
+    assert(event.target === input_element.value)
+
     if (event.key !== 'Enter') return
-    if (event.shiftKey || event.isComposing) return
+    if (event.shiftKey) return
+    if (event.isComposing) return
 
     event.preventDefault()
     send()
 }
 
 function send(): void {
-    if (props.busy) return
+    if (properties.busy) return
     if (!sendable.value) return
 
     const question = draft.value.trim()
@@ -100,13 +119,7 @@ function send(): void {
 
 <template>
     <div class="ask-composer-shell">
-        <p v-if="!notes_ready" class="ask-composer-notice" role="status">
-            Ask needs the API address and keys before it can answer.
-            <button type="button" class="ask-composer-link" @click="view_set('settings')">
-                Open settings
-            </button>
-        </p>
-        <p v-else-if="!online" class="ask-composer-notice" role="status">
+        <p v-if="!online" class="ask-composer-notice" role="status">
             You are offline. Ask works again once you reconnect.
         </p>
 
@@ -150,7 +163,7 @@ function send(): void {
 
         <form class="ask-composer" @submit.prevent="send" @click.self="focus">
             <textarea
-                ref="input_ref"
+                ref="input_element"
                 v-model="draft"
                 class="ask-composer-input"
                 rows="1"
@@ -214,16 +227,6 @@ function send(): void {
     margin: 0;
     color: var(--color-content-muted);
     font-size: 0.8125rem;
-}
-
-.ask-composer-link {
-    color: var(--color-link);
-    font-weight: 500;
-}
-
-.ask-composer-link:hover {
-    color: var(--color-link-hover);
-    text-decoration: underline;
 }
 
 .ask-composer {

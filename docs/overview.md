@@ -11,7 +11,7 @@ remi is a desktop app that turns a recording of a meeting into a formatted docum
 | Templates | The page holds the layouts a document can follow. |
 | People | The page holds each person once, with a role and a description for the AI. |
 | Buy hours | The page adds transcription hours to your account. |
-| Settings | The page holds the theme, the recordings folder, your account, the API address, and the keys. |
+| Settings | The page holds the theme, the recordings folder, and your account. |
 
 ## Get Started
 

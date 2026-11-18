@@ -6,8 +6,8 @@ const API_PATH_TRANSCRIBE_DEFAULT: &str = "/v1/audio/transcriptions";
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum APIEndpointPurpose {
-    Transcription,
     Notes,
+    Transcription,
 }
 
 #[derive(Debug, Clone)]
@@ -17,51 +17,31 @@ pub(crate) struct EmbeddingsTarget {
     pub(crate) model: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct KeyStatus {
-    pub(crate) builtin: bool,
-    pub(crate) length: u32,
-    pub(crate) user: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct SourceStatus {
-    pub(crate) builtin: bool,
-    pub(crate) user: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct ServiceStatus {
-    pub(crate) host: SourceStatus,
-    pub(crate) notes: KeyStatus,
-    pub(crate) transcription: KeyStatus,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct APIEndpoint {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) purpose: APIEndpointPurpose,
-    pub(crate) host: String,
     #[serde(default)]
     pub(crate) api_key: String,
-    pub(crate) model: String,
-    #[serde(default)]
-    pub(crate) temperature: Option<f32>,
-    #[serde(default)]
-    pub(crate) output_tokens_max: Option<u32>,
     #[serde(default)]
     pub(crate) api_path_chat: Option<String>,
     #[serde(default)]
     pub(crate) api_path_transcribe: Option<String>,
     #[serde(default)]
-    pub(crate) transcribe_verbose: Option<bool>,
+    pub(crate) has_api_key: bool,
+    pub(crate) host: String,
+    pub(crate) id: String,
+    pub(crate) model: String,
+    pub(crate) name: String,
     #[serde(default)]
-    pub(crate) transcribe_chunk_seconds: Option<u32>,
+    pub(crate) output_tokens_max: Option<u32>,
+    pub(crate) purpose: APIEndpointPurpose,
     #[serde(default)]
     pub(crate) reasoning_effort: Option<String>,
     #[serde(default)]
-    pub(crate) has_api_key: bool,
+    pub(crate) temperature: Option<f32>,
+    #[serde(default)]
+    pub(crate) transcribe_chunk_seconds: Option<u32>,
+    #[serde(default)]
+    pub(crate) transcribe_verbose: Option<bool>,
 }
 
 impl APIEndpoint {

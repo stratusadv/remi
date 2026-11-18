@@ -1,8 +1,8 @@
-import { mount } from '@vue/test-utils'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import RowMenu from '../../src/components/row_menu.vue'
 import { assert } from '../../src/lib/assert'
-import { ATTACH_TO, PROPERTIES } from './fixtures'
+import { ATTACH_TO, PROPERTIES, mount_auto_unmount } from './fixtures'
+import { modal_mount } from './modal'
 import type { VueWrapper } from '@vue/test-utils'
 
 
@@ -11,42 +11,36 @@ const ITEMS = Object.freeze([
     { id: 'delete', label: 'Delete', icon: 'delete', danger: true },
 ] as const)
 
-const mounted = new Set<VueWrapper>()
-
 
 async function menu_open(menu: VueWrapper): Promise<void> {
     assert(menu.exists())
-    assert(mounted.has(menu))
 
-    await menu.get('.menu-icon-btn').trigger('click')
+    const button = menu.get('.menu-icon-btn')
+    const expanded = button.attributes('aria-expanded')
+
+    await button.trigger('click')
+
+    assert(button.attributes('aria-expanded') !== expanded)
 }
 
 function mount_menu(): VueWrapper {
     assert(Array.isArray(ITEMS))
-    assert(mounted.size >= 0)
+    assert(document.body.querySelector('.menu-popover') === null)
 
-    const wrapper = mount(RowMenu, {
+    const wrapper = mount_auto_unmount(RowMenu, {
         [PROPERTIES]: { label: 'Weekly sync', items: [...ITEMS] },
         [ATTACH_TO]: document.body,
     })
-
-    mounted.add(wrapper)
 
     return wrapper
 }
 
 function popover(): Element | null {
     assert(document.body.isConnected)
-    assert(mounted.size > 0)
+    assert(document.body.querySelector('.menu-icon-btn') !== null)
 
     return document.body.querySelector('.menu-popover')
 }
-
-afterEach(() => {
-    for (const wrapper of mounted) wrapper.unmount()
-
-    mounted.clear()
-})
 
 describe('RowMenu', () => {
     it('labels the trigger and starts closed', () => {
@@ -161,5 +155,29 @@ describe('RowMenu', () => {
         await menu.vm.$nextTick()
 
         expect(popover()).not.toBeNull()
+    })
+})
+
+describe('RowMenu under a dialog', () => {
+    it('closes when a dialog opens over the page', async () => {
+        const menu = mount_menu()
+
+        await menu_open(menu)
+        void modal_mount()
+        await menu.vm.$nextTick()
+
+        expect(popover()).toBeNull()
+        expect(menu.get('.menu-icon-btn').attributes('aria-expanded')).toBe('false')
+    })
+
+    it('stays closed when a dialog opens in the same tick as the click that opens it', async () => {
+        const menu = mount_menu()
+
+        menu.get('.menu-icon-btn').element.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        void modal_mount()
+        await menu.vm.$nextTick()
+
+        expect(popover()).toBeNull()
+        expect(menu.get('.menu-icon-btn').attributes('aria-expanded')).toBe('false')
     })
 })

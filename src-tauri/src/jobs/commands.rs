@@ -1,7 +1,7 @@
 use crate::blocking;
 use crate::contract::{BarCount, ClipEnd, ClipStart, EngineID, JobID, SearchQuery};
 use crate::error::{AppError, AppResult};
-use crate::search::{self, SearchHit};
+use crate::search::{self, SearchHit, SegmentRange, TranscriptClaim};
 use crate::transcription::audio::{Waveform, waveform_compute};
 use crate::transcription::types::Transcript;
 use crate::workspace::{
@@ -32,7 +32,7 @@ pub(crate) async fn job_audio_clip_get(
         let paths = ClipPaths { clip: &path_clip, source: &path_source };
 
         workspace::job_audio_clips_remove(&job_id)?;
-        workspace::audio_clip_save(&paths, span)?;
+        workspace::audio_clip_save(&job_id, &paths, span)?;
 
         Ok(Some(path_clip.to_string_lossy().into_owned()))
     })
@@ -87,10 +87,23 @@ pub(crate) async fn job_transcript_load(
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub(crate) async fn job_transcript_range_find(
+    job_id: JobID,
+    text: SearchQuery,
+) -> AppResult<Option<SegmentRange>> {
+    blocking::run(move || {
+        let claim = TranscriptClaim { job_id: &job_id, text: &text };
+
+        search::transcript_range_find(&claim)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub(crate) async fn job_transcript_save(job_id: JobID, transcript: Transcript) -> AppResult<()> {
     blocking::run(move || {
         if transcript.segments.is_empty() {
-            return Err(AppError::Config("a transcript needs at least one segment".into()));
+            return Err(AppError::Internal("a transcript needs at least one segment".into()));
         }
 
         workspace::transcript_save_edited(&job_id, &transcript)

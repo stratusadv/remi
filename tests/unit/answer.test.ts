@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
     answer_blocks,
+    answer_claim,
     answer_parts,
     answer_plain,
     answer_settled,
@@ -13,9 +14,36 @@ import { ask_source_build, job_meta_build } from './fixtures'
 import type { AnswerBlock, AnswerPart, SourceCited } from '../../src/lib/answer'
 
 
-const CITATION_GROUP_PATTERN = /\[M\d+(?:,\s*M\d+){0,7}\]/g
+const CITATION_GROUP_PATTERN = /\[M\d+(?:,\s*M\d+){0,7}\]/gu
 const FRAGMENTS_PER_ANSWER = 12
 const SEEDS_MAX = 300
+
+const FRAGMENTS_ASTERISK = Object.freeze([
+    '**QR code**',
+    '**',
+    '*',
+    '***',
+    ' ',
+    'Sam drafts it',
+    ': ',
+    '\n',
+    '- ',
+    '2 ** 3',
+    'x**y**z',
+])
+
+const FRAGMENTS_STRONG = Object.freeze([
+    '**QR code sign-up flow**',
+    '**Friday [M1]**',
+    '**Due**',
+    ': ',
+    'Sam drafts it',
+    ' ',
+    '[M1]',
+    '. ',
+    '\n',
+    '- ',
+])
 
 const LINES_GENERATED = Object.freeze([
     '',
@@ -57,9 +85,23 @@ const SOURCE_MOMENT = ask_source_build({
 function block_contents(blocks: readonly AnswerBlock[]): string[] {
     assert(blocks.every((block) => block.kind === 'paragraph' || block.items.length > 0))
 
-    return blocks.flatMap(
+    const contents = blocks.flatMap(
         (block) => block.kind === 'paragraph' ? block.text.split('\n') : block.items,
     )
+
+    assert(contents.length >= blocks.length)
+
+    return contents
+}
+
+function claims_of(parts: readonly AnswerPart[]): string[] {
+    assert(parts.every((part) => part.cited === null || part.cited.number > 0))
+
+    const offsets = parts.flatMap((part, offset) => part.cited === null ? [] : [offset])
+
+    assert(offsets.length <= parts.length)
+
+    return offsets.map((offset) => answer_claim(parts, offset))
 }
 
 function generated(seed: number, fragments: readonly string[]): string[] {
@@ -104,6 +146,23 @@ function numbered(entries: [string, number][]): SourceCited[] {
     })
 }
 
+function styled(parts: readonly AnswerPart[]): string {
+    assert(parts.every((part) => part.cited === null))
+
+    return parts.map((part) => part.strong ? `**${part.text}**` : part.text).join('')
+}
+
+function texts_shown(streamed: string, cited: readonly SourceCited[]): string[] {
+    assert(typeof streamed === 'string')
+    assert(cited.every((entry) => entry.number > 0))
+
+    const settled = answer_settled(streamed, true)
+
+    return block_contents(answer_blocks(settled))
+        .flatMap((text) => answer_parts(text, cited))
+        .map((part) => part.text)
+}
+
 describe('answer_blocks', () => {
     it('splits paragraphs and lists, and keeps a run of items in one list', () => {
         const answer = [
@@ -146,7 +205,7 @@ describe('answer_blocks', () => {
 
             const expected = lines
                 .filter((line) => line.length > 0)
-                .map((line) => line.replace(/^(?:[-*]|\d+[.)]) /, ''))
+                .map((line) => line.replace(/^(?:[-*]|\d+[.)]) /u, ''))
 
             expect(block_contents(answer_blocks(lines.join('\n')))).toEqual(expected)
         }
@@ -171,6 +230,32 @@ describe('answer_settled', () => {
         expect(answer_settled('Steps:\n2', true)).toBe('Steps:')
         expect(answer_settled('Steps:\n2.', true)).toBe('Steps:')
         expect(answer_settled('Steps:\n2. Send', true)).toBe('Steps:\n2. Send')
+    })
+
+    it('holds back bold text until its closing asterisks arrive', () => {
+        const closed = '- **QR code sign-up flow**'
+
+        expect(answer_settled('- **QR code', true)).toBe('- ')
+        expect(answer_settled('- **QR code sign-up flow*', true)).toBe('- ')
+        expect(answer_settled(closed, true)).toBe(closed)
+        expect(answer_settled('Sam drafts it *', true)).toBe('Sam drafts it ')
+        expect(answer_settled('2 ** 3', true)).toBe('2 ** 3')
+        expect(answer_settled('- **QR code', false)).toBe('- **QR code')
+    })
+
+    it('shows no asterisk of a bold span at any point while it streams', () => {
+        const cited = numbered([['M1', 1]])
+
+        for (let seed = 1; seed <= SEEDS_MAX; seed += 1) {
+            const answer = generated(seed, FRAGMENTS_STRONG).join('')
+            const shown: string[] = []
+
+            for (let length = 0; length <= answer.length; length += 1) {
+                shown.push(...texts_shown(answer.slice(0, length), cited))
+            }
+
+            expect(shown.filter((text) => text.includes('*'))).toEqual([])
+        }
     })
 
     it('shows a prefix of each streamed answer with no half-written citation', () => {
@@ -211,6 +296,34 @@ describe('answer_parts', () => {
         expect(marked(answer_parts('First.\n[M9] Second.', []))).toBe('First.\n Second.')
     })
 
+    it('sets bold spans apart and drops their asterisks', () => {
+        const cited = numbered([['M2', 1]])
+        const parts = answer_parts('**QR code sign-up flow**: Sam drafts it [M2].', cited)
+        const strong = parts.filter((part) => part.strong).map((part) => part.text)
+
+        expect(marked(parts)).toBe('QR code sign-up flow: Sam drafts it <1>.')
+        expect(strong).toEqual(['QR code sign-up flow'])
+    })
+
+    it('leaves asterisks that wrap no words as they are', () => {
+        const parts = answer_parts('2 ** 3, a ** b, **open, and **spaced **', [])
+
+        expect(marked(parts)).toBe('2 ** 3, a ** b, **open, and **spaced **')
+        expect(parts.some((part) => part.strong)).toBe(false)
+    })
+
+    it('rebuilds each answer from its bold and plain parts', () => {
+        for (let seed = 1; seed <= SEEDS_MAX; seed += 1) {
+            const answer = generated(seed, FRAGMENTS_ASTERISK).join('')
+            const parts = answer_parts(answer, [])
+            const strong = parts.filter((part) => part.strong).map((part) => part.text)
+
+            expect(styled(parts)).toBe(answer)
+            expect(strong.filter((text) => text.length === 0 || text.trim() !== text)).toEqual([])
+            expect(strong.filter((text) => text.includes('\n'))).toEqual([])
+        }
+    })
+
     it('shows one source per known marker and no marker text', () => {
         const cited = numbered([['M1', 1], ['M2', 2]])
 
@@ -218,10 +331,43 @@ describe('answer_parts', () => {
             const answer = generated(seed, SENTENCES_CITED).join('')
             const parts = answer_parts(answer, cited)
             const groups = answer.match(CITATION_GROUP_PATTERN) ?? []
-            const known = groups.flatMap((group) => group.match(/M[12]\b/g) ?? [])
+            const known = groups.flatMap((group) => group.match(/M[12]\b/gu) ?? [])
 
             expect(parts.filter((part) => part.cited !== null)).toHaveLength(known.length)
-            expect(parts.some((part) => /M\d/.test(part.text))).toBe(false)
+            expect(parts.some((part) => /M\d/u.test(part.text))).toBe(false)
+        }
+    })
+})
+
+describe('answer_claim', () => {
+    it('takes the sentence a citation follows, shared by citations side by side', () => {
+        const cited = numbered([['M1', 1], ['M2', 2]])
+        const parts = answer_parts('Sam drafts it [M1]. Priya reviews it [M2][M1]. Done.', cited)
+        const [drafts, reviews, beside] = claims_of(parts)
+
+        expect(drafts).toContain('Sam drafts it')
+        expect(drafts).not.toContain('Priya')
+        expect(reviews).toContain('Priya reviews it')
+        expect(reviews).not.toContain('Sam')
+        expect(beside).toBe(reviews)
+    })
+
+    it('takes the whole item when nothing comes before its citation', () => {
+        const parts = answer_parts('[M1] Sam drafts it.', numbered([['M1', 1]]))
+
+        expect(claims_of(parts)).toEqual(['Sam drafts it.'])
+    })
+
+    it('draws each claim from the words of its own answer', () => {
+        const cited = numbered([['M1', 1], ['M2', 2]])
+
+        for (let seed = 1; seed <= SEEDS_MAX; seed += 1) {
+            const parts = answer_parts(generated(seed, SENTENCES_CITED).join(''), cited)
+            const words = parts.map((part) => part.text).join('')
+
+            for (const claim of claims_of(parts)) {
+                expect(words).toContain(claim)
+            }
         }
     })
 })
@@ -237,6 +383,17 @@ describe('answer_plain', () => {
             'Sources:',
             `[1] Retro, ${source_date(MEETING_RETRO)}, 2:06`,
             `[2] Weekly sync, ${source_date(MEETING_WEEKLY)}, Decisions`,
+        ].join('\n'))
+    })
+
+    it('drops the asterisks of bold text', () => {
+        const cited = numbered([['M2', 1]])
+
+        expect(answer_plain('- **QR code**: Sam drafts it [M2].', cited)).toBe([
+            '- QR code: Sam drafts it [1].',
+            '',
+            'Sources:',
+            `[1] Retro, ${source_date(MEETING_RETRO)}, 2:06`,
         ].join('\n'))
     })
 

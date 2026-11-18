@@ -39,7 +39,7 @@ class AccountLedgerEntryInline(admin.TabularInline):
 class AccountAdmin(admin.ModelAdmin):
     actions = ['code_issue', 'complimentary_end', 'complimentary_start']
     inlines = [AccountLedgerEntryInline]
-    list_filter = ['campaign', 'is_active', 'is_complimentary']
+    list_filter = ['campaign', 'is_active', 'is_complimentary', 'region']
     ordering = ['-created_datetime']
     search_fields = ['email', 'name']
 
@@ -49,6 +49,7 @@ class AccountAdmin(admin.ModelAdmin):
         'campaign',
         'created_datetime',
         'balance_hours',
+        'region',
         'is_complimentary',
         'is_active',
     ]
@@ -59,6 +60,7 @@ class AccountAdmin(admin.ModelAdmin):
         'campaign',
         'created_datetime',
         'balance_hours',
+        'region',
         'is_complimentary',
         'is_active',
     ]
@@ -71,6 +73,7 @@ class AccountAdmin(admin.ModelAdmin):
         'is_active',
         'is_complimentary',
         'name',
+        'region',
     ]
 
     def _change_permitted(self, request: HttpRequest) -> bool:
@@ -82,6 +85,10 @@ class AccountAdmin(admin.ModelAdmin):
         return user.has_perm(PERMISSION_ACCOUNT_CHANGE)
 
     def _selection_bounded(self, request: HttpRequest, count: int) -> bool:
+        if count < 0:
+            message = f'count must not be negative: {count}'
+            raise ValueError(message)
+
         if count <= ACCOUNT_ACTION_COUNT_MAX:
             return True
 

@@ -28,4 +28,4 @@ The app checks for a new version when it starts and offers to install it.
 
 ## Uninstall
 
-Remove the app the usual way for your system. Your recordings, notes, and keys stay behind, so tick *Delete the application data* in the Windows uninstaller, delete `~/.local/share/com.stratusadv.remi` on Linux, or drag *remi* from *Applications* to the Trash and delete `~/Library/Application Support/com.stratusadv.remi` on macOS. A microphone capture stays in its own folder.
+Remove the app the usual way for your system. Your recordings, notes, and sign-in stay behind, so tick *Delete the application data* in the Windows uninstaller, delete `~/.local/share/com.stratusadv.remi` on Linux, or drag *remi* from *Applications* to the Trash and delete `~/Library/Application Support/com.stratusadv.remi` on macOS. A microphone capture stays in its own folder.

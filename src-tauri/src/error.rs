@@ -13,11 +13,14 @@ pub(crate) enum AppError {
     #[error("export error: {0}")]
     Export(String),
 
+    #[error("io error: {0}")]
+    IO(#[from] std::io::Error),
+
     #[error("search index error: {0}")]
     Index(String),
 
-    #[error("io error: {0}")]
-    IO(#[from] std::io::Error),
+    #[error("internal error: {0}")]
+    Internal(String),
 
     #[error("network error: {}", error_chain_describe(.0))]
     Network(#[from] reqwest::Error),
@@ -50,6 +53,8 @@ impl Serialize for AppError {
     }
 }
 
+pub(crate) type AppResult<T> = Result<T, AppError>;
+
 pub(crate) fn error_chain_describe(error: &dyn std::error::Error) -> String {
     let mut described = error.to_string();
     let mut source = error.source();
@@ -77,8 +82,6 @@ pub(crate) fn error_chain_describe(error: &dyn std::error::Error) -> String {
     described
 }
 
-pub(crate) type AppResult<T> = Result<T, AppError>;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,17 +89,17 @@ mod tests {
     #[derive(Debug, thiserror::Error)]
     #[error("{text}")]
     struct Layered {
-        text: &'static str,
         source: Option<Box<Self>>,
+        text: &'static str,
     }
 
     fn layered(texts: &[&'static str]) -> Layered {
         assert_ne!(texts.len(), 0);
 
-        let mut error = Layered { text: texts[texts.len() - 1], source: None };
+        let mut error = Layered { source: None, text: texts[texts.len() - 1] };
 
         for text in texts.iter().rev().skip(1) {
-            error = Layered { text, source: Some(Box::new(error)) };
+            error = Layered { source: Some(Box::new(error)), text };
         }
 
         error

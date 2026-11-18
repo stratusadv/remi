@@ -32,7 +32,7 @@ const api = Object.freeze({ drag_job, drag_point, drag_press, drag_target, drop_
 
 
 export function use_job_drag(): typeof api {
-    assert(Object.isFrozen(api))
+    assert(drag_target.value === null || drag_job.value !== null)
     assert(drag_job.value === null || press.value !== null)
 
     return api
@@ -65,6 +65,7 @@ function drag_end(): void {
     window.removeEventListener('pointercancel', drag_end)
     window.removeEventListener('pointermove', pointer_move)
     window.removeEventListener('pointerup', pointer_up)
+    window.removeEventListener('scroll', drag_target_refresh, true)
 
     press.value = null
     drag_job.value = null
@@ -93,6 +94,16 @@ function drag_press(event: PointerEvent, job: JobListing): void {
     window.addEventListener('pointercancel', drag_end)
     window.addEventListener('pointermove', pointer_move)
     window.addEventListener('pointerup', pointer_up)
+    window.addEventListener('scroll', drag_target_refresh, { capture: true, passive: true })
+}
+
+function drag_target_refresh(event: Event): void {
+    assert(event.type === 'scroll')
+    assert(press.value !== null, 'a scroll was followed with no press held')
+
+    if (drag_job.value === null) return
+
+    drag_target.value = folder_at(drag_point.value)
 }
 
 function drop_blocked(name: FolderName): boolean {

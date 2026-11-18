@@ -12,15 +12,15 @@ use std::time::Duration;
 use tauri::{LogicalSize, Manager, WebviewWindow};
 
 #[cfg(target_os = "linux")]
-#[derive(Default)]
-pub(crate) struct ResizeHold(Mutex<Option<SourceId>>);
-
-#[cfg(target_os = "linux")]
 const HOLD_DURATION_MAX: Duration = Duration::from_millis(200);
 
 #[cfg(target_os = "linux")]
 const HOLD_STATES: gdk::WindowState =
     gdk::WindowState::FULLSCREEN.union(gdk::WindowState::MAXIMIZED).union(gdk::WindowState::TILED);
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+pub(crate) struct ResizeHold(Mutex<Option<SourceId>>);
 
 #[cfg(target_os = "linux")]
 fn hold(window: &WebviewWindow) {

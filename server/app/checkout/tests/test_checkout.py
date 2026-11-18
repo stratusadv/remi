@@ -7,7 +7,6 @@ import stripe
 
 from typing_extensions import TYPE_CHECKING
 
-from pydantic import ValidationError
 from stripe.params.checkout import SessionCreateParams
 
 from app.account.constants import SECONDS_PER_HOUR
@@ -23,6 +22,7 @@ from app.core.exceptions import CheckoutUnknownError, PaymentsUnavailableError
 from harness.api import (
     ACCOUNT_CHECKOUT_FINISH_PATH,
     ACCOUNT_CHECKOUT_PATH,
+    ACCOUNT_PATH,
     account_create,
     account_get,
     api_post,
@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.django_db
+LOGGER_API = 'app.api.v1.api'
 LOGGER_CLIENT = 'app.checkout.client'
 RETURN_PATH = '/checkout/return/'
 RETURN_URL = f'http://testserver{RETURN_PATH}'
@@ -172,7 +173,9 @@ def test_checkout_finish_credits_a_paid_session_once_however_often_it_is_sent(
         assert response.json()['paid'] is True
         assert response.json()['account']['balance_seconds'] == PURCHASE_SECONDS
 
-    assert account_get(client, token)['balance_seconds'] == PURCHASE_SECONDS
+    balance_seconds = account_get(client, token)['balance_seconds']
+
+    assert balance_seconds == PURCHASE_SECONDS
     assert AccountLedgerEntry.objects.purchases().count() == 1
 
 
@@ -219,6 +222,7 @@ def test_checkout_finish_refuses_a_request_without_a_session(
 
 
 def test_checkout_finish_treats_another_accounts_session_as_unknown(
+    caplog: pytest.LogCaptureFixture,
     client: Client,
     stripe_fake: StripeFake,
 ) -> None:
@@ -230,16 +234,20 @@ def test_checkout_finish_treats_another_accounts_session_as_unknown(
 
     refused = checkout_finish(client, session_id=session_id, token=other)
     missing = checkout_finish(client, session_id='cs_test_missing', token=other)
+    balance_seconds_owner = account_get(client, owner)['balance_seconds']
+    balance_seconds_other = account_get(client, other)['balance_seconds']
 
     assert refused.status_code == 404
     assert refused.json() == missing.json()
     assert refused.json()['error']['message'] == CHECKOUT_SESSION_UNKNOWN_MESSAGE
-    assert account_get(client, owner)['balance_seconds'] == 0
-    assert account_get(client, other)['balance_seconds'] == 0
+    assert balance_seconds_owner == 0
+    assert balance_seconds_other == 0
     assert AccountLedgerEntry.objects.purchases().count() == 0
+    assert 'Stripe refused checkout session cs_test_missing: ' in caplog.text
 
 
 def test_checkout_never_serves_a_secret_key_set_as_the_publishable_key(
+    caplog: pytest.LogCaptureFixture,
     client: Client,
     settings: Settings,
     stripe_fake: StripeFake,
@@ -249,8 +257,9 @@ def test_checkout_never_serves_a_secret_key_set_as_the_publishable_key(
 
     settings.STRIPE_PUBLISHABLE_KEY = STRIPE_SECRET_KEY
 
-    with pytest.raises(ValidationError, match='other than a Stripe publishable key'):
-        account_get(client, token)
+    with caplog.at_level(logging.ERROR, logger=LOGGER_API):
+        headers = {'Authorization': f'Bearer {token}'}
+        refused = client.get(ACCOUNT_PATH, headers=headers)
 
     body = {'hours': PRICE_HOURS}
     started = api_post(client, ACCOUNT_CHECKOUT_PATH, body=body, token=token)
@@ -259,6 +268,10 @@ def test_checkout_never_serves_a_secret_key_set_as_the_publishable_key(
     assert started.status_code == 200
     assert STRIPE_SECRET_KEY.encode() not in started.content
     assert len(stripe_fake.created) == 1
+    assert refused.status_code == 500
+    assert refused.json()['error']['code'] == 'server_error'
+    assert STRIPE_SECRET_KEY.encode() not in refused.content
+    assert 'other than a Stripe publishable key' in caplog.text
 
 
 def test_checkout_paid_with_malformed_metadata_credits_nothing(stripe_fake: StripeFake) -> None:
@@ -309,10 +322,11 @@ def test_checkout_finish_refuses_a_paid_session_another_app_started(
     )
 
     refused = checkout_finish(client, session_id='cs_test_foreign', token=token)
+    balance_seconds = account_get(client, token)['balance_seconds']
 
     assert refused.status_code == 404
     assert refused.json()['error']['code'] == 'checkout_unknown'
-    assert account_get(client, token)['balance_seconds'] == 0
+    assert balance_seconds == 0
 
 
 def test_checkout_refused_by_stripe_reports_payments_unavailable(
@@ -339,10 +353,11 @@ def test_checkout_reuses_one_stripe_client_per_secret_key(settings: Settings) ->
 
     settings.STRIPE_SECRET_KEY = f'{STRIPE_SECRET_KEY}_rotated'
     rotated = stripe_client()
+    rotated_again = stripe_client()
 
     assert again is first
     assert rotated is not first
-    assert stripe_client() is rotated
+    assert rotated_again is rotated
 
     settings.STRIPE_SECRET_KEY = ''
 
@@ -373,10 +388,11 @@ def test_checkout_unpaid_unknown_or_unreachable_credits_nothing(
     stripe_fake.retrieve_error = stripe.APIConnectionError('timed out')
 
     unreachable = checkout_finish(client, session_id=session_id, token=token)
+    balance_seconds = account_get(client, token)['balance_seconds']
 
     assert unreachable.status_code == 503
     assert 'could not return checkout session' in caplog.text
-    assert account_get(client, token)['balance_seconds'] == 0
+    assert balance_seconds == 0
 
 
 def test_checkout_without_both_stripe_keys_reports_payments_unavailable(

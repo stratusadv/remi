@@ -28,6 +28,7 @@ const {
 
 function folder_active(name: FolderName): boolean {
     assert(name.length > 0)
+    assert(folders.value.includes(name))
 
     if (view_current.value !== 'jobs') return false
 
@@ -37,8 +38,13 @@ function folder_active(name: FolderName): boolean {
 function folder_menu(event: MouseEvent, name: FolderName): void {
     assert(event.type === 'contextmenu')
     assert(name.length > 0)
+    assert(folders.value.includes(name))
 
-    context_menu_open(event, folder_menu_items(name), folder_menu_select.bind(undefined, name))
+    const items = folder_menu_items(name)
+
+    assert(items.length > 0)
+
+    context_menu_open(event, items, folder_menu_select.bind(undefined, name))
 }
 
 async function folder_new(): Promise<void> {
@@ -106,6 +112,7 @@ async function folder_new(): Promise<void> {
 <style scoped>
 .sidebar-folders {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.25rem;
     margin-top: 1.25rem;
 }

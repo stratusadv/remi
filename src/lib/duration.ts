@@ -60,9 +60,9 @@ export function seconds_to_clock_hours(seconds: number): string {
 }
 
 export function unix_now(): number {
-    const now = Math.floor(Date.now() / MILLISECONDS_PER_SECOND)
+    const now = Math.max(0, Math.floor(Date.now() / MILLISECONDS_PER_SECOND))
 
-    assert(now >= 0, 'the clock reads a time before the epoch')
+    assert(now >= 0)
     assert(Number.isSafeInteger(now))
 
     return now
