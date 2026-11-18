@@ -83,20 +83,20 @@ test('the theme select switches to Standard and its Graphite colour scheme', asy
     await expect(html).toHaveAttribute('data-palette', 'cubist')
 })
 
-test('a theme change reports, and a mode or colour scheme change does not', async ({ page }) => {
+test('each change of mode, colour scheme, or theme reports a theme change', async ({ page }) => {
     const html = page.locator('html')
+    const theme = page.getByLabel('Theme', { exact: true })
 
     await actions_watch(page)
     await page.getByLabel('Mode', { exact: true }).selectOption('light')
-    await page.getByLabel('Colour scheme', { exact: true }).selectOption('nord')
 
     await expect(html).toHaveClass(/mode-light/u)
+    await expect.poll(async () => actions_reported(page)).toEqual(['change-theme'])
+
+    await page.getByLabel('Colour scheme', { exact: true }).selectOption('nord')
+
     await expect(html).toHaveAttribute('data-palette', 'nord')
-
-    const unreported = await actions_reported(page)
-    const theme = page.getByLabel('Theme', { exact: true })
-
-    expect(unreported).toEqual([])
+    await expect.poll(async () => actions_reported(page)).toEqual(['change-theme', 'change-theme'])
 
     await theme.selectOption('standard')
 
@@ -105,7 +105,13 @@ test('a theme change reports, and a mode or colour scheme change does not', asyn
     await theme.selectOption('cubism')
 
     await expect(html).toHaveAttribute('data-theme', 'cubism')
-    await expect.poll(async () => actions_reported(page)).toEqual(['change-theme', 'change-theme'])
+
+    await expect.poll(async () => actions_reported(page)).toEqual([
+        'change-theme',
+        'change-theme',
+        'change-theme',
+        'change-theme',
+    ])
 })
 
 test('the default template select feeds the Templates page', async ({ page }) => {

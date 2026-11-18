@@ -237,6 +237,70 @@ describe('ask reports', () => {
     })
 })
 
+describe('new chat reports', () => {
+    it('reports New chat from a started chat once, and not at its first question', async () => {
+        vi.mocked(ipc.notes_ask_streaming).mockResolvedValue('Sam drafts it [M1].')
+
+        await ask_state.ask('Who drafts the banner?', SCOPE_ALL)
+        await ask_state.chat_start()
+        await flushPromises()
+
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([
+            ['new-chat'],
+            ['ask-library-question'],
+            ['new-chat'],
+        ])
+
+        await ask_state.ask('What is due on Friday?', SCOPE_ALL)
+        await flushPromises()
+
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([
+            ['new-chat'],
+            ['ask-library-question'],
+            ['new-chat'],
+            ['ask-library-question'],
+        ])
+    })
+
+    it('reports nothing for New chat in an empty chat, once at its first question', async () => {
+        vi.mocked(ipc.notes_ask_streaming).mockResolvedValue('Sam drafts it [M1].')
+
+        await ask_state.chat_start()
+        await ask_state.chat_start()
+        await flushPromises()
+
+        expect(ipc.account_action_report).not.toHaveBeenCalled()
+
+        await ask_state.ask('Who drafts the banner?', SCOPE_ALL)
+        await flushPromises()
+
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([
+            ['new-chat'],
+            ['ask-library-question'],
+        ])
+    })
+
+    it('reports a new chat when a folder or meeting chat replaces a started chat', async () => {
+        vi.mocked(ipc.notes_ask_streaming).mockResolvedValue('Sam drafts it [M1].')
+
+        await ask_state.ask('Who drafts the banner?', SCOPE_ALL)
+        await ask_state.folder_ask('remi')
+        await ask_state.ask('What is due on Friday?', SCOPE_PROJECT)
+        await ask_state.meeting_ask('job-1')
+        await ask_state.ask('What did Sam say?', SCOPE_MEETING)
+        await flushPromises()
+
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([
+            ['new-chat'],
+            ['ask-library-question'],
+            ['new-chat'],
+            ['ask-folder-question'],
+            ['new-chat'],
+            ['ask-note-question'],
+        ])
+    })
+})
+
 describe('ask notices', () => {
     it('shows the wait for a turn, then the notice the turn came with', async () => {
         const seen: string[] = []

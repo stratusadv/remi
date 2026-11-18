@@ -68,6 +68,7 @@ const SCOPE_KINDS: readonly AskScope['kind'][] = Object.freeze(['all', 'meeting'
 const STATES_SETTLED: readonly ChatExchangeState[] = Object.freeze(['done', 'failed', 'stopped'])
 const exchanges = ref<Exchange[]>([])
 const chat_id = ref<ChatID>(crypto.randomUUID())
+const chat_reported = ref<ChatID | null>(null)
 const chats = ref<ChatSummary[]>([])
 const scope = ref<AskScope>(SCOPE_ALL)
 const sources_open = ref<ExchangeID[]>([])
@@ -88,6 +89,7 @@ const api = Object.freeze({
     ask,
     chat_open,
     chat_remove,
+    chat_start,
     chats_refresh,
     clear,
     folder_ask,
@@ -110,7 +112,7 @@ async function ask(question: string, asked_in: AskScope): Promise<void> {
 
     if (busy.value) return
 
-    if (exchanges.value.length === 0) action_report('new-chat')
+    if (exchanges.value.length === 0) chat_report()
 
     action_report(ACTION_OF_SCOPE[asked_in.kind])
 
@@ -158,6 +160,17 @@ async function chat_remove(id: ChatID): Promise<void> {
         })
 }
 
+function chat_report(): void {
+    assert(CHAT_ID_PATTERN.test(chat_id.value))
+    assert(exchanges.value.length === 0)
+
+    if (chat_reported.value === chat_id.value) return
+
+    chat_reported.value = chat_id.value
+
+    action_report('new-chat')
+}
+
 function chat_show(opened: ChatOpened): void {
     assert(CHAT_ID_PATTERN.test(opened.id))
     assert(opened.exchanges.length > 0)
@@ -172,6 +185,19 @@ function chat_show(opened: ChatOpened): void {
     sources_open.value = []
 
     assert(!busy.value)
+}
+
+async function chat_start(): Promise<void> {
+    assert(CHAT_ID_PATTERN.test(chat_id.value))
+    assert(exchanges.value.length <= EXCHANGES_MAX)
+
+    const started = exchanges.value.length > 0
+
+    return clear().then(() => {
+        if (started) chat_report()
+
+        assert(exchanges.value.length === 0)
+    })
 }
 
 async function chat_write(write: () => Promise<void>): Promise<void> {
@@ -361,7 +387,7 @@ async function folder_ask(name: FolderName): Promise<void> {
     assert(name.length > 0)
     assert(name.trim() === name)
 
-    return clear().then(() => {
+    return chat_start().then(() => {
         scope.value = { kind: 'project', project: name }
         view_set('ask')
     })
@@ -389,7 +415,7 @@ async function meeting_ask(job_id: JobID): Promise<void> {
     assert(job_id.length > 0)
     assert(job_id.trim() === job_id)
 
-    return clear().then(() => {
+    return chat_start().then(() => {
         scope.value = { kind: 'meeting', job_id }
         view_set('ask')
     })

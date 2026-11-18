@@ -53,7 +53,7 @@ Both services run on servers that Stratus Advanced Technologies operates, and ne
 
 ### Feature Counts
 
-The app tells remi's server each time you open an audio or video file to transcribe, start a recording, start a chat, ask a question on the *Ask* page, create a folder or a template, or change the theme. A question also names whether it covered one meeting, a folder, or all of your meetings. The server adds each one to that day's count for the feature, and the count holds nothing about you or your account.
+The app tells remi's server each time you open an audio or video file to transcribe, start a recording, start a chat, ask a question on the *Ask* page, create a folder or a template, or change the theme, colour scheme, or mode. A question also names whether it covered one meeting, a folder, or all of your meetings. The server adds each one to that day's count for the feature, and the count holds nothing about you or your account.
 
 ### Updates
 
