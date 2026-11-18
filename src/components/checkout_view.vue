@@ -1,27 +1,31 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import {
-    offer_cards,
-    offer_hours,
-    offer_price,
+    hours_is_valid,
+    hours_quote,
     price_format,
+    price_hour_text,
     use_account,
 } from '../composables/use_account'
+import { use_dialog } from '../composables/use_dialog'
 import { assert } from '../lib/assert'
 import { SECONDS_PER_HOUR } from '../lib/duration'
 import { error_friendly, error_shown } from '../lib/errors'
 import { log_warn } from '../lib/log'
 import { TEST_CARDS, checkout_preload, stripe_preload } from '../lib/stripe'
-import CheckoutOffers from './checkout_offers.vue'
+import CheckoutHours from './checkout_hours.vue'
 import NoticeBanner from './notice_banner.vue'
-import type { CheckoutForm, CheckoutPreloaded, TestCard } from '../lib/stripe'
-import type { AccountOffer, CheckoutSessionID } from '../types'
+import type { CheckoutForm, TestCard } from '../lib/stripe'
+import type { CheckoutSessionID } from '../types'
 
 
-type CheckoutPhase = 'choosing' | 'failed' | 'loading' | 'paid' | 'paying' | 'pending' | 'ready'
+type CheckoutPhase = 'choosing' | 'failed' | 'loading' | 'paying' | 'ready'
 
+const HOURS_DEFAULT = 10
 const MESSAGE_PAYMENTS_OFF = 'This server is not set up to take payments yet.'
 const MESSAGE_PENDING = 'Your payment is being confirmed. The hours appear as soon as it clears.'
+const POINT_ONE_TIME = 'One-time payment, no subscription'
+const POINT_UNLIMITED = 'Unlimited notes and Ask questions for monthly active users'
 const WAVE_BAR_STEP = 14
 const WAVE_HEIGHT = 120
 
@@ -79,19 +83,20 @@ const {
     checkout_start,
 } = use_account()
 
+const { message: dialog_message } = use_dialog()
 const error_text = ref<string | null>(null)
 const host_element = useTemplateRef<HTMLElement>('host_element')
-const offer_current = ref<AccountOffer | null>(null)
+const hours_current = ref<number | null>(null)
+const hours_input = ref<number | string>(HOURS_DEFAULT)
 const phase = ref<CheckoutPhase>('choosing')
 const price_text = ref('')
 const run_current = ref(0)
 const test_cards_shown = ref(false)
 const action_enabled = computed(() => phase.value === 'ready' || phase.value === 'failed')
 const fields_shown = computed(() => phase.value === 'ready' || phase.value === 'paying')
-const settled = computed(() => phase.value === 'paid' || phase.value === 'pending')
-const preloads = shallowRef<ReadonlyMap<number, Promise<CheckoutPreloaded>>>(new Map())
 const form_current = shallowRef<CheckoutForm | null>(null)
 const session_current = shallowRef<CheckoutSessionID | null>(null)
+const step = computed(() => (phase.value === 'choosing' ? 'choose' : 'pay'))
 
 const action_label = computed(() => {
     if (phase.value === 'failed') return 'Try again'
@@ -109,48 +114,36 @@ const balance_low = computed(() => {
     return seconds < SECONDS_PER_HOUR
 })
 
-const card_current = computed(() => {
+const currency_text = computed(() => account.value?.price_currency.toUpperCase() ?? '')
+
+const points = computed(() => {
     const current = account.value
-    const offer = offer_current.value
+
+    if (current === null) return []
+
+    return [
+        `${price_hour_text(current)} per hour of transcription`,
+        POINT_UNLIMITED,
+        POINT_ONE_TIME,
+    ]
+})
+
+const quote_current = computed(() => {
+    const current = account.value
+    const hours = hours_current.value
 
     if (current === null) return null
-    if (offer === null) return null
+    if (!hours_is_valid(current, hours)) return null
 
-    const cards = offer_cards(current.offers, current.balance_seconds)
-
-    return cards.find((card) => card.offer.hours === offer.hours) ?? null
+    return hours_quote(current, hours)
 })
 
-const saving_best = computed(() => {
-    const current = account.value
-
-    if (current?.payments !== true) return 0
-
-    const cards = offer_cards(current.offers, current.balance_seconds)
-
-    return Math.max(0, ...cards.map((card) => card.saving_percent))
-})
-
-const settled_text = computed(() => {
-    if (phase.value === 'pending') return MESSAGE_PENDING
-
-    return `You now have ${balance_text.value} of transcription.`
-})
-
-const settled_title = computed(() =>
-    phase.value === 'pending' ? 'Payment processing' : 'Payment received')
-
-const step = computed(() => {
-    if (phase.value === 'choosing') return 'choose'
-    if (settled.value) return 'settled'
-
-    return 'pay'
-})
+const rate_text = computed(() => (account.value === null ? '' : price_hour_text(account.value)))
 
 
 watch(() => account.value?.publishable_key ?? '', key_preload, { immediate: true })
 
-onBeforeUnmount(checkout_leave)
+onBeforeUnmount(checkout_unmount)
 
 function account_retry(): void {
     assert(phase.value === 'choosing')
@@ -161,7 +154,7 @@ function account_retry(): void {
 
 function action_click(): void {
     assert(step.value === 'pay')
-    assert(offer_current.value !== null)
+    assert(hours_current.value !== null)
 
     if (phase.value === 'failed') {
         void checkout_restart()
@@ -173,32 +166,21 @@ function action_click(): void {
 }
 
 function checkout_back(): void {
-    assert(step.value !== 'choose')
-    assert(offer_current.value !== null)
+    assert(step.value === 'pay')
+    assert(hours_current.value !== null)
 
     if (phase.value === 'paying') return
 
     checkout_unmount()
 
-    offer_current.value = null
+    hours_current.value = null
     phase.value = 'choosing'
 }
 
-function checkout_leave(): void {
-    const pending = phase.value === 'pending'
-
-    assert(!pending || form_current.value === null)
-    assert(!pending || offer_current.value !== null)
-
-    checkout_unmount()
-
-    if (pending) void account_load()
-}
-
 async function checkout_mount(): Promise<void> {
-    const offer = offer_current.value
+    const hours = hours_current.value
 
-    assert(offer !== null)
+    assert(hours !== null)
     assert(phase.value !== 'paying')
 
     run_current.value += 1
@@ -207,17 +189,17 @@ async function checkout_mount(): Promise<void> {
 
     phase.value = 'loading'
     error_text.value = null
-    price_text.value = offer_price(offer)
+    price_text.value = quote_current.value?.price_text ?? ''
 
-    return checkout_prepare(run, offer).catch((error: unknown) => {
+    return checkout_prepare(run, hours).catch((error: unknown) => {
         checkout_failed(run, error)
     })
 }
 
-async function checkout_open(run: number, key: string, offer: AccountOffer): Promise<void> {
+async function checkout_open(run: number, key: string, hours: number): Promise<void> {
     assert(run <= run_current.value)
     assert(key.startsWith('pk_'))
-    assert(offer.hours > 0)
+    assert(Number.isSafeInteger(hours))
 
     if (run !== run_current.value) return
 
@@ -225,42 +207,34 @@ async function checkout_open(run: number, key: string, offer: AccountOffer): Pro
 
     assert(host !== null)
 
-    const preloading = preload_take(key, offer)
+    const preloaded = await checkout_preload(key, checkout_start(hours))
 
-    return preloading.then(async (preloaded) => {
-        if (run !== run_current.value) {
-            if (!preloads.value.has(offer.hours)) {
-                preloads.value = new Map([...preloads.value, [offer.hours, preloading]])
-            }
+    if (run !== run_current.value) return
 
-            return
-        }
+    const form = await preloaded.open(host)
 
-        const form = await preloaded.open(host)
+    if (run !== run_current.value) {
+        form.destroy()
 
-        if (run !== run_current.value) {
-            form.destroy()
+        return
+    }
 
-            return
-        }
-
-        form_current.value = form
-        session_current.value = preloaded.session_id
-        price_text.value = price_format(form.amount, form.currency)
-        test_cards_shown.value = form.confirm_test !== null
-        phase.value = 'ready'
-    })
+    form_current.value = form
+    session_current.value = preloaded.session_id
+    price_text.value = price_format(form.amount, form.currency)
+    test_cards_shown.value = form.confirm_test !== null
+    phase.value = 'ready'
 }
 
-async function checkout_prepare(run: number, offer: AccountOffer): Promise<void> {
+async function checkout_prepare(run: number, hours: number): Promise<void> {
     assert(run === run_current.value)
-    assert(offer === offer_current.value)
+    assert(hours === hours_current.value)
 
     const key = account.value?.publishable_key ?? ''
 
     if (key === '') throw new Error(MESSAGE_PAYMENTS_OFF)
 
-    return nextTick().then(async () => checkout_open(run, key, offer))
+    return nextTick().then(async () => checkout_open(run, key, hours))
 }
 
 function checkout_failed(run: number, error: unknown): void {
@@ -276,7 +250,7 @@ function checkout_failed(run: number, error: unknown): void {
 
 async function checkout_restart(): Promise<void> {
     assert(step.value === 'pay')
-    assert(offer_current.value !== null)
+    assert(hours_current.value !== null)
 
     if (phase.value === 'paying') return
 
@@ -293,7 +267,7 @@ async function checkout_restart_reloaded(run: number): Promise<void> {
     if (run !== run_current.value) return
 
     assert(phase.value === 'loading')
-    assert(offer_current.value !== null)
+    assert(hours_current.value !== null)
 
     return checkout_mount()
 }
@@ -315,56 +289,35 @@ function checkout_unmount(): void {
     test_cards_shown.value = false
 }
 
-function finish_failed(error: unknown): CheckoutPhase {
+function finish_failed(error: unknown): boolean {
+    assert(error !== undefined)
+    assert(session_current.value === null || phase.value === 'paying')
+
     log_warn('[checkout] the paid session could not be credited yet', error)
 
-    return 'pending'
+    return false
+}
+
+function hours_choose(hours: number): void {
+    assert(account.value !== null)
+    assert(hours_is_valid(account.value, hours))
+
+    if (phase.value !== 'choosing') return
+
+    assert(hours_current.value === null)
+
+    hours_current.value = hours
+
+    void checkout_mount()
 }
 
 function key_preload(key: string): void {
     assert(key === (account.value?.publishable_key ?? ''))
     assert(key === '' || key.startsWith('pk_'))
 
-    preloads.value = new Map()
-
     if (key === '') return
 
     stripe_preload(key)
-}
-
-function offer_choose(offer: AccountOffer): void {
-    assert(offer.hours > 0)
-    assert(account.value?.offers.some((option) => option.hours === offer.hours) === true)
-
-    if (phase.value !== 'choosing') return
-
-    assert(offer_current.value === null)
-
-    offer_current.value = offer
-
-    void checkout_mount()
-}
-
-function offer_consider(offer: AccountOffer): void {
-    const key = account.value?.publishable_key ?? ''
-    const offers = account.value?.offers ?? []
-
-    assert(phase.value === 'choosing')
-    assert(Number.isSafeInteger(offer.hours))
-
-    if (key === '') return
-    if (preloads.value.has(offer.hours)) return
-    if (preloads.value.size >= offers.length) return
-
-    const preloading = checkout_preload(key, checkout_start(offer.hours))
-    const failed = preload_failed.bind(undefined, offer.hours, preloading)
-
-    preloads.value = new Map([...preloads.value, [offer.hours, preloading]])
-    void preloading.catch(failed)
-}
-
-function paid_phase(paid: boolean): CheckoutPhase {
-    return paid ? 'paid' : 'pending'
 }
 
 async function pay(card: TestCard | null): Promise<void> {
@@ -416,6 +369,26 @@ function pay_refused(run: number, form: CheckoutForm, refusal: string): void {
     error_text.value = refusal
 }
 
+async function pay_settled(run: number, form: CheckoutForm, paid: boolean): Promise<void> {
+    assert(run <= run_current.value)
+    assert(run !== run_current.value || form === form_current.value)
+
+    form.destroy()
+
+    if (run === run_current.value) {
+        assert(phase.value === 'paying')
+
+        checkout_unmount()
+
+        hours_current.value = null
+        phase.value = 'choosing'
+    }
+
+    if (!paid) void account_load()
+
+    return settled_announce(paid)
+}
+
 async function pay_submit(
     form: CheckoutForm,
     session_id: CheckoutSessionID,
@@ -437,57 +410,22 @@ async function pay_submit(
             return
         }
 
-        const outcome = await checkout_finish(session_id).then(paid_phase, finish_failed)
+        const paid = await checkout_finish(session_id).catch(finish_failed)
 
-        pay_settled(run, form, outcome)
+        return pay_settled(run, form, paid)
     })
 }
 
-function preload_failed(
-    hours: number,
-    preloading: Promise<CheckoutPreloaded>,
-    error: unknown,
-): void {
-    const held = preloads.value
+async function settled_announce(paid: boolean): Promise<void> {
+    assert(typeof paid === 'boolean')
 
-    assert(hours > 0)
-    assert(held.get(hours) === preloading || ![...held.values()].includes(preloading))
+    if (!paid) return dialog_message(MESSAGE_PENDING, { title: 'Payment processing' })
 
-    if (held.get(hours) === preloading) {
-        preloads.value = new Map([...held].filter(([entry_hours]) => entry_hours !== hours))
-    }
+    assert(account.value !== null)
 
-    log_warn('[checkout] a pack could not be prepared before it was chosen', error)
-}
+    const text = `Your payment went through. You now have ${balance_text.value} of transcription.`
 
-async function preload_take(key: string, offer: AccountOffer): Promise<CheckoutPreloaded> {
-    assert(key.length > 0)
-    assert(offer.hours > 0)
-
-    const preloading = preloads.value.get(offer.hours)
-
-    preloads.value = new Map([...preloads.value].filter(([hours]) => hours !== offer.hours))
-
-    return preloading ?? checkout_preload(key, checkout_start(offer.hours))
-}
-
-function pay_settled(run: number, form: CheckoutForm, outcome: CheckoutPhase): void {
-    assert(outcome === 'paid' || outcome === 'pending')
-    assert(run <= run_current.value)
-    assert(run !== run_current.value || form === form_current.value)
-
-    form.destroy()
-
-    if (run !== run_current.value) {
-        if (outcome === 'pending') void account_load()
-
-        return
-    }
-
-    assert(phase.value === 'paying')
-
-    form_current.value = null
-    phase.value = outcome
+    return dialog_message(text, { kind: 'success', title: 'Thank you' })
 }
 
 function test_pay(card: TestCard): void {
@@ -499,12 +437,9 @@ function test_pay(card: TestCard): void {
 </script>
 
 <template>
-    <section class="checkout-view">
-        <header class="checkout-header" :data-step="step">
+    <section class="checkout-view view-stretch" :data-step="step">
+        <header class="checkout-header">
             <div class="checkout-header-copy">
-                <p v-if="step === 'choose' && saving_best > 0" class="eyebrow checkout-eyebrow">
-                    Save up to {{ saving_best }}% with a bigger pack
-                </p>
                 <div class="checkout-title-row">
                     <h2 class="checkout-title">Buy hours</h2>
                     <p class="checkout-balance" :data-low="balance_low">
@@ -512,9 +447,22 @@ function test_pay(card: TestCard): void {
                         {{ balance_line }}
                     </p>
                 </div>
-                <p v-if="step === 'choose'" class="checkout-lede">
-                    Hours pay for transcription only. Notes, Ask, and exports never use them.
-                </p>
+                <ul v-if="step === 'choose' && points.length > 0" class="checkout-points">
+                    <li v-for="point in points" :key="point">
+                        <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            aria-hidden="true"
+                        >
+                            <path d="M5 12.5l4.5 4.5L19 7.5" />
+                        </svg>
+                        {{ point }}
+                    </li>
+                </ul>
             </div>
             <svg
                 v-if="step === 'choose'"
@@ -561,11 +509,10 @@ function test_pay(card: TestCard): void {
             </div>
 
             <template v-else-if="account !== null">
-                <CheckoutOffers
-                    :balance_seconds="account.balance_seconds"
-                    :offers="account.offers"
-                    @choose="offer_choose"
-                    @consider="offer_consider"
+                <CheckoutHours
+                    v-model:hours="hours_input"
+                    :account="account"
+                    @choose="hours_choose"
                 />
                 <p class="checkout-note checkout-trust">
                     <svg
@@ -585,7 +532,7 @@ function test_pay(card: TestCard): void {
             </template>
         </div>
 
-        <div v-else-if="step === 'pay'" key="pay" class="checkout-step">
+        <div v-else key="pay" class="checkout-step">
             <button
                 type="button"
                 class="checkout-back"
@@ -603,30 +550,25 @@ function test_pay(card: TestCard): void {
                 >
                     <path d="M14.5 6l-6 6 6 6" />
                 </svg>
-                All packs
+                Change hours
             </button>
 
             <div class="checkout-pay">
-                <aside v-if="card_current !== null" class="checkout-order">
+                <aside
+                    v-if="hours_current !== null && quote_current !== null"
+                    class="checkout-order"
+                >
                     <h3 class="checkout-label">Order summary</h3>
                     <p class="checkout-order-hours">
-                        <span class="checkout-order-count">{{ card_current.offer.hours }}</span>
+                        <span class="checkout-order-count">{{ hours_current }}</span>
                         <span class="checkout-order-unit">
-                            {{ card_current.offer.hours === 1 ? 'hour' : 'hours' }} of transcription
+                            {{ hours_current === 1 ? 'hour' : 'hours' }} of transcription
                         </span>
                     </p>
                     <dl class="checkout-order-lines">
                         <div>
                             <dt>Per hour</dt>
-                            <dd>
-                                <span
-                                    v-if="card_current.saving_percent > 0"
-                                    class="checkout-order-saving"
-                                >
-                                    Save {{ card_current.saving_percent }}%
-                                </span>
-                                {{ card_current.rate_text }}
-                            </dd>
+                            <dd>{{ rate_text }}</dd>
                         </div>
                         <div>
                             <dt>Current balance</dt>
@@ -634,7 +576,7 @@ function test_pay(card: TestCard): void {
                         </div>
                         <div>
                             <dt>Balance after purchase</dt>
-                            <dd>{{ card_current.balance_after_text }}</dd>
+                            <dd>{{ quote_current.balance_after_text }}</dd>
                         </div>
                         <div>
                             <dt>Billing</dt>
@@ -644,17 +586,8 @@ function test_pay(card: TestCard): void {
                     <p class="checkout-order-total">
                         <span>Total</span>
                         <span class="checkout-order-amount">
-                            <s
-                                v-if="card_current.saving_percent > 0"
-                                class="checkout-order-regular"
-                            >
-                                <span class="sr-only">Regular price</span>
-                                {{ card_current.regular_text }}
-                            </s>
-                            {{ card_current.price_text }}
-                            <span class="checkout-order-currency">
-                                {{ card_current.offer.currency.toUpperCase() }}
-                            </span>
+                            {{ quote_current.price_text }}
+                            <span class="checkout-order-currency">{{ currency_text }}</span>
                         </span>
                     </p>
                 </aside>
@@ -750,46 +683,6 @@ function test_pay(card: TestCard): void {
                 </div>
             </div>
         </div>
-
-        <div v-else key="settled" class="checkout-step checkout-settled" role="status">
-            <span class="checkout-settled-badge" :data-phase="phase">
-                <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                >
-                    <path v-if="phase === 'paid'" d="M5 12.5l4.5 4.5L19 7.5" />
-                    <template v-else>
-                        <circle cx="12" cy="12" r="8" />
-                        <path d="M12 8v4l2.5 1.75" />
-                    </template>
-                </svg>
-            </span>
-            <p class="checkout-settled-title">{{ settled_title }}</p>
-            <p class="checkout-settled-text">{{ settled_text }}</p>
-            <dl v-if="phase === 'paid' && offer_current !== null" class="checkout-settled-lines">
-                <div>
-                    <dt>Hours added</dt>
-                    <dd>{{ offer_hours(offer_current) }}</dd>
-                </div>
-                <div>
-                    <dt>Amount paid</dt>
-                    <dd>{{ price_text }} {{ offer_current.currency.toUpperCase() }}</dd>
-                </div>
-            </dl>
-            <button
-                v-if="phase === 'paid'"
-                type="button"
-                class="btn-default checkout-settled-again"
-                @click="checkout_back"
-            >
-                Buy more hours
-            </button>
-        </div>
     </section>
 </template>
 
@@ -812,7 +705,7 @@ function test_pay(card: TestCard): void {
     margin-bottom: 1.5rem;
 }
 
-.checkout-header[data-step="choose"] {
+.checkout-view[data-step="choose"] .checkout-header {
     overflow: hidden;
     margin-bottom: 1.75rem;
     padding: 2rem 2.5rem;
@@ -829,10 +722,6 @@ function test_pay(card: TestCard): void {
     min-width: 0;
 }
 
-.checkout-eyebrow {
-    margin: 0 0 0.875rem;
-}
-
 .checkout-title-row {
     display: flex;
     flex-wrap: wrap;
@@ -844,18 +733,38 @@ function test_pay(card: TestCard): void {
     margin: 0;
 }
 
-.checkout-header[data-step="choose"] .checkout-title {
+.checkout-view[data-step="choose"] .checkout-title {
     font-size: 2.25rem;
     letter-spacing: -0.03em;
     line-height: 1.15;
 }
 
-.checkout-lede {
-    max-width: 40rem;
-    margin: 0.5rem 0 0;
-    color: var(--color-content-muted);
+.checkout-points {
+    display: grid;
+    gap: 0.5rem;
+    margin: 1.125rem 0 0;
+    padding: 0;
+    color: var(--color-content);
     font-size: 0.9375rem;
-    line-height: 1.55;
+    font-weight: 500;
+    line-height: 1.375rem;
+    list-style: none;
+}
+
+.checkout-points li {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+}
+
+.checkout-points svg {
+    flex: none;
+    width: 1.125rem;
+    height: 1.125rem;
+    padding: 0.1875rem;
+    border-radius: var(--radius-sm);
+    background-color: var(--color-accent-soft);
+    color: var(--color-accent-strong);
 }
 
 .checkout-balance {
@@ -1078,16 +987,6 @@ function test_pay(card: TestCard): void {
     font-variant-numeric: tabular-nums;
 }
 
-.checkout-order-saving {
-    padding: 0 0.5rem;
-    border-radius: 999px;
-    background-color: var(--color-accent-soft);
-    color: var(--color-accent-strong);
-    font-size: 0.75rem;
-    font-weight: 600;
-    line-height: 1.25rem;
-}
-
 .checkout-order-total {
     display: flex;
     align-items: baseline;
@@ -1114,15 +1013,6 @@ function test_pay(card: TestCard): void {
     font-size: 0.8125rem;
     font-weight: 500;
     letter-spacing: 0;
-}
-
-.checkout-order-regular {
-    margin-right: 0.5rem;
-    color: var(--color-content-subtle);
-    font-size: 1rem;
-    font-weight: 500;
-    letter-spacing: 0;
-    text-decoration-thickness: 1.5px;
 }
 
 .checkout-panel {
@@ -1279,97 +1169,42 @@ function test_pay(card: TestCard): void {
     font-size: 0.8125rem;
 }
 
-.checkout-settled {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    max-width: 34rem;
-    margin-inline: auto;
-    padding: 3.5rem 2.5rem 2.75rem;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-xl);
-    background-color: var(--color-panel);
-    text-align: center;
-}
+@container (min-width: 54rem) {
+    .checkout-view[data-step="choose"] {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        grid-template-rows: 1fr auto;
+        column-gap: 1.75rem;
+        max-height: 52rem;
+    }
 
-.checkout-settled-badge {
-    display: grid;
-    place-items: center;
-    width: 3.5rem;
-    height: 3.5rem;
-    border-radius: 999px;
-    background-color: var(--color-accent-soft);
-    box-shadow: 0 0 0 0.5rem color-mix(in oklab, var(--color-accent) 8%, transparent);
-    color: var(--color-accent-strong);
-    animation: checkout-badge-enter 360ms cubic-bezier(0.2, 0.9, 0.3, 1.25);
-}
+    .checkout-view[data-step="choose"] .checkout-header {
+        grid-column: 2;
+        grid-row: 1;
+        flex-direction: column;
+        align-items: stretch;
+        margin-bottom: 0;
+        padding: 2.25rem;
+    }
 
-.checkout-settled-badge[data-phase="pending"] {
-    background-color: var(--color-chip);
-    color: var(--color-content-muted);
-}
+    .checkout-view[data-step="choose"] .checkout-step {
+        display: grid;
+        grid-column: 1;
+        grid-row: 1 / span 2;
+        grid-template-rows: subgrid;
+    }
 
-.checkout-settled-badge svg {
-    width: 1.75rem;
-    height: 1.75rem;
-}
+    .checkout-wave {
+        width: 100%;
+    }
 
-.checkout-settled-title {
-    margin: 1.25rem 0 0.5rem;
-    color: var(--color-content-strong);
-    font-size: 1.375rem;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-}
-
-.checkout-settled-text {
-    max-width: 22rem;
-    margin: 0;
-    color: var(--color-content-muted);
-    font-size: 0.9375rem;
-    line-height: 1.55;
-}
-
-.checkout-settled-lines {
-    display: grid;
-    gap: 0.875rem;
-    width: 100%;
-    margin: 2.25rem 0 0;
-    padding: 1.25rem 1.5rem;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    background-color: var(--color-surface);
-    text-align: left;
-}
-
-.checkout-settled-lines div {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 1rem;
-}
-
-.checkout-settled-lines dt {
-    color: var(--color-content-muted);
-    font-size: 0.875rem;
-}
-
-.checkout-settled-lines dd {
-    margin: 0;
-    color: var(--color-content-strong);
-    font-size: 0.875rem;
-    font-weight: 500;
-    font-variant-numeric: tabular-nums;
-}
-
-.checkout-settled-again {
-    height: 2.75rem;
-    margin-top: 2rem;
-    padding-inline: 1.25rem;
+    .checkout-view[data-step="choose"] .hours-card {
+        max-width: none;
+    }
 }
 
 @container (max-width: 48rem) {
-    .checkout-header[data-step="choose"] {
+    .checkout-view[data-step="choose"] .checkout-header {
         padding: 2rem 1.75rem;
     }
 
@@ -1385,13 +1220,6 @@ function test_pay(card: TestCard): void {
     .checkout-order {
         border-right: 0;
         border-bottom: 1px solid var(--color-border);
-    }
-}
-
-@keyframes checkout-badge-enter {
-    from {
-        opacity: 0;
-        transform: scale(0.6);
     }
 }
 
@@ -1416,7 +1244,6 @@ function test_pay(card: TestCard): void {
 
 @media (prefers-reduced-motion: reduce) {
     .checkout-step,
-    .checkout-settled-badge,
     .checkout-spinner,
     .checkout-fields[data-phase="loading"] .checkout-ghost-field {
         animation: none;

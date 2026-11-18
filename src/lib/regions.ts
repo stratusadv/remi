@@ -2,9 +2,6 @@ import { assert } from './assert'
 import type { RegionCode } from '../types'
 
 
-export const REGION_OUTSIDE: RegionCode = 'outside'
-export const REGION_OUTSIDE_NAME = 'Outside Canada and the United States'
-
 export const REGIONS_CANADA: Readonly<Record<RegionCode, string>> = Object.freeze({
     'CA-AB': 'Alberta',
     'CA-BC': 'British Columbia',
@@ -21,67 +18,11 @@ export const REGIONS_CANADA: Readonly<Record<RegionCode, string>> = Object.freez
     'CA-YT': 'Yukon',
 })
 
-export const REGIONS_UNITED_STATES: Readonly<Record<RegionCode, string>> = Object.freeze({
-    'US-AL': 'Alabama',
-    'US-AK': 'Alaska',
-    'US-AZ': 'Arizona',
-    'US-AR': 'Arkansas',
-    'US-CA': 'California',
-    'US-CO': 'Colorado',
-    'US-CT': 'Connecticut',
-    'US-DE': 'Delaware',
-    'US-DC': 'District of Columbia',
-    'US-FL': 'Florida',
-    'US-GA': 'Georgia',
-    'US-HI': 'Hawaii',
-    'US-ID': 'Idaho',
-    'US-IL': 'Illinois',
-    'US-IN': 'Indiana',
-    'US-IA': 'Iowa',
-    'US-KS': 'Kansas',
-    'US-KY': 'Kentucky',
-    'US-LA': 'Louisiana',
-    'US-ME': 'Maine',
-    'US-MD': 'Maryland',
-    'US-MA': 'Massachusetts',
-    'US-MI': 'Michigan',
-    'US-MN': 'Minnesota',
-    'US-MS': 'Mississippi',
-    'US-MO': 'Missouri',
-    'US-MT': 'Montana',
-    'US-NE': 'Nebraska',
-    'US-NV': 'Nevada',
-    'US-NH': 'New Hampshire',
-    'US-NJ': 'New Jersey',
-    'US-NM': 'New Mexico',
-    'US-NY': 'New York',
-    'US-NC': 'North Carolina',
-    'US-ND': 'North Dakota',
-    'US-OH': 'Ohio',
-    'US-OK': 'Oklahoma',
-    'US-OR': 'Oregon',
-    'US-PA': 'Pennsylvania',
-    'US-RI': 'Rhode Island',
-    'US-SC': 'South Carolina',
-    'US-SD': 'South Dakota',
-    'US-TN': 'Tennessee',
-    'US-TX': 'Texas',
-    'US-UT': 'Utah',
-    'US-VT': 'Vermont',
-    'US-VA': 'Virginia',
-    'US-WA': 'Washington',
-    'US-WV': 'West Virginia',
-    'US-WI': 'Wisconsin',
-    'US-WY': 'Wyoming',
-})
-
 
 export function region_is_known(code: string): boolean {
     assert(typeof code === 'string')
 
-    const known = code === REGION_OUTSIDE
-        || Object.hasOwn(REGIONS_CANADA, code)
-        || Object.hasOwn(REGIONS_UNITED_STATES, code)
+    const known = Object.hasOwn(REGIONS_CANADA, code)
 
     if (known) assert(code === code.trim())
 

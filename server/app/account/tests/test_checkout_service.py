@@ -16,15 +16,16 @@ pytestmark = pytest.mark.django_db
 RETURN_URL = 'https://api.example.test/checkout/return/'
 
 
-def test_session_create_needs_an_offered_pack_an_absolute_return_url_and_a_saved_account(
+def test_session_create_needs_hours_in_range_an_absolute_return_url_and_a_saved_account(
     stripe_fake: StripeFake,
 ) -> None:
     account = create_test_account()
     unsaved = Account(email='unsaved@example.com', name='Unsaved')
     checkout = account.services.checkout
 
-    with pytest.raises(RequestInvalidError, match='no longer on offer'):
-        checkout.session_create(hours=49, return_url=RETURN_URL)
+    for hours in (-1, 0, 1_001):
+        with pytest.raises(RequestInvalidError, match='Choose from 1 to 1000 hours'):
+            checkout.session_create(hours=hours, return_url=RETURN_URL)
 
     for return_url in ('/checkout/return/', 'ftp://api.example.test/', 'remi://checkout'):
         with pytest.raises(ValueError, match='return_url must be an absolute http or https URL'):

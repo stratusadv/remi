@@ -19,7 +19,6 @@ import {
 import {
     CODE_PATTERN,
     address_unique,
-    delta_key,
     descriptor_read,
     fakes_control,
     messages_to,
@@ -48,19 +47,23 @@ const APPLICATION = process.env['REMI_WORLD_APPLICATION']
 const AUDIO_SAMPLE_RATE = 16_000
 const AUDIO_SECONDS = 12
 const BALANCE_AFTER_PURCHASE = 'You now have 59.9 hours of transcription.'
+const BALANCE_AFTER_QUOTE = '59.9 hours'
 const BURST_SAMPLES = 12_000
+const DIALOG_MESSAGE = '.app-dialog-message'
+const DIALOG_OK = '.app-dialog-actions .btn-primary'
 const GAP_SAMPLES = 4_000
-const OFFER_PRICE_CENTS = 1000
 const PCM_PEAK = 9_000
 const POSITION_X = 'x'
 const POSITION_Y = 'y'
+const PURCHASE_CENTS = 1000
+const PURCHASE_HOURS = 10
 const QUANTUM_PLACES = 10_000
 const SAMPLE_BYTES = 2
 const SCRIPT_EMIT = 'return window.__TAURI_INTERNALS__.invoke("plugin:event|emit", arguments[0])'
 const SECONDS_PER_HOUR = 3600
 const TITLE_ASK = 'answers a question about the meeting'
-const TITLE_PORTAL = 'lands each step of the journey in the portal under its campaign'
-const TITLE_PURCHASE = 'buys a pack of hours through the payment form'
+const TITLE_PORTAL = 'lands each step of the journey in the portal under its reference'
+const TITLE_PURCHASE = 'buys the hours typed on the card through the payment form'
 const TITLE_SIGN_UP = 'signs up with the code emailed by the conference page'
 const TITLE_TRANSCRIBE = 'transcribes a dropped recording and charges its seconds'
 const TONE_HERTZ = 220
@@ -228,23 +231,21 @@ async function journey_close(journey: Readonly<Journey>): Promise<void> {
 }
 
 async function journey_portal(journey: Readonly<Journey>): Promise<void> {
-    assert(journey.before.size > 0)
+    assert([...journey.before.values()].every((total) => total > 0))
 
     const hours = Math.round((AUDIO_SECONDS / SECONDS_PER_HOUR) * QUANTUM_PLACES) / QUANTUM_PLACES
-    const revenue = OFFER_PRICE_CENTS / 100
 
     assert(hours > 0)
 
     await portal_deltas_wait(journey.before, {
-        [delta_key({ campaign: 'wib', statistic: 'remi--funnel--activations' })]: 1,
-        [delta_key({ campaign: 'wib', statistic: 'remi--funnel--checkouts' })]: 1,
-        [delta_key({ campaign: 'wib', statistic: 'remi--funnel--paying-clients' })]: 1,
-        [delta_key({ campaign: 'wib', statistic: 'remi--funnel--promos' })]: 1,
-        [delta_key({ campaign: 'wib', statistic: 'remi--funnel--purchases' })]: 1,
-        [delta_key({ campaign: 'wib', statistic: 'remi--funnel--signups' })]: 1,
-        [delta_key({ campaign: 'wib', statistic: 'remi--sales--revenue' })]: revenue,
-        [delta_key({ campaign: 'wib', statistic: 'remi--usage--hours' })]: hours,
-        [delta_key({ campaign: 'wib', statistic: 'remi--usage--meetings' })]: 1,
+        'remi:acquisition:signup:completed': 1,
+        'remi:acquisition:signup:wib:promo-code': 1,
+        'remi:action:ask-library-question': 1,
+        'remi:action:hours-transcribed': hours,
+        'remi:action:meeting-transcribed': 1,
+        'remi:action:new-chat': 1,
+        'remi:action:purchase-hours': 1,
+        'remi:action:upload-recording': 1,
     })
 }
 
@@ -257,19 +258,23 @@ async function journey_purchase(journey: Readonly<Journey>): Promise<void> {
     assert(installed === 'function', 'the Stripe.js stand-in did not install')
 
     await click(session, css('.sidebar-balance-buy'))
-    await click(session, button_named('Buy 10 hours'))
+    await type(session, css('.hours-card-input'), String(PURCHASE_HOURS))
+    await text_wait(session, css('.hours-card-after'), BALANCE_AFTER_QUOTE)
+    await click(session, css('button.hours-card-buy'))
     await expect.poll(async () => (await sessions_unpaid()).length).toBe(1)
 
     const [unpaid] = await sessions_unpaid()
 
     assert(unpaid !== undefined)
-    assert(unpaid.amount_total === OFFER_PRICE_CENTS)
+    assert(unpaid.amount_total === PURCHASE_CENTS)
 
     await fakes_control('/control/stripe/pay', { session_id: unpaid.id })
     await text_wait(session, css('button.checkout-action'), 'Pay $10.00')
     await click(session, css('button.checkout-action'))
 
-    await text_wait(session, css('.checkout-settled-text'), BALANCE_AFTER_PURCHASE)
+    await text_wait(session, css('.app-dialog-title'), 'Thank you')
+    await text_wait(session, css(DIALOG_MESSAGE), BALANCE_AFTER_PURCHASE)
+    await click(session, css(DIALOG_OK))
     await text_wait(session, css('.sidebar-balance-text'), '59.9 hours left')
 }
 
@@ -278,14 +283,18 @@ async function journey_sign_up(journey: Readonly<Journey>): Promise<void> {
 
     const session = session_current(journey)
     const code = await code_emailed(journey.address)
+    const promo = code.toLowerCase()
 
     await text_wait(session, css('.welcome-title'), /Welcome to remi/u)
     await type(session, field_named('Name'), 'Avery Quinn')
     await type(session, field_named('Email'), journey.address)
     await click(session, region_named('Alberta'))
-    await type(session, field_named('Promo code (optional)'), code.toLowerCase())
+    await type(session, field_named('Promo code (optional)'), promo)
     await click(session, css('button.welcome-action'))
 
+    await text_wait(session, css(DIALOG_MESSAGE), `Your promo code ${promo} has been applied.`)
+    await text_wait(session, css(DIALOG_MESSAGE), 'You have 50 hours of transcription to start.')
+    await click(session, css(DIALOG_OK))
     await text_wait(session, css('.sidebar-balance-text'), '50 hours left')
 }
 
@@ -313,7 +322,7 @@ function region_named(name: string): Target {
     assert(name.length > 0)
     assert(!name.includes('"'))
 
-    const field = '//label[.//span[normalize-space(.)="Province or state"]]'
+    const field = '//label[.//span[normalize-space(.)="Province or territory"]]'
 
     return xpath(`${field}//option[normalize-space(.)="${name}"]`)
 }

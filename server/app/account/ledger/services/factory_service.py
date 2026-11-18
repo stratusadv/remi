@@ -28,13 +28,9 @@ from app.account.payment.models import AccountPayment
 from app.checkout import client
 from app.core.exceptions import CheckoutUnknownError, RequestInvalidError
 from app.funnel.metric import (
-    METRIC_REFERENCE_CHECKOUT,
-    FunnelStatistic,
-    SalesStatistic,
-    UsageStatistic,
-    metric_hours,
-    metric_record,
-    metric_revenue,
+    MetricAction,
+    metric_action_record,
+    metric_charge_record,
 )
 from system.environment import CURRENCY_PATTERN
 
@@ -334,40 +330,18 @@ class AccountLedgerEntryFactoryService(BaseDjangoModelService['AccountLedgerEntr
                 seconds=seconds,
             )
 
-            self._purchase_record(account=account, amount_cents=amount_cents, entry=entry)
+            self._purchase_record(account=account, entry=entry)
 
-    def _purchase_record(
-        self,
-        *,
-        account: Account,
-        amount_cents: int | None,
-        entry: AccountLedgerEntry,
-    ) -> None:
-        if amount_cents is not None:
-            if amount_cents < 0:
-                message = f'amount_cents must not be negative: {amount_cents}'
-                raise ValueError(message)
+    def _purchase_record(self, *, account: Account, entry: AccountLedgerEntry) -> None:
+        if entry.kind != AccountLedgerEntryKindChoices.PURCHASE:
+            message = f'purchase hours are recorded only for a purchase entry: {entry!r}'
+            raise RuntimeError(message)
 
         if entry.account_id != account.pk:
             message = f'entry {entry.pk} belongs to account {entry.account_id}, not {account.pk}'
             raise ValueError(message)
 
-        metric_record(
-            account.campaign,
-            FunnelStatistic.PURCHASES,
-            reference=METRIC_REFERENCE_CHECKOUT,
-            source_model=entry,
-        )
-
-        if account.ledger_entries.purchases().count() == 1:
-            metric_record(
-                account.campaign,
-                FunnelStatistic.PAYING_CLIENTS,
-                reference=METRIC_REFERENCE_CHECKOUT,
-                source_model=entry,
-            )
-
-        self._revenue_record(account=account, amount_cents=amount_cents, entry=entry)
+        metric_action_record(MetricAction.PURCHASE_HOURS)
 
     def _reinstatement_create(
         self,
@@ -395,38 +369,6 @@ class AccountLedgerEntryFactoryService(BaseDjangoModelService['AccountLedgerEntr
             payment=payment,
             reference=reversal.reference,
             seconds=-reversal.seconds,
-        )
-
-    def _revenue_record(
-        self,
-        *,
-        account: Account,
-        amount_cents: int | None,
-        entry: AccountLedgerEntry,
-    ) -> None:
-        if entry.kind != AccountLedgerEntryKindChoices.PURCHASE:
-            message = f'revenue is recorded only for a purchase entry: {entry!r}'
-            raise RuntimeError(message)
-
-        if amount_cents is not None:
-            if amount_cents < 0:
-                message = f'amount_cents must not be negative: {amount_cents}'
-                raise ValueError(message)
-
-        if amount_cents is None:
-            logger.warning('Purchase %s carries no amount, so it records no revenue', entry.pk)
-            return
-
-        if amount_cents == 0:
-            logger.warning('Purchase %s is free, so it records no revenue', entry.pk)
-            return
-
-        metric_record(
-            account.campaign,
-            SalesStatistic.REVENUE,
-            reference=METRIC_REFERENCE_CHECKOUT,
-            source_model=entry,
-            value=metric_revenue(amount_cents),
         )
 
     def _reversal_create(
@@ -491,35 +433,14 @@ class AccountLedgerEntryFactoryService(BaseDjangoModelService['AccountLedgerEntr
             message = f'seconds must be 1 to {CHARGE_SECONDS_MAX}: {seconds}'
             raise ValueError(message)
 
-        entry = self._entry_create(
+        _ = self._entry_create(
             account=account,
             kind=AccountLedgerEntryKindChoices.CHARGE,
             reference=job_id,
             seconds=-seconds,
         )
 
-        metric_record(
-            account.campaign,
-            UsageStatistic.MEETINGS,
-            reference=job_id,
-            source_model=entry,
-        )
-
-        metric_record(
-            account.campaign,
-            UsageStatistic.HOURS,
-            reference=job_id,
-            source_model=entry,
-            value=metric_hours(seconds),
-        )
-
-        if account.ledger_entries.charges().count() == 1:
-            metric_record(
-                account.campaign,
-                FunnelStatistic.ACTIVATIONS,
-                reference=job_id,
-                source_model=entry,
-            )
+        metric_charge_record(seconds)
 
     def dispute_apply(self, dispute: stripe.Dispute) -> None:
         if client.DISPUTE_PATTERN.fullmatch(dispute.id) is None:
@@ -619,19 +540,12 @@ class AccountLedgerEntryFactoryService(BaseDjangoModelService['AccountLedgerEntr
             message = f'promo {promo.code} grants no hours: {promo.hours}'
             raise ValueError(message)
 
-        entry = self._entry_create(
+        _ = self._entry_create(
             account=account,
             kind=AccountLedgerEntryKindChoices.PROMO,
             promo_code=promo,
             reference=promo.code,
             seconds=promo.hours * SECONDS_PER_HOUR,
-        )
-
-        metric_record(
-            account.campaign,
-            FunnelStatistic.PROMOS,
-            reference=promo.code,
-            source_model=entry,
         )
 
     def purchase_from_checkout(self, session: stripe.checkout.Session) -> bool:

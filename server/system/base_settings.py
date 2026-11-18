@@ -10,7 +10,6 @@ from system.environment import (
     environment_flag,
     environment_integer,
     environment_list,
-    environment_offers,
     environment_publishable_key,
     environment_text,
 )
@@ -131,14 +130,16 @@ REMI_EMBEDDINGS_MINUTE_MAX = environment_integer(
     minimum=1,
 )
 
-REMI_OFFERS = environment_offers(
-    EnvironmentVariable.REMI_OFFERS,
-    default='10:1000,50:5000,200:20000',
-)
-
 REMI_PRICE_CURRENCY = environment_currency(
     EnvironmentVariable.REMI_PRICE_CURRENCY,
     default='cad',
+)
+
+REMI_PRICE_HOUR_CENTS = environment_integer(
+    EnvironmentVariable.REMI_PRICE_HOUR_CENTS,
+    default=100,
+    maximum=10_000,
+    minimum=50,
 )
 
 INSTALLED_APPS = [

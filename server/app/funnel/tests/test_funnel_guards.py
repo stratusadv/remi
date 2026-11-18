@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-import re
-
 import pytest
 
 from decimal import Decimal
 from typing_extensions import TYPE_CHECKING, Any, cast
 
 from django.core.mail import EmailMultiAlternatives
-from django.db.models import TextChoices
-from django.db.models.enums import ChoicesType
-
-from django_spire.metric.domain.statistic.constants import StatisticValueTypeChoices
 
 from app.account.constants import SECONDS_PER_HOUR
 from app.funnel import metric
@@ -25,15 +19,7 @@ from app.funnel.mail import (
     funnel_email_deliver,
     funnel_email_send,
 )
-from app.funnel.metric import (
-    FunnelStatistic,
-    SalesStatistic,
-    UsageStatistic,
-    metric_hours,
-    metric_remote_configured,
-    metric_revenue,
-    metric_statistics,
-)
+from app.funnel.metric import metric_hours, metric_remote_configured
 from app.funnel.promo import funnel_promo_downloaded, funnel_promo_issue
 from app.promo_code.models import PromoCode
 from harness.sendgrid import SENDGRID_API_KEY
@@ -47,27 +33,6 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.django_db
 ADDRESS = 'avery@example.com'
 CAMPAIGN_UNDECLARED = 'gala'
-
-
-class LengthWrongChoicesType(ChoicesType):
-    def __len__(self) -> int:
-        assert issubclass(self, TextChoices)
-
-        return 99
-
-
-def _choices_length_wrong() -> type[TextChoices]:
-    bases = (TextChoices,)
-    namespace = LengthWrongChoicesType.__prepare__('LengthWrongChoices', bases)
-    namespace['ONE'] = ('one', 'One')
-
-    choices = LengthWrongChoicesType('LengthWrongChoices', bases, namespace)
-    values = [str(member) for member in choices]
-
-    assert values == ['one']
-    assert len(choices) != len(values)
-
-    return cast('type[TextChoices]', choices)
 
 
 def _email_to(recipients: list[str]) -> EmailMultiAlternatives:
@@ -160,31 +125,6 @@ def test_email_configured_reads_the_key_and_refuses_a_setting_that_is_not_text(
         funnel_email_configured()
 
 
-def test_metric_statistics_refuses_choices_that_are_not_text_choices_or_an_unknown_type() -> None:
-    sales = metric_statistics(SalesStatistic, StatisticValueTypeChoices.CURRENCY)
-    not_choices = cast('Any', dict)
-    message = re.escape(f'choices must be a TextChoices subclass: {not_choices!r}')
-    value_type = cast('Any', 'weight')
-
-    assert [statistic.key for statistic in sales] == ['revenue']
-    assert value_type not in StatisticValueTypeChoices.values
-
-    with pytest.raises(TypeError, match=message):
-        metric_statistics(not_choices, StatisticValueTypeChoices.NUMBER)
-
-    with pytest.raises(ValueError, match=r"value_type must be one of .*: 'weight'"):
-        metric_statistics(FunnelStatistic, value_type)
-
-
-def test_metric_statistics_that_lose_a_choice_are_a_programming_error() -> None:
-    usage = metric_statistics(UsageStatistic, StatisticValueTypeChoices.NUMBER)
-
-    assert [statistic.key for statistic in usage] == ['hours', 'meetings']
-
-    with pytest.raises(RuntimeError, match='LengthWrongChoices produced 1 statistics'):
-        metric_statistics(_choices_length_wrong(), StatisticValueTypeChoices.NUMBER)
-
-
 def test_metric_hours_rounded_to_nothing_is_a_programming_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -196,19 +136,6 @@ def test_metric_hours_rounded_to_nothing_is_a_programming_error(
 
     with pytest.raises(RuntimeError, match='1 seconds rounded to 0 hours'):
         metric_hours(1)
-
-
-def test_metric_revenue_that_loses_cents_is_a_programming_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    assert metric_revenue(150) == Decimal('1.50')
-
-    monkeypatch.setattr(metric, 'METRIC_REVENUE_QUANTUM', Decimal(1))
-
-    assert metric_revenue(200) == Decimal(2)
-
-    with pytest.raises(RuntimeError, match='150 cents converted to 2 dollars'):
-        metric_revenue(150)
 
 
 def test_metric_remote_needs_both_settings_as_text(settings: Settings) -> None:

@@ -39,7 +39,7 @@ const NAV_MENU_ITEMS: Readonly<Partial<Record<View, readonly MenuItem[]>>> = Obj
 })
 
 const { account, balance_text, status: account_status } = use_account()
-const { clear: chat_clear } = use_ask()
+const { chat_start } = use_ask()
 const { open: context_menu_open } = use_context_menu()
 const { folder_close, folder_current } = use_folders()
 
@@ -84,7 +84,7 @@ function brand_click(): void {
 async function chat_new(): Promise<void> {
     assert(view_current.value.length > 0)
 
-    return chat_clear().then(() => {
+    return chat_start().then(() => {
         view_reopen('ask')
 
         assert(view_current.value === 'ask')

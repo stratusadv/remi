@@ -12,7 +12,7 @@ from app.account.choices import RegionChoices
 from app.account.constants import ACCOUNT_EMAIL_LENGTH_MAX, ACCOUNT_NAME_LENGTH_MAX
 from app.account.tokens import token_generate, token_hash
 from app.core.exceptions import PromoInvalidError, RequestInvalidError
-from app.funnel.metric import FunnelStatistic, metric_record
+from app.funnel.metric import funnel_signup_record
 from app.promo_code.constants import PROMO_CODE_LENGTH_MAX, PROMO_CODE_LENGTH_MESSAGE
 
 if TYPE_CHECKING:
@@ -20,9 +20,9 @@ if TYPE_CHECKING:
 
 
 EMAIL_LENGTH_MESSAGE = f'Enter an email address of at most {ACCOUNT_EMAIL_LENGTH_MAX} characters.'
-METRIC_REFERENCE_SIGNUP = 'signup'
 NAME_LENGTH_MESSAGE = f'Enter a name of 1 to {ACCOUNT_NAME_LENGTH_MAX} characters.'
-REGION_UNKNOWN_MESSAGE = 'Choose your province or state.'
+REGIONS_SIGN_UP = frozenset(region for region in RegionChoices.values if region.startswith('CA-'))
+REGION_UNKNOWN_MESSAGE = 'Choose your province or territory.'
 
 
 def _email_validate(email: str) -> None:
@@ -53,7 +53,7 @@ class AccountFactoryService(BaseDjangoModelService['Account']):
         if not 0 < len(name.strip()) <= ACCOUNT_NAME_LENGTH_MAX:
             raise RequestInvalidError(NAME_LENGTH_MESSAGE)
 
-        if region not in RegionChoices.values:
+        if region not in REGIONS_SIGN_UP:
             raise RequestInvalidError(REGION_UNKNOWN_MESSAGE)
 
         if len(promo_code.strip()) > PROMO_CODE_LENGTH_MAX:
@@ -86,11 +86,6 @@ class AccountFactoryService(BaseDjangoModelService['Account']):
             if promo_code.strip() != '':
                 account = account.services.processor.promo_redeem(promo_code)
 
-            metric_record(
-                account.campaign,
-                FunnelStatistic.SIGNUPS,
-                reference=METRIC_REFERENCE_SIGNUP,
-                source_model=account,
-            )
+            funnel_signup_record(campaign=account.campaign)
 
         return account, token

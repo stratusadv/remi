@@ -20,6 +20,7 @@ const LABEL_SUMMARY = 'Summary'
 const MESSAGE_TASKS_FULL = 'Wait for one to finish'
 const QUEUE_LENGTH_MAX = 256
 const SOURCE_PATH = '/home/you/recordings/board-meeting.wav'
+const SOURCE_PATH_SECOND = '/home/you/recordings/budget-review.wav'
 const TASK_RETENTION_MAX = 8
 const TASK_RUNNING_COUNT_MAX = 64
 
@@ -247,6 +248,43 @@ describe('use_batch_transcribe', () => {
 
         expect(batch.queue.value).toEqual([
             { path: SOURCE_PATH, status: 'succeeded', error_message: null, job_id: JOB_ID },
+        ])
+    })
+})
+
+describe('use_batch_transcribe reports', () => {
+    it('reports an upload for each file it takes and none for a drop it turns away', async () => {
+        vi.mocked(ipc.transcription_remote).mockResolvedValue({
+            job_id: JOB_ID,
+            transcript: transcript_build(['The board approved the budget.']),
+            cached: false,
+        })
+
+        const paths_over = Array.from({ length: QUEUE_LENGTH_MAX + 1 }, (unused, index) => {
+            assert(unused === undefined)
+
+            return `/home/you/recordings/meeting-${String(index + 1)}.wav`
+        })
+
+        await batch.enqueue(paths_over)
+
+        endpoints.value = []
+
+        await batch.enqueue([SOURCE_PATH])
+
+        endpoints.value = [ENDPOINT_TRANSCRIPTION]
+
+        await batch.enqueue([SOURCE_PATH, SOURCE_PATH_SECOND])
+        await flushPromises()
+
+        expect(batch.queue.value.map((entry) => entry.path)).toEqual([
+            SOURCE_PATH,
+            SOURCE_PATH_SECOND,
+        ])
+
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([
+            ['upload-recording'],
+            ['upload-recording'],
         ])
     })
 })

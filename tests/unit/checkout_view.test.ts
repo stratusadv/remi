@@ -1,12 +1,12 @@
 import { flushPromises } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CheckoutView from '../../src/components/checkout_view.vue'
 import { use_account } from '../../src/composables/use_account'
+import { use_dialog } from '../../src/composables/use_dialog'
 import { assert } from '../../src/lib/assert'
 import { ipc } from '../../src/lib/ipc'
-import { log_warn } from '../../src/lib/log'
 import { checkout_preload, stripe_preload } from '../../src/lib/stripe'
-import { ATTACH_TO, TO_FAKE, deferred_new, mount_auto_unmount } from './fixtures'
+import { ATTACH_TO, deferred_new, mount_auto_unmount } from './fixtures'
 import type { VueWrapper } from '@vue/test-utils'
 import type { Mock } from 'vitest'
 import type * as stripe_module from '../../src/lib/stripe'
@@ -36,17 +36,16 @@ const DECLINED = 'Your card was declined.'
 const KEY = 'pk_test_51Hscribe'
 const PAYMENTS_OFF = 'This server is not set up to take payments yet.'
 const SESSION_ID = 'cs_test_a1B2c3'
+const THANKS = 'Your payment went through. You now have 51.5 hours of transcription.'
 
 const ACCOUNT = Object.freeze<Account>({
     balance_seconds: 5400,
+    checkout_hours_max: 1000,
     email: 'avery@example.com',
     name: 'Avery',
-    offers: [
-        { currency: 'cad', hours: 10, price_cents: 300 },
-        { currency: 'cad', hours: 50, price_cents: 1000 },
-        { currency: 'cad', hours: 200, price_cents: 3000 },
-    ],
     payments: true,
+    price_currency: 'cad',
+    price_hour_cents: 60,
     publishable_key: KEY,
 })
 
@@ -56,6 +55,7 @@ const STARTED = Object.freeze<CheckoutStarted>({
 })
 
 const account_state = use_account()
+const dialog_state = use_dialog()
 
 
 function button(label: string): HTMLButtonElement {
@@ -82,6 +82,17 @@ function button_labels(selector: string): string[] {
     return [...buttons].map((element) => element.textContent.trim())
 }
 
+function dialog_shown(): { kind: string, message: string, title: string } | null {
+    const shown = dialog_state.current.value
+
+    if (shown === null) return null
+
+    assert(shown.cancel_label === null)
+    assert(shown.message.length > 0)
+
+    return { kind: shown.kind, message: shown.message, title: shown.title }
+}
+
 function form_fake_install(): FormFake {
     assert(document.body.querySelector('.checkout-view') === null)
     assert(vi.isMockFunction(checkout_preload))
@@ -89,7 +100,7 @@ function form_fake_install(): FormFake {
     const confirm = vi.fn<() => Promise<string | null>>().mockResolvedValue(null)
     const confirm_test = vi.fn<(card: TestCard) => Promise<string | null>>().mockResolvedValue(null)
     const destroy = vi.fn<() => void>()
-    const form = { amount: 10, confirm, confirm_test: null, currency: 'cad', destroy }
+    const form = { amount: 30, confirm, confirm_test: null, currency: 'cad', destroy }
     const open = vi.fn<(host: HTMLElement) => Promise<CheckoutForm>>().mockResolvedValue(form)
 
     vi.mocked(checkout_preload).mockImplementation(
@@ -115,24 +126,33 @@ function host_of_call(fake: FormFake, index: number): unknown {
     return fake.open.mock.calls[index]?.[0]
 }
 
-async function pack_choose(hours: number): Promise<void> {
+async function hours_buy(hours: number): Promise<void> {
     assert(Number.isSafeInteger(hours))
     assert(document.body.querySelector('.checkout-view') !== null)
 
-    button(`Buy ${String(hours)} hours`).click()
+    await hours_type(String(hours))
+
+    button('Buy hours').click()
     await flushPromises()
 }
 
-async function pack_consider(hours: number): Promise<void> {
-    assert(Number.isSafeInteger(hours))
+function hours_input(): HTMLInputElement {
+    const input = document.body.querySelector<HTMLInputElement>('.hours-card-input')
+
     assert(document.body.querySelector('.checkout-view') !== null)
+    assert(input !== null)
 
-    const focused = new FocusEvent('focusin', { bubbles: true })
+    return input
+}
 
-    vi.useFakeTimers({ [TO_FAKE]: ['setTimeout', 'clearTimeout'] })
-    button(`Buy ${String(hours)} hours`).dispatchEvent(focused)
-    vi.runOnlyPendingTimers()
-    vi.useRealTimers()
+async function hours_type(text: string): Promise<void> {
+    const input = hours_input()
+
+    assert(input.type === 'number')
+    assert(text.length <= 8)
+
+    input.value = text
+    input.dispatchEvent(new Event('input'))
     await flushPromises()
 }
 
@@ -170,11 +190,11 @@ async function restart_abandoned(): Promise<Deferred<Account | null>> {
     vi.mocked(ipc.account_get).mockReturnValueOnce(reloaded.promise)
 
     await page_mount()
-    await pack_choose(50)
+    await hours_buy(50)
 
     button('Try again').click()
     await flushPromises()
-    button('All packs').click()
+    button('Change hours').click()
     await flushPromises()
 
     return reloaded
@@ -192,48 +212,66 @@ function text_of(selector: string): string {
 }
 
 beforeEach(() => {
-    onTestFinished(() => {
-        vi.useRealTimers()
-    })
-
     vi.resetAllMocks()
+    dialog_state.close(false)
     account_state.account.value = structuredClone(ACCOUNT)
     account_state.status.value = { billing: true, signed_in: true }
     vi.mocked(ipc.account_checkout_start).mockResolvedValue(STARTED)
     vi.mocked(ipc.account_get).mockResolvedValue(ACCOUNT)
 })
 
-describe('CheckoutView packs', () => {
-    it('shows each pack with its rate and saving, marks the best, and loads Stripe', async () => {
+describe('CheckoutView hours', () => {
+    it('lists the hourly price and what the hours are for, and loads Stripe', async () => {
         const fake = form_fake_install()
 
         await page_mount()
 
         expect(fake.destroy).not.toHaveBeenCalled()
 
-        const offers = document.body.querySelectorAll('.offer')
-        const best = text_of('.offer[data-best="true"]')
+        const points = [...document.body.querySelectorAll('.checkout-points li')]
 
-        expect(offers).toHaveLength(3)
-        expect(offers[1]?.textContent).toContain('$0.20 per hour')
-        expect(offers[1]?.textContent).toContain('Save 33%')
-        expect(offers[1]?.textContent).toContain('51.5 hours')
-        expect(best).toContain('Best value')
-        expect(best).toContain('200')
-        expect(best).toContain('Save 50%')
+        expect(points.map((point) => point.textContent.trim())).toEqual([
+            '$0.60 per hour of transcription',
+            'Unlimited notes and Ask questions for monthly active users',
+            'One-time payment, no subscription',
+        ])
+
+        expect(hours_input().value).toBe('10')
+        expect(text_of('.hours-card-after')).toBe('11.5 hours')
+        expect(text_of('.hours-card-amount')).toContain('$6.00')
+        expect(button('Buy hours').disabled).toBe(false)
         expect(stripe_preload).toHaveBeenCalledWith(KEY)
         expect(checkout_preload).not.toHaveBeenCalled()
         expect(ipc.account_checkout_start).not.toHaveBeenCalled()
     })
 
-    it('ignores a second click on a pack while the first checkout starts', async () => {
+    it('shows the balance after and the total for the hours typed', async () => {
+        await page_mount()
+
+        expect(text_of('.hours-card-lines')).toContain('$0.60')
+
+        await hours_type('50')
+
+        expect(text_of('.hours-card-after')).toBe('51.5 hours')
+        expect(text_of('.hours-card-amount')).toContain('$30.00')
+
+        await hours_type('1000')
+
+        expect(text_of('.hours-card-after')).toBe('1001.5 hours')
+        expect(text_of('.hours-card-amount')).toContain('$600.00')
+        expect(button('Buy hours').disabled).toBe(false)
+    })
+
+    it('ignores a second click on Buy hours while the first checkout starts', async () => {
         const fake = form_fake_install()
 
         await page_mount()
 
         expect(fake.confirm).not.toHaveBeenCalled()
 
-        const choice = button('Buy 50 hours')
+        await hours_type('50')
+
+        const choice = button('Buy hours')
 
         choice.click()
         choice.click()
@@ -242,7 +280,9 @@ describe('CheckoutView packs', () => {
         expect(ipc.account_checkout_start).toHaveBeenCalledTimes(1)
         expect(fake.open).toHaveBeenCalledTimes(1)
     })
+})
 
+describe('CheckoutView account', () => {
     it('explains a server that takes no payments and checks again on request', async () => {
         const fake = form_fake_install()
 
@@ -253,28 +293,72 @@ describe('CheckoutView packs', () => {
         expect(fake.destroy).not.toHaveBeenCalled()
 
         expect(text_of('.checkout-view')).toContain(PAYMENTS_OFF)
-        expect(document.body.querySelectorAll('.offer')).toHaveLength(0)
+        expect(document.body.querySelectorAll('.hours-card')).toHaveLength(0)
         expect(stripe_preload).not.toHaveBeenCalled()
 
         button('Try again').click()
         await flushPromises()
 
         expect(ipc.account_get).toHaveBeenCalledTimes(1)
-        expect(document.body.querySelectorAll('.offer')).toHaveLength(3)
+        expect(document.body.querySelectorAll('.hours-card')).toHaveLength(1)
         expect(stripe_preload).toHaveBeenCalledWith(KEY)
         expect(ipc.account_checkout_start).not.toHaveBeenCalled()
+    })
+
+    it('opens the checkout with the Stripe key the account answers with now', async () => {
+        const fake = form_fake_install()
+        const rotated = 'pk_test_51Hrotated'
+
+        await page_mount()
+
+        vi.mocked(checkout_preload).mockImplementation(async (key, starting) => {
+            const started = await starting
+
+            assert(key === rotated)
+
+            return { open: fake.open, session_id: started.session_id }
+        })
+
+        account_state.account.value = { ...ACCOUNT, publishable_key: rotated }
+        await flushPromises()
+        await hours_buy(50)
+
+        expect(stripe_preload).toHaveBeenLastCalledWith(rotated)
+        expect(checkout_preload).toHaveBeenLastCalledWith(rotated, expect.any(Promise))
+        expect(button('Pay $30.00').disabled).toBe(false)
+    })
+})
+
+describe('CheckoutView hours it does not sell', () => {
+    it.each(['0', '-5', '1001', '2.5', ''])('refuses %j and starts no checkout', async (text) => {
+        await page_mount()
+
+        const hint = document.body.querySelector('.hours-card-hint')
+
+        await hours_type(text)
+
+        expect(button('Buy hours').disabled).toBe(true)
+        expect(hint?.getAttribute('data-invalid')).toBe('true')
+        expect(hint?.textContent.trim()).toBe('Choose from 1 to 1000 hours.')
+        expect(text_of('.hours-card-after')).toBe('')
+
+        button('Buy hours').click()
+        await flushPromises()
+
+        expect(ipc.account_checkout_start).not.toHaveBeenCalled()
+        expect(document.body.querySelector('.checkout-pay')).toBeNull()
     })
 })
 
 describe('CheckoutView payment', () => {
-    it('opens a card form for the chosen pack and pays it', async () => {
+    it('opens a card form for the hours chosen, pays them, and thanks them', async () => {
         const fake = form_fake_install()
         const credited = { account: { ...ACCOUNT, balance_seconds: 185_400 }, paid: true }
 
         vi.mocked(ipc.account_checkout_finish).mockResolvedValue(credited)
 
         await page_mount()
-        await pack_choose(50)
+        await hours_buy(50)
 
         expect(fake.confirm).not.toHaveBeenCalled()
 
@@ -283,58 +367,60 @@ describe('CheckoutView payment', () => {
         expect(ipc.account_checkout_start).toHaveBeenCalledWith(50)
         expect(checkout_preload).toHaveBeenCalledWith(KEY, expect.any(Promise))
         expect(fake.open).toHaveBeenCalledWith(host)
-        expect(text_of('.checkout-order')).toContain('$10.00')
+        expect(text_of('.checkout-order')).toContain('$30.00')
+        expect(text_of('.checkout-order')).toContain('$0.60')
         expect(text_of('.checkout-order')).toContain('51.5 hours')
 
-        button('Pay $10.00').click()
+        button('Pay $30.00').click()
         await flushPromises()
 
         expect(fake.confirm).toHaveBeenCalledTimes(1)
         expect(ipc.account_checkout_finish).toHaveBeenCalledWith(SESSION_ID)
         expect(fake.destroy).toHaveBeenCalledTimes(1)
-        expect(text_of('.checkout-settled')).toContain('You now have 51.5 hours of transcription.')
-        expect(button_labels('.checkout-settled')).toEqual(['Buy more hours'])
+        expect(dialog_shown()).toEqual({ kind: 'success', message: THANKS, title: 'Thank you' })
+        expect(text_of('.checkout-balance')).toContain('51.5 hours of transcription left')
+        expect(document.body.querySelector('.hours-card')).not.toBeNull()
     })
 
-    it('shows the pack price and the form outline while the card form loads', async () => {
+    it('shows the price and the form outline while the card form loads', async () => {
         const fake = form_fake_install()
         const opened = deferred_new<CheckoutForm>()
 
         fake.open.mockReturnValue(opened.promise)
 
         await page_mount()
-        await pack_choose(200)
+        await hours_buy(200)
 
         expect(fake.destroy).not.toHaveBeenCalled()
 
         const fields = document.body.querySelector('.checkout-fields')
 
-        expect(button('Pay $30.00').disabled).toBe(true)
+        expect(button('Pay $120.00').disabled).toBe(true)
         expect(fields?.getAttribute('data-shown')).toBe('false')
         expect(text_of('.checkout-ghost')).toContain('Card number')
 
-        opened.resolve({ ...fake.form, amount: 30 })
+        opened.resolve({ ...fake.form, amount: 120 })
         await flushPromises()
 
         expect(fields?.getAttribute('data-shown')).toBe('true')
-        expect(button('Pay $30.00').disabled).toBe(false)
+        expect(button('Pay $120.00').disabled).toBe(false)
     })
 })
 
-describe('CheckoutView between packs', () => {
-    it('goes back to every pack and starts a fresh checkout for the next one', async () => {
+describe('CheckoutView between purchases', () => {
+    it('goes back to the hours as typed and starts a fresh checkout for the next', async () => {
         const fake = form_fake_install()
 
         await page_mount()
-        await pack_choose(50)
+        await hours_buy(50)
 
-        button('All packs').click()
+        button('Change hours').click()
         await flushPromises()
 
         expect(fake.destroy).toHaveBeenCalledTimes(1)
-        expect(document.body.querySelectorAll('.offer')).toHaveLength(3)
+        expect(hours_input().value).toBe('50')
 
-        await pack_choose(200)
+        await hours_buy(200)
 
         expect(ipc.account_checkout_start).toHaveBeenLastCalledWith(200)
         expect(fake.open).toHaveBeenCalledTimes(2)
@@ -347,20 +433,19 @@ describe('CheckoutView between packs', () => {
         vi.mocked(ipc.account_checkout_finish).mockResolvedValue({ account: ACCOUNT, paid: true })
 
         await page_mount()
-        await pack_choose(50)
+        await hours_buy(50)
 
         expect(fake.confirm).not.toHaveBeenCalled()
 
-        button('Pay $10.00').click()
+        button('Pay $30.00').click()
         await flushPromises()
-        button('Buy more hours').click()
-        await flushPromises()
-        await pack_choose(50)
+        dialog_state.close(true)
+        await hours_buy(50)
 
         expect(ipc.account_checkout_start).toHaveBeenCalledTimes(2)
         expect(fake.open).toHaveBeenCalledTimes(2)
         expect(host_of_call(fake, 1)).not.toBe(host_of_call(fake, 0))
-        expect(button('Pay $10.00').disabled).toBe(false)
+        expect(button('Pay $30.00').disabled).toBe(false)
         expect(fake.destroy).toHaveBeenCalledTimes(1)
     })
 
@@ -370,136 +455,16 @@ describe('CheckoutView between packs', () => {
         fake.confirm.mockResolvedValue(DECLINED)
 
         await page_mount()
-        await pack_choose(50)
+        await hours_buy(50)
 
-        button('Pay $10.00').click()
+        button('Pay $30.00').click()
         await flushPromises()
 
         expect(text_of('.checkout-panel')).toContain(DECLINED)
-        expect(button('Pay $10.00').disabled).toBe(false)
+        expect(button('Pay $30.00').disabled).toBe(false)
         expect(ipc.account_checkout_finish).not.toHaveBeenCalled()
         expect(fake.destroy).not.toHaveBeenCalled()
-    })
-})
-
-describe('CheckoutView preparing a pack before it is chosen', () => {
-    it('opens the checkout it prepared for a considered pack and pays it', async () => {
-        const fake = form_fake_install()
-        const credited = { account: { ...ACCOUNT, balance_seconds: 185_400 }, paid: true }
-
-        vi.mocked(ipc.account_checkout_finish).mockResolvedValue(credited)
-
-        await page_mount()
-        await pack_consider(50)
-
-        expect(ipc.account_checkout_start).toHaveBeenCalledWith(50)
-        expect(fake.open).not.toHaveBeenCalled()
-
-        await pack_consider(50)
-        await pack_choose(50)
-
-        expect(ipc.account_checkout_start).toHaveBeenCalledTimes(1)
-        expect(fake.open).toHaveBeenCalledTimes(1)
-
-        button('Pay $10.00').click()
-        await flushPromises()
-
-        expect(ipc.account_checkout_finish).toHaveBeenCalledWith(SESSION_ID)
-        expect(text_of('.checkout-settled')).toContain('You now have 51.5 hours of transcription.')
-    })
-
-    it('prepares each pack once and keeps the rest for a later choice', async () => {
-        const fake = form_fake_install()
-
-        await page_mount()
-        await pack_consider(10)
-        await pack_consider(50)
-        await pack_consider(200)
-
-        expect(fake.open).not.toHaveBeenCalled()
-
-        await pack_consider(10)
-
-        expect(vi.mocked(ipc.account_checkout_start).mock.calls).toEqual([[10], [50], [200]])
-
-        await pack_choose(50)
-        button('All packs').click()
-        await flushPromises()
-        await pack_choose(200)
-
-        const fields = document.body.querySelector('.checkout-fields')
-
-        expect(ipc.account_checkout_start).toHaveBeenCalledTimes(3)
-        expect(fake.open).toHaveBeenCalledTimes(2)
-        expect(fields?.getAttribute('data-shown')).toBe('true')
-    })
-
-    it('starts a fresh checkout for a pack whose preparation failed', async () => {
-        const refused = new Error('api error: Stripe could not start the checkout.')
-
-        form_fake_install()
-        vi.mocked(ipc.account_checkout_start).mockRejectedValueOnce(refused)
-
-        await page_mount()
-        await pack_consider(50)
-
-        expect(log_warn).toHaveBeenCalledWith(expect.stringContaining('prepared'), refused)
-
-        await pack_choose(50)
-
-        expect(ipc.account_checkout_start).toHaveBeenCalledTimes(2)
-        expect(text_of('.checkout-panel')).not.toContain('Stripe could not start the checkout.')
-        expect(button('Pay $10.00').disabled).toBe(false)
-    })
-})
-
-describe('CheckoutView keeping prepared packs', () => {
-    it('keeps a checkout that loaded after going back for its next choice', async () => {
-        const fake = form_fake_install()
-        const preloading = deferred_new<CheckoutPreloaded>()
-
-        vi.mocked(checkout_preload).mockReturnValueOnce(preloading.promise)
-
-        await page_mount()
-        await pack_choose(50)
-
-        expect(fake.open).not.toHaveBeenCalled()
-
-        button('All packs').click()
-        await flushPromises()
-        preloading.resolve({ open: fake.open, session_id: SESSION_ID })
-        await flushPromises()
-        await pack_choose(50)
-
-        expect(checkout_preload).toHaveBeenCalledTimes(1)
-        expect(ipc.account_checkout_start).toHaveBeenCalledTimes(1)
-        expect(fake.open).toHaveBeenCalledTimes(1)
-        expect(button('Pay $10.00').disabled).toBe(false)
-    })
-
-    it('prepares a pack again once the account answers with another Stripe key', async () => {
-        const fake = form_fake_install()
-        const rotated = 'pk_test_51Hrotated'
-
-        await page_mount()
-        await pack_consider(50)
-
-        vi.mocked(checkout_preload).mockImplementation(async (key, starting) => {
-            const started = await starting
-
-            assert(key === rotated)
-
-            return { open: fake.open, session_id: started.session_id }
-        })
-
-        account_state.account.value = { ...ACCOUNT, publishable_key: rotated }
-        await flushPromises()
-        await pack_choose(50)
-
-        expect(stripe_preload).toHaveBeenLastCalledWith(rotated)
-        expect(checkout_preload).toHaveBeenLastCalledWith(rotated, expect.any(Promise))
-        expect(ipc.account_checkout_start).toHaveBeenCalledTimes(2)
-        expect(button('Pay $10.00').disabled).toBe(false)
+        expect(dialog_shown()).toBeNull()
     })
 })
 
@@ -508,11 +473,11 @@ describe('CheckoutView test cards', () => {
         const fake = form_fake_install()
 
         await page_mount()
-        await pack_choose(50)
+        await hours_buy(50)
 
         expect(fake.confirm_test).not.toHaveBeenCalled()
         expect(document.body.querySelector('.checkout-test')).toBeNull()
-        expect(button('Pay $10.00').disabled).toBe(false)
+        expect(button('Pay $30.00').disabled).toBe(false)
     })
 
     it('pays in one click with a test card and credits the hours', async () => {
@@ -523,7 +488,7 @@ describe('CheckoutView test cards', () => {
         vi.mocked(ipc.account_checkout_finish).mockResolvedValue(credited)
 
         await page_mount()
-        await pack_choose(50)
+        await hours_buy(50)
 
         expect(button_labels('.checkout-test')).toEqual([
             'Succeeds (4242)',
@@ -537,7 +502,7 @@ describe('CheckoutView test cards', () => {
         expect(fake.confirm_test).toHaveBeenCalledWith('tok_visa')
         expect(fake.confirm).not.toHaveBeenCalled()
         expect(ipc.account_checkout_finish).toHaveBeenCalledWith(SESSION_ID)
-        expect(text_of('.checkout-settled')).toContain('You now have 51.5 hours of transcription.')
+        expect(dialog_shown()?.message).toBe(THANKS)
     })
 
     it('shows what a declined test card returns and keeps the form open', async () => {
@@ -547,7 +512,7 @@ describe('CheckoutView test cards', () => {
         fake.confirm_test.mockResolvedValue(DECLINED)
 
         await page_mount()
-        await pack_choose(50)
+        await hours_buy(50)
 
         button('Declined (0002)').click()
         await flushPromises()
@@ -568,33 +533,35 @@ describe('CheckoutView when something fails', () => {
         fake.confirm.mockRejectedValue(failed)
 
         await page_mount()
-        await pack_choose(50)
+        await hours_buy(50)
 
-        button('Pay $10.00').click()
+        button('Pay $30.00').click()
         await flushPromises()
 
         expect(text_of('.checkout-panel')).toContain('returnUrl')
-        expect(button('Pay $10.00').disabled).toBe(false)
+        expect(button('Pay $30.00').disabled).toBe(false)
         expect(ipc.account_checkout_finish).not.toHaveBeenCalled()
         expect(fake.destroy).not.toHaveBeenCalled()
     })
 
-    it('shows a taken payment as confirming and offers no second payment', async () => {
+    it('tells them a taken payment is being confirmed and reloads the balance', async () => {
         const fake = form_fake_install()
         const offline = new Error('network error: offline')
 
         vi.mocked(ipc.account_checkout_finish).mockRejectedValue(offline)
 
         await page_mount()
-        await pack_choose(50)
+        await hours_buy(50)
 
         expect(fake.confirm).not.toHaveBeenCalled()
 
-        button('Pay $10.00').click()
+        button('Pay $30.00').click()
         await flushPromises()
 
-        expect(text_of('.checkout-settled')).toContain('Your payment is being confirmed.')
-        expect(button_labels('.checkout-settled')).toEqual([])
+        expect(dialog_shown()?.title).toBe('Payment processing')
+        expect(dialog_shown()?.message).toContain('Your payment is being confirmed.')
+        expect(dialog_shown()?.kind).toBe('info')
+        expect(ipc.account_get).toHaveBeenCalledTimes(1)
         expect(fake.destroy).toHaveBeenCalledTimes(1)
     })
 
@@ -605,7 +572,7 @@ describe('CheckoutView when something fails', () => {
         vi.mocked(ipc.account_checkout_start).mockRejectedValueOnce(refused)
 
         await page_mount()
-        await pack_choose(50)
+        await hours_buy(50)
 
         expect(text_of('.checkout-panel')).toContain('Stripe could not start the checkout.')
         expect(text_of('.checkout-ghost')).toContain('Card number')
@@ -616,7 +583,7 @@ describe('CheckoutView when something fails', () => {
         expect(ipc.account_get).toHaveBeenCalledTimes(1)
         expect(ipc.account_checkout_start).toHaveBeenCalledTimes(2)
         expect(text_of('.checkout-panel')).not.toContain('Stripe could not start the checkout.')
-        expect(button('Pay $10.00').disabled).toBe(false)
+        expect(button('Pay $30.00').disabled).toBe(false)
     })
 })
 
@@ -625,7 +592,7 @@ describe('CheckoutView when the account reload from Try again lands late', () =>
         const fake = form_fake_install()
         const reloaded = await restart_abandoned()
 
-        await pack_choose(50)
+        await hours_buy(50)
 
         expect(fake.open).toHaveBeenCalledTimes(1)
 
@@ -635,7 +602,7 @@ describe('CheckoutView when the account reload from Try again lands late', () =>
         expect(fake.open).toHaveBeenCalledTimes(1)
         expect(fake.destroy).not.toHaveBeenCalled()
         expect(ipc.account_checkout_start).toHaveBeenCalledTimes(2)
-        expect(button('Pay $10.00').disabled).toBe(false)
+        expect(button('Pay $30.00').disabled).toBe(false)
     })
 
     it('lets a payment that is confirming finish', async () => {
@@ -648,9 +615,9 @@ describe('CheckoutView when the account reload from Try again lands late', () =>
 
         const reloaded = await restart_abandoned()
 
-        await pack_choose(50)
+        await hours_buy(50)
 
-        button('Pay $10.00').click()
+        button('Pay $30.00').click()
         await flushPromises()
         reloaded.resolve(ACCOUNT)
         await flushPromises()
@@ -659,10 +626,10 @@ describe('CheckoutView when the account reload from Try again lands late', () =>
 
         expect(fake.open).toHaveBeenCalledTimes(1)
         expect(ipc.account_checkout_start).toHaveBeenCalledTimes(2)
-        expect(text_of('.checkout-settled')).toContain('You now have 51.5 hours of transcription.')
+        expect(dialog_shown()?.message).toBe(THANKS)
     })
 
-    it('stays on the receipt after a payment', async () => {
+    it('stays on the hours after a payment', async () => {
         const fake = form_fake_install()
         const credited = { account: { ...ACCOUNT, balance_seconds: 185_400 }, paid: true }
 
@@ -670,16 +637,17 @@ describe('CheckoutView when the account reload from Try again lands late', () =>
 
         const reloaded = await restart_abandoned()
 
-        await pack_choose(50)
+        await hours_buy(50)
 
         expect(fake.open).toHaveBeenCalledTimes(1)
 
-        button('Pay $10.00').click()
+        button('Pay $30.00').click()
         await flushPromises()
         reloaded.resolve(credited.account)
         await flushPromises()
 
-        expect(text_of('.checkout-settled')).toContain('Payment received')
+        expect(dialog_shown()?.title).toBe('Thank you')
+        expect(document.body.querySelector('.hours-card')).not.toBeNull()
         expect(fake.open).toHaveBeenCalledTimes(1)
         expect(ipc.account_checkout_start).toHaveBeenCalledTimes(2)
     })
@@ -694,16 +662,16 @@ describe('CheckoutView when the reload from Try again lands after the payment', 
 
         const reloaded = await restart_abandoned()
 
-        await pack_choose(50)
+        await hours_buy(50)
 
         expect(fake.open).toHaveBeenCalledTimes(1)
 
-        button('Pay $10.00').click()
+        button('Pay $30.00').click()
         await flushPromises()
         reloaded.resolve(ACCOUNT)
         await flushPromises()
 
-        expect(text_of('.checkout-settled')).toContain('You now have 51.5 hours of transcription.')
+        expect(dialog_shown()?.message).toBe(THANKS)
         expect(account_state.balance_text.value).toBe('51.5 hours')
     })
 })
@@ -717,7 +685,7 @@ describe('CheckoutView when the page closes', () => {
 
         const wrapper = await page_mount()
 
-        await pack_choose(50)
+        await hours_buy(50)
 
         wrapper.unmount()
         opened.resolve(fake.form)
@@ -737,9 +705,9 @@ describe('CheckoutView when the page closes', () => {
 
         const wrapper = await page_mount()
 
-        await pack_choose(50)
+        await hours_buy(50)
 
-        button('Pay $10.00').click()
+        button('Pay $30.00').click()
         await flushPromises()
         wrapper.unmount()
 
@@ -751,5 +719,6 @@ describe('CheckoutView when the page closes', () => {
         expect(ipc.account_checkout_finish).toHaveBeenCalledWith(SESSION_ID)
         expect(fake.destroy).toHaveBeenCalledTimes(1)
         expect(account_state.balance_text.value).toBe('51.5 hours')
+        expect(dialog_shown()?.message).toBe(THANKS)
     })
 })

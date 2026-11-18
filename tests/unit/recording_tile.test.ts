@@ -5,7 +5,7 @@ import { assert } from '../../src/lib/assert'
 import { ipc } from '../../src/lib/ipc'
 import { ATTACH_TO, PROPERTIES, job_listing_build, mount_auto_unmount } from './fixtures'
 import type { VueWrapper } from '@vue/test-utils'
-import type { JobListing } from '../../src/types'
+import type { FolderName, JobListing } from '../../src/types'
 
 
 vi.mock('../../src/lib/ipc')
@@ -20,13 +20,16 @@ function mount_tile(
     job: JobListing,
     people: TilePeople = null,
     snippet: TileSnippet = null,
+    folder: FolderName | null = null,
 ): VueWrapper {
     assert(job.id.length > 0)
     assert(people === null || people.length > 0)
     assert(snippet === null || snippet.length > 0)
+    assert(folder === null || folder.length > 0)
 
     const wrapper = mount_auto_unmount(RecordingTile, {
         [PROPERTIES]: {
+            folder,
             job,
             title: 'Weekly sync',
             when: 'Today, 9:00 AM',
@@ -87,6 +90,19 @@ describe('RecordingTile', () => {
         expect(wrapper.get('.recording-tile-foot').text()).toBe('Today, 9:00 AM')
         expect(wrapper.find('.recording-tile-status').exists()).toBe(false)
         expect(wrapper.find('.pill').exists()).toBe(false)
+    })
+
+    it('tags the tile with its folder beside the date', async () => {
+        const wrapper = mount_tile(job_listing_build(), null, null, 'Board meetings')
+
+        await flushPromises()
+
+        const tag = wrapper.get('.recording-tile-foot .folder-tag')
+
+        expect(tag.get('.folder-tag-name').text()).toBe('Board meetings')
+        expect(tag.attributes('title')).toBe('Board meetings')
+        expect(tag.text()).toBe('Folder Board meetings')
+        expect(wrapper.get('.recording-tile-when').text()).toBe('Today, 9:00 AM')
     })
 
     it('prefers the search snippet over the people text', async () => {

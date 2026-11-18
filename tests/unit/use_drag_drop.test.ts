@@ -23,6 +23,7 @@ vi.mock(
 
 const PATH_DROPPED = '/home/you/recordings/standup.m4a'
 const PATH_RECORDING = '/home/you/Music/remi/Recording 2026-11-17 09-30-00.wav'
+const PATH_TEXT = '/home/you/recordings/agenda.txt'
 const pipeline = use_pipeline()
 const recorder = use_recorder()
 
@@ -105,6 +106,43 @@ describe('use_drag_drop', () => {
 
         expect(recorder.recording.value).toBe(true)
         expect(pipeline.source_path.value).toBeNull()
+
+        await recorder.discard()
+    })
+})
+
+describe('use_drag_drop reports', () => {
+    it('reports one upload for the one recording in a drop', async () => {
+        await host_mount()
+
+        paths_drop(drag_drop_listen, [PATH_TEXT, PATH_DROPPED])
+        await flushPromises()
+
+        expect(pipeline.source_path.value).toBe(PATH_DROPPED)
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([['upload-recording']])
+    })
+
+    it('reports no upload for a drop without a recording or one made while recording', async () => {
+        const stream = deferred_new<unknown>()
+
+        microphone_install().mockReturnValue(stream.promise)
+        vi.mocked(ipc.recording_start).mockResolvedValue(PATH_RECORDING)
+        vi.mocked(ipc.recording_discard).mockResolvedValue(undefined)
+
+        await host_mount()
+
+        paths_drop(drag_drop_listen, [PATH_TEXT])
+
+        const started = recorder.start()
+
+        paths_drop(drag_drop_listen, [PATH_DROPPED])
+        stream.resolve(stream_new(vi.fn<() => void>()))
+        await started
+        paths_drop(drag_drop_listen, [PATH_DROPPED])
+        await flushPromises()
+
+        expect(pipeline.source_path.value).toBeNull()
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([['in-app-recording']])
 
         await recorder.discard()
     })

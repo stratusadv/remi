@@ -1,5 +1,6 @@
 import { computed, ref, shallowRef } from 'vue'
 import { listen } from '@tauri-apps/api/event'
+import { action_report } from '../lib/actions'
 import { sources_cited } from '../lib/answer'
 import { assert } from '../lib/assert'
 import { error_shown } from '../lib/errors'
@@ -9,6 +10,7 @@ import { MESSAGE_ENDPOINT_MISSING, use_endpoints } from './use_endpoints'
 import { use_pipeline } from './use_pipeline'
 import type { Event } from '@tauri-apps/api/event'
 import type {
+    AccountAction,
     AskScope,
     AskSource,
     AskSources,
@@ -49,6 +51,12 @@ interface ThreadScroll {
     top_px: number
 }
 
+const ACTION_OF_SCOPE: Readonly<Record<AskScope['kind'], AccountAction>> = Object.freeze({
+    all: 'ask-library-question',
+    meeting: 'ask-note-question',
+    project: 'ask-folder-question',
+})
+
 const CHAT_ID_PATTERN = /^[0-9a-f-]{36}$/u
 const EVENT_ASK_SOURCES = 'notes_ask_sources'
 const EVENT_ASK_WAIT = 'notes_ask_wait'
@@ -60,6 +68,7 @@ const SCOPE_KINDS: readonly AskScope['kind'][] = Object.freeze(['all', 'meeting'
 const STATES_SETTLED: readonly ChatExchangeState[] = Object.freeze(['done', 'failed', 'stopped'])
 const exchanges = ref<Exchange[]>([])
 const chat_id = ref<ChatID>(crypto.randomUUID())
+const chat_reported = ref<ChatID | null>(null)
 const chats = ref<ChatSummary[]>([])
 const scope = ref<AskScope>(SCOPE_ALL)
 const sources_open = ref<ExchangeID[]>([])
@@ -80,6 +89,7 @@ const api = Object.freeze({
     ask,
     chat_open,
     chat_remove,
+    chat_start,
     chats_refresh,
     clear,
     folder_ask,
@@ -101,6 +111,10 @@ async function ask(question: string, asked_in: AskScope): Promise<void> {
     assert(scope_valid(asked_in))
 
     if (busy.value) return
+
+    if (exchanges.value.length === 0) chat_report()
+
+    action_report(ACTION_OF_SCOPE[asked_in.kind])
 
     return exchange_run(exchange_start(question.trim(), asked_in))
 }
@@ -146,6 +160,17 @@ async function chat_remove(id: ChatID): Promise<void> {
         })
 }
 
+function chat_report(): void {
+    assert(CHAT_ID_PATTERN.test(chat_id.value))
+    assert(exchanges.value.length === 0)
+
+    if (chat_reported.value === chat_id.value) return
+
+    chat_reported.value = chat_id.value
+
+    action_report('new-chat')
+}
+
 function chat_show(opened: ChatOpened): void {
     assert(CHAT_ID_PATTERN.test(opened.id))
     assert(opened.exchanges.length > 0)
@@ -160,6 +185,19 @@ function chat_show(opened: ChatOpened): void {
     sources_open.value = []
 
     assert(!busy.value)
+}
+
+async function chat_start(): Promise<void> {
+    assert(CHAT_ID_PATTERN.test(chat_id.value))
+    assert(exchanges.value.length <= EXCHANGES_MAX)
+
+    const started = exchanges.value.length > 0
+
+    return clear().then(() => {
+        if (started) chat_report()
+
+        assert(exchanges.value.length === 0)
+    })
 }
 
 async function chat_write(write: () => Promise<void>): Promise<void> {
@@ -349,7 +387,7 @@ async function folder_ask(name: FolderName): Promise<void> {
     assert(name.length > 0)
     assert(name.trim() === name)
 
-    return clear().then(() => {
+    return chat_start().then(() => {
         scope.value = { kind: 'project', project: name }
         view_set('ask')
     })
@@ -377,7 +415,7 @@ async function meeting_ask(job_id: JobID): Promise<void> {
     assert(job_id.length > 0)
     assert(job_id.trim() === job_id)
 
-    return clear().then(() => {
+    return chat_start().then(() => {
         scope.value = { kind: 'meeting', job_id }
         view_set('ask')
     })

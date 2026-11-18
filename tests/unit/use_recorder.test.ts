@@ -4,6 +4,7 @@ import { use_dialog } from '../../src/composables/use_dialog'
 import { use_recorder } from '../../src/composables/use_recorder'
 import { assert } from '../../src/lib/assert'
 import { ipc } from '../../src/lib/ipc'
+import { TRACE_POINTS } from '../../src/lib/trace'
 import { TO_FAKE, deferred_new } from './fixtures'
 import { AudioWorkletNodeStub, microphone_install, stream_new } from './microphone'
 
@@ -13,6 +14,7 @@ vi.mock('../../src/lib/ipc')
 const FLUSH_INTERVAL_MS = 1000
 const MESSAGE_FINISH_FAILED = 'audio error: recording finalize: no space left on device'
 const PATH_SAVED = '/home/you/Music/remi/Recording 2026-11-06 09-30-00.wav'
+const RING_SAMPLES = 1920
 const SAMPLES_DELIVERED = 1600
 
 const MESSAGE_LIMIT = 'audio error: the recording reached the limit of 6 hours; '
@@ -36,6 +38,13 @@ async function capture_with_failed_write(): Promise<void> {
     vi.advanceTimersByTime(FLUSH_INTERVAL_MS)
 
     await flushPromises()
+}
+
+function samples_deliver(samples: Float32Array): void {
+    assert(samples.length > 0)
+    assert(recorder.recording.value)
+
+    AudioWorkletNodeStub.port_last?.onmessage?.(new MessageEvent('message', { data: samples }))
 }
 
 beforeEach(() => {
@@ -134,6 +143,40 @@ describe('use_recorder while the microphone starts', () => {
     })
 })
 
+describe('use_recorder reports', () => {
+    it('reports a press of Record once, and none for a press while it runs', async () => {
+        const stream = deferred_new<unknown>()
+
+        microphone_install().mockReturnValue(stream.promise)
+        vi.mocked(ipc.recording_start).mockResolvedValue(PATH_SAVED)
+        vi.mocked(ipc.recording_discard).mockResolvedValue(undefined)
+
+        const first = recorder.start()
+        const second = recorder.start()
+
+        stream.resolve(stream_new(vi.fn<() => void>()))
+        await Promise.all([first, second])
+        await recorder.start()
+        await flushPromises()
+
+        expect(recorder.recording.value).toBe(true)
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([['in-app-recording']])
+
+        await recorder.discard()
+    })
+
+    it('reports the press of Record even when the microphone is refused', async () => {
+        microphone_install().mockRejectedValue(new DOMException('denied', 'NotAllowedError'))
+        vi.mocked(ipc.recording_discard).mockResolvedValue(undefined)
+
+        await expect(recorder.start()).rejects.toThrow('not allowed to use the microphone')
+        await flushPromises()
+
+        expect(recorder.recording.value).toBe(false)
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([['in-app-recording']])
+    })
+})
+
 describe('use_recorder after a refused start', () => {
     it('starts nothing new until the refused start has discarded its file', async () => {
         const discarded = deferred_new<undefined>()
@@ -181,5 +224,33 @@ describe('use_recorder while a recording stops', () => {
         expect(ipc.recording_finish).toHaveBeenCalledTimes(1)
         expect(ipc.recording_discard).not.toHaveBeenCalled()
         expect(recorder.recording.value).toBe(false)
+    })
+})
+
+describe('use_recorder trace', () => {
+    it('draws the newest samples oldest first, and nothing once the recording stops', async () => {
+        const silent = Array.from({ length: TRACE_POINTS }, () => 0)
+
+        vi.mocked(ipc.recording_start).mockResolvedValue(PATH_SAVED)
+        vi.mocked(ipc.recording_finish).mockResolvedValue(PATH_SAVED)
+
+        expect(recorder.trace_current()).toEqual([])
+
+        await recorder.start()
+
+        expect(recorder.trace_current()).toEqual(silent)
+
+        samples_deliver(new Float32Array(RING_SAMPLES).fill(0.05))
+        samples_deliver(new Float32Array(RING_SAMPLES / 3).fill(-0.05))
+
+        const halves = [...silent.keys()].map((index) => (index < TRACE_POINTS / 2 ? 0.38 : -0.38))
+
+        expect(recorder.trace_current()).toEqual(halves)
+
+        const stopped = recorder.stop()
+
+        expect(recorder.trace_current()).toEqual([])
+        await expect(stopped).resolves.toBe(PATH_SAVED)
+        expect(recorder.trace_current()).toEqual([])
     })
 })

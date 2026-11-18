@@ -22,7 +22,7 @@ import { use_settings } from '../composables/use_settings'
 import { assert } from '../lib/assert'
 import { seconds_to_clock_hours } from '../lib/duration'
 import { error_dialog_show, error_shown } from '../lib/errors'
-import { folder_key } from '../lib/folders'
+import { FOLDERS_LISTED_MAX, folder_key } from '../lib/folders'
 import { ipc } from '../lib/ipc'
 import { job_askable, job_duration_text, job_title } from '../lib/job_status'
 import {
@@ -35,6 +35,7 @@ import {
 import { transition_leave_inert } from '../lib/transition'
 import AskButton from './ask_button.vue'
 import FolderMoveDialog from './folder_move_dialog.vue'
+import FolderTag from './folder_tag.vue'
 import JobDragGhost from './job_drag_ghost.vue'
 import NoticeBanner from './notice_banner.vue'
 import RecordingTile from './recording_tile.vue'
@@ -42,7 +43,7 @@ import RowMenu from './row_menu.vue'
 import SidebarIcon from './sidebar_icon.vue'
 import StarButton from './star_button.vue'
 import type { MenuItem } from '../lib/menu'
-import type { JobListing, JobMeta, JobSearchHit, JobsViewChoice } from '../types'
+import type { FolderName, JobListing, JobMeta, JobSearchHit, JobsViewChoice } from '../types'
 
 
 type SortKey = 'date' | 'duration' | 'people' | 'title'
@@ -93,6 +94,7 @@ const {
     folder_menu_items,
     folder_menu_select,
     folder_move,
+    folders,
 } = use_folders()
 
 const { settings, update: settings_update } = use_settings()
@@ -146,6 +148,14 @@ const rename_busy = ref<boolean>(false)
 const rename_error = ref<string | null>(null)
 const move_target = ref<JobMeta | null>(null)
 const rename_covered = use_modal('dialog', () => rename_target.value !== null)
+
+const folder_names = computed(() => {
+    const names = new Map(folders.value.map((folder) => [folder_key(folder), folder]))
+
+    assert(names.size <= FOLDERS_LISTED_MAX)
+
+    return names
+})
 
 const jobs_shown = computed<JobListing[]>(() => {
     const folder = folder_current.value
@@ -219,6 +229,19 @@ async function folder_leave(job: JobMeta): Promise<void> {
     assert(folder_key(job.project ?? '').length > 0)
 
     return folder_move(job, null).catch(error_dialog_show)
+}
+
+function folder_tag_for(job: JobListing): FolderName | null {
+    assert(job.id.length > 0)
+    assert(job.project === null || typeof job.project === 'string')
+
+    if (folder_current.value !== null) return null
+
+    const project = job.project?.trim() ?? ''
+
+    if (project.length === 0) return null
+
+    return folder_names.value.get(folder_key(project)) ?? project
 }
 
 function home_open(): void {
@@ -719,7 +742,12 @@ function sort_value_of(job: JobListing, key: SortKey): number | string {
                         @keydown.enter="open(job)"
                         @pointerdown="drag_press($event, job)"
                     >
-                        <td class="recording-table-title">{{ job_title(job) }}</td>
+                        <td>
+                            <div class="recording-table-name">
+                                <span class="recording-table-title">{{ job_title(job) }}</span>
+                                <FolderTag :name="folder_tag_for(job)" />
+                            </div>
+                        </td>
                         <td class="recording-table-muted">
                             {{ people_cell_for(job) }}
                         </td>
@@ -779,6 +807,7 @@ function sort_value_of(job: JobListing, key: SortKey): number | string {
             <RecordingTile
                 v-for="job in jobs_filtered"
                 :key="job.id"
+                :folder="folder_tag_for(job)"
                 :job="job"
                 :title="job_title(job)"
                 :when="date_format(job.created_at_unix)"

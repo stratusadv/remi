@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.django_db
 REGION_PATTERN_CANADA = re.compile(r'CA-[A-Z]{2}')
 REGION_PATTERN_UNITED_STATES = re.compile(r'US-[A-Z]{2}')
+REGIONS_OUTSIDE_CANADA = ('US-DC', 'US-NY', 'outside')
 REGIONS_UNKNOWN = ('AB', 'ca-ab', 'CA-XX', ' CA-AB', 'CA-AB ', 'Alberta', 'OUTSIDE')
 
 
@@ -49,18 +50,18 @@ def test_region_choices_list_canada_then_the_united_states_by_name_then_outside(
 
 
 def test_account_create_stores_the_region_it_was_given(client: Client) -> None:
-    body = {'email': 'avery@example.com', 'name': 'Avery', 'promo_code': '', 'region': 'US-NY'}
+    body = {'email': 'avery@example.com', 'name': 'Avery', 'promo_code': '', 'region': 'CA-QC'}
     response = api_post(client, ACCOUNT_PATH, body=body)
 
     assert response.status_code == 201
-    assert Account.objects.get().region == RegionChoices.UNITED_STATES_NY
+    assert Account.objects.get().region == RegionChoices.CANADA_QC
 
 
-def test_account_create_refuses_a_region_it_does_not_offer(client: Client) -> None:
-    message = 'Choose your province or state.'
+def test_account_create_refuses_a_region_outside_canada_or_unknown(client: Client) -> None:
+    message = 'Choose your province or territory.'
     error = {'code': 'request_invalid', 'message': message, 'type': 'billing_error'}
 
-    for region in ('', *REGIONS_UNKNOWN):
+    for region in ('', *REGIONS_OUTSIDE_CANADA, *REGIONS_UNKNOWN):
         body = {'email': 'avery@example.com', 'name': 'Avery', 'promo_code': '', 'region': region}
         response = api_post(client, ACCOUNT_PATH, body=body)
 
@@ -90,8 +91,10 @@ def test_account_create_names_a_region_the_request_lacks_or_gets_wrong(client: C
     assert not Account.objects.exists()
 
 
-def test_each_region_offered_is_stored_and_read_back() -> None:
-    for index, region in enumerate(RegionChoices.values):
+def test_each_province_and_territory_is_stored_and_read_back() -> None:
+    canada = [code for code in RegionChoices.values if REGION_PATTERN_CANADA.fullmatch(code)]
+
+    for index, region in enumerate(canada):
         Account.services.factory.create(
             email=f'person{index}@example.com',
             name='Avery',
@@ -101,7 +104,18 @@ def test_each_region_offered_is_stored_and_read_back() -> None:
 
     stored = sorted(Account.objects.values_list('region', flat=True))
 
-    assert stored == sorted(RegionChoices.values)
+    assert len(canada) == 13
+    assert stored == sorted(canada)
+
+
+def test_an_account_from_before_sign_up_was_limited_to_canada_keeps_its_region() -> None:
+    account = create_test_account()
+    accounts = Account.objects.filter(pk=account.pk)
+
+    for region in REGIONS_OUTSIDE_CANADA:
+        accounts.update(region=region)
+
+        assert accounts.get().region == region
 
 
 def test_the_database_keeps_a_blank_region_and_refuses_one_the_choices_do_not_offer() -> None:

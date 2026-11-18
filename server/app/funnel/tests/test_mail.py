@@ -32,8 +32,8 @@ from app.promo_code.tests.factories import create_test_promo_code
 from harness.api import (
     ACCOUNT_PATH,
     BEACON_CONTENT_TYPE,
+    FUNNEL_CLICK_PATH,
     FUNNEL_EMAIL_PATH,
-    FUNNEL_VISIT_PATH,
     account_create,
     account_get,
     api_post,
@@ -358,11 +358,11 @@ def test_email_rate_counts_apart_from_beacons_and_stops_at_its_own_limit(
     sendgrid_fake: SendgridFake,
 ) -> None:
     rate_email = int(THROTTLE_RATE_EMAIL.split('/')[0])
-    fields_visit = {'campaign': 'wib', 'source': 'qr'}
-    body_visit = urlencode(fields_visit)
+    fields_click = {'campaign': 'wib', 'page': 'promo'}
+    body_click = urlencode(fields_click)
 
     for index in range(rate_email + 1):
-        response = client.post(FUNNEL_VISIT_PATH, data=body_visit, content_type=BEACON_CONTENT_TYPE)
+        response = client.post(FUNNEL_CLICK_PATH, data=body_click, content_type=BEACON_CONTENT_TYPE)
 
         assert response.status_code == 204, index
 
@@ -447,17 +447,17 @@ def test_funnel_answers_carry_the_landing_page_origin_and_other_answers_do_not(
     fields_sent = {'campaign': 'wib', 'email': ADDRESS}
     fields_invalid = {'campaign': 'wib', 'email': 'avery'}
     fields_failed = {'campaign': 'wib', 'email': 'morgan@example.com'}
-    fields_visit = {'campaign': 'wib', 'source': 'qr'}
-    body_visit = urlencode(fields_visit)
+    fields_click = {'campaign': 'wib', 'page': 'promo'}
+    body_click = urlencode(fields_click)
     body_account = {'email': ADDRESS, 'name': 'Avery', 'promo_code': '', 'region': 'CA-AB'}
 
     sent = _email_request(client, fields_sent)
     invalid = _email_request(client, fields_invalid)
     sendgrid_fake.error = _sendgrid_error('unreachable')
     failed = _email_request(client, fields_failed)
-    visit = client.post(FUNNEL_VISIT_PATH, data=body_visit, content_type=BEACON_CONTENT_TYPE)
+    click = client.post(FUNNEL_CLICK_PATH, data=body_click, content_type=BEACON_CONTENT_TYPE)
     account = api_post(client, ACCOUNT_PATH, body=body_account)
-    answers = [sent, invalid, failed, visit]
+    answers = [sent, invalid, failed, click]
 
     assert [answer.status_code for answer in answers] == [204, 400, 503, 204]
     assert {answer['Access-Control-Allow-Origin'] for answer in answers} == {FUNNEL_PAGE_ORIGIN}

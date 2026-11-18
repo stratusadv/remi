@@ -8,6 +8,8 @@ export const RECORDING_TITLED = 'Weekly platform sync'
 export const RECORDING_UNTITLED = 'discovery-call.wav'
 export const STREAM_TIMEOUT_MS = 30_000
 
+const COMMAND_ACTION_REPORT = 'account_action_report'
+const COMMAND_CALLS_PREFIX = '__remi_command_calls_'
 const CORNER_PIXELS = 4
 const DIALOG_ENTERING = '.app-dialog-enter-active'
 const DIALOG_LEAVING = '.app-dialog-leave-active'
@@ -17,12 +19,95 @@ const TITLE_SELECTION = 'Rewrite the selected text with AI'
 
 type RowLabel = string
 
+export async function actions_reported(page: Page): Promise<string[]> {
+    assert(!page.isClosed())
+    assert(page.url().length > 0)
+
+    const calls = await command_arguments(page, COMMAND_ACTION_REPORT)
+
+    return calls.map((call) => {
+        assert(typeof call === 'object', 'an action report carries no arguments')
+        assert(call !== null, 'an action report carries no arguments')
+
+        const action: unknown = Reflect.get(call, 'action')
+
+        assert(typeof action === 'string', 'an action report names no action')
+
+        return action
+    })
+}
+
+export async function actions_watch(page: Page): Promise<void> {
+    assert(!page.isClosed())
+    assert(page.url().length > 0)
+
+    await command_watch(page, COMMAND_ACTION_REPORT)
+}
+
 export async function app_open(page: Page): Promise<void> {
     assert(!page.isClosed())
     assert(page.url().length > 0)
 
     await page.goto('/')
     await expect(page.locator('.app-shell[data-ready="true"]')).toBeVisible()
+}
+
+async function command_arguments(page: Page, command: string): Promise<unknown[]> {
+    assert(!page.isClosed())
+    assert(command.length > 0)
+
+    return page.evaluate(
+        (key) => {
+            const calls: unknown = Reflect.get(window, key)
+
+            if (!Array.isArray(calls)) throw new Error(`${key} is not watched`)
+
+            return Array.from<unknown>(calls)
+        },
+        `${COMMAND_CALLS_PREFIX}${command}`,
+    )
+}
+
+export async function command_count(page: Page, command: string): Promise<number> {
+    assert(!page.isClosed())
+    assert(command.length > 0)
+
+    const calls = await command_arguments(page, command)
+
+    return calls.length
+}
+
+export async function command_watch(page: Page, command: string): Promise<void> {
+    assert(!page.isClosed())
+    assert(command.length > 0)
+
+    await page.evaluate(
+        ({ key, name }) => {
+            const internals: unknown = Reflect.get(window, '__TAURI_INTERNALS__')
+
+            if (typeof internals !== 'object') throw new Error('the browser mock is not installed')
+            if (internals === null) throw new Error('the browser mock is not installed')
+
+            const invoke_mock: unknown = Reflect.get(internals, 'invoke')
+
+            if (typeof invoke_mock !== 'function') throw new Error('the browser mock has no invoke')
+
+            const calls: unknown[] = []
+
+            Reflect.set(window, key, calls)
+
+            Reflect.set(internals, 'invoke', async (called: string, ...rest: unknown[]) => {
+                const call = [called, ...rest]
+
+                if (called === name) calls.push(rest[0])
+
+                const reply: unknown = await Reflect.apply(invoke_mock, internals, call)
+
+                return reply
+            })
+        },
+        { key: `${COMMAND_CALLS_PREFIX}${command}`, name: command },
+    )
 }
 
 export async function corner_click(page: Page, button: 'left' | 'right'): Promise<void> {

@@ -1,4 +1,5 @@
 import { computed, ref, watch } from 'vue'
+import { action_report } from '../lib/actions'
 import { assert } from '../lib/assert'
 import { error_shown } from '../lib/errors'
 import {
@@ -104,6 +105,8 @@ async function folder_create(): Promise<FolderName | null> {
     }
 
     await ipc.folder_create(name)
+
+    action_report('new-folder-created')
 
     error_message.value = null
 

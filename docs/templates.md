@@ -37,6 +37,6 @@ Two or three sentences on what the meeting was about and where it ended up.
 - [ ] **Person's name** the question they are following up on, and by when if a date was mentioned.
 ```
 
-The AI keeps each heading and replaces each note with real content. It keeps a table's header row and writes one row for each item, and it writes one `- [ ]` item for each real checklist item. A section with nothing to report reads `Nothing recorded.`.
+The AI keeps each heading and replaces each note with real content. It keeps a table's header row and writes one row for each item, and it writes one `- [ ]` item for each real checklist item. A section with nothing to report reads `Nothing recorded.`, unless its note says to leave the section out. The AI adds a heading of its own only where a note asks for one.
 
 A role never appears next to a name, even where a template asks for one.

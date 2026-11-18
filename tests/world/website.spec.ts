@@ -5,7 +5,6 @@ import { assert } from '../../src/lib/assert'
 import {
     CODE_PATTERN,
     address_unique,
-    delta_key,
     descriptor_read,
     fakes_control,
     messages_to,
@@ -294,9 +293,10 @@ test(TITLE_CONFERENCE, async ({ page_open }) => {
     await download_start(computer, 'Download for Windows', 'windows')
 
     await portal_deltas_wait(before, {
-        [delta_key({ campaign: 'wib', statistic: 'remi--funnel--downloads' })]: 1,
-        [delta_key({ campaign: 'wib', statistic: 'remi--funnel--scans' })]: 1,
-        [delta_key({ campaign: 'wib', statistic: 'remi--funnel--visits' })]: 2,
+        'remi:acquisition:click:download': 1,
+        'remi:acquisition:click:download:windows': 1,
+        'remi:acquisition:click:wib:download': 1,
+        'remi:acquisition:click:wib:promo': 1,
     })
 
     const messages = await messages_to(address)
@@ -318,8 +318,8 @@ test(TITLE_GENERAL, async ({ page_open }) => {
     await download_start(computer, 'Download for macOS', 'macos')
 
     await portal_deltas_wait(before, {
-        [delta_key({ campaign: 'general', statistic: 'remi--funnel--downloads' })]: 1,
-        [delta_key({ campaign: 'general', statistic: 'remi--funnel--visits' })]: 2,
+        'remi:acquisition:click:download': 1,
+        'remi:acquisition:click:download:mac': 1,
     })
 })
 
@@ -332,8 +332,9 @@ test(TITLE_HOME, async ({ page_open }) => {
     await download_start(page, 'Download for Ubuntu', null)
 
     await portal_deltas_wait(before, {
-        [delta_key({ campaign: 'general', statistic: 'remi--funnel--downloads' })]: 1,
-        [delta_key({ campaign: 'general', statistic: 'remi--funnel--visits' })]: 1,
+        'remi:acquisition:click:download': 1,
+        'remi:acquisition:click:download:linux': 1,
+        'remi:acquisition:click:landing': 2,
     })
 })
 
@@ -355,8 +356,7 @@ test(TITLE_REFUSED, async ({ page_open }) => {
     }
 
     await portal_deltas_wait(before, {
-        [delta_key({ campaign: 'wib', statistic: 'remi--funnel--scans' })]: 1,
-        [delta_key({ campaign: 'wib', statistic: 'remi--funnel--visits' })]: 1,
+        'remi:acquisition:click:wib:promo': 1,
     })
 
     const messages = await messages_to(address)

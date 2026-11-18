@@ -9,11 +9,6 @@ export interface Descriptor {
     readonly remi_url: string
 }
 
-export interface Metric {
-    readonly campaign: string
-    readonly statistic: string
-}
-
 export interface SendgridMessage {
     readonly html: string
     readonly subject: string
@@ -27,30 +22,29 @@ export interface StripeSession {
     readonly payment_status: string
 }
 
+interface PortalValue {
+    readonly reference: string
+    readonly value: number
+}
+
 export type Totals = ReadonlyMap<string, number>
 
-export const CAMPAIGNS: readonly string[] = Object.freeze(['general', 'wib'])
 export const CODE_PATTERN = /WIB-[23456789A-HJKMNP-TV-Z]{4}-[23456789A-HJKMNP-TV-Z]{4}/u
 export const PORTAL_WAIT_MS = 30_000
 
-export const STATISTICS: readonly string[] = Object.freeze([
-    'remi--funnel--activations',
-    'remi--funnel--checkouts',
-    'remi--funnel--downloads',
-    'remi--funnel--paying-clients',
-    'remi--funnel--promos',
-    'remi--funnel--purchases',
-    'remi--funnel--scans',
-    'remi--funnel--signups',
-    'remi--funnel--visits',
-    'remi--sales--revenue',
-    'remi--usage--hours',
-    'remi--usage--meetings',
-])
-
 const DAY_MS = 86_400_000
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/u
 const POLL_INTERVALS_MS = Object.freeze([250])
+const PORTAL_DAY_OFFSETS: readonly number[] = Object.freeze([-1, 0, 1])
+const PORTAL_PAGE_SIZE = 5000
+const PORTAL_REFERENCE_PREFIX = 'remi:'
+const PORTAL_SUB_DOMAIN_KEY = 'remi--metrics'
 const QUANTUM_PLACES = 10_000
+
+const PORTAL_STATISTICS: readonly string[] = Object.freeze([
+    'remi--remi-metric--acquisition',
+    'remi--remi-metric--action',
+])
 
 
 export function address_unique(prefix: string): string {
@@ -60,13 +54,6 @@ export function address_unique(prefix: string): string {
     const salt = `${String(Date.now())}${String(process.pid)}${String(Math.random()).slice(2, 8)}`
 
     return `${prefix}-${salt}@example.com`
-}
-
-export function delta_key({ campaign, statistic }: Metric): string {
-    assert(STATISTICS.includes(statistic))
-    assert(CAMPAIGNS.includes(campaign))
-
-    return `${statistic} ${campaign}`
 }
 
 export function descriptor_read(): Descriptor {
@@ -107,6 +94,44 @@ export async function messages_to(address: string): Promise<SendgridMessage[]> {
     return messages.filter((message) => message.to.includes(address))
 }
 
+export async function portal_deltas_wait(
+    before: Totals,
+    expected: Readonly<Record<string, number>>,
+): Promise<void> {
+    assert([...before.values()].every((total) => total > 0), 'a total before is not positive')
+    assert(Object.keys(expected).length > 0)
+
+    const entries = Object.entries(expected)
+
+    assert(entries.every(([reference]) => reference.startsWith(PORTAL_REFERENCE_PREFIX)))
+    assert(entries.every(([, delta]) => delta !== 0), 'an expected delta is zero')
+
+    const wanted = Object.fromEntries(entries.sort(entry_compare))
+    const options = { intervals: [...POLL_INTERVALS_MS], timeout: PORTAL_WAIT_MS }
+
+    await expect.poll(async () => portal_deltas(before), options).toEqual(wanted)
+}
+
+export async function portal_totals(): Promise<Totals> {
+    const now = Date.now()
+    const days = PORTAL_DAY_OFFSETS.map((offset) => date_iso(now + (offset * DAY_MS)))
+
+    const queries = PORTAL_STATISTICS.flatMap(
+        (statistic) => days.map((day) => ({ day, statistic })),
+    )
+
+    const replies = await Promise.all(queries.map(portal_day_values))
+    const totals = new Map<string, number>()
+
+    assert(replies.length === PORTAL_STATISTICS.length * PORTAL_DAY_OFFSETS.length)
+
+    for (const { reference, value } of replies.flat()) {
+        totals.set(reference, (totals.get(reference) ?? 0) + value)
+    }
+
+    return totals
+}
+
 export async function sessions_list(): Promise<StripeSession[]> {
     const state = await fakes_state()
     const sessions = array_field(state, 'sessions').map(session_of)
@@ -115,81 +140,6 @@ export async function sessions_list(): Promise<StripeSession[]> {
     assert(sessions.every((session) => Number.isSafeInteger(session.amount_total)))
 
     return sessions
-}
-
-export async function portal_total({ campaign, statistic }: Metric): Promise<number> {
-    assert(STATISTICS.includes(statistic))
-    assert(CAMPAIGNS.includes(campaign))
-
-    const descriptor = descriptor_read()
-    const now = Date.now()
-
-    const query = new URLSearchParams({
-        end_date: date_iso(now + DAY_MS),
-        start_date: date_iso(now - DAY_MS),
-        sub_domain_key: `remi--${campaign}`,
-    })
-
-    const base = `${descriptor.portal_url}/ds/api/v1/metric/domain/statistic`
-    const headers = { 'x-api-key': descriptor.portal_api_key }
-    const response = await fetch(`${base}/${statistic}/summary?${query.toString()}`, { headers })
-
-    assert(response.ok, `the portal answered ${String(response.status)} for ${statistic}`)
-
-    const reply: unknown = await response.json()
-    const totals = Object.values(record_of(Reflect.get(record_of(reply), 'totals')))
-
-    assert(totals.every((total) => typeof total === 'string'), `${statistic} totals are not text`)
-
-    return totals.reduce<number>((sum, total) => sum + Number(total), 0)
-}
-
-export async function portal_totals(): Promise<Totals> {
-    const keys = STATISTICS.flatMap(
-        (statistic) => CAMPAIGNS.map((campaign) => ({ campaign, statistic })),
-    )
-
-    const totals = await Promise.all(keys.map(async (metric) => {
-        const total = await portal_total(metric)
-
-        return [delta_key(metric), total] as const
-    }))
-
-    assert(totals.length === STATISTICS.length * CAMPAIGNS.length)
-    assert(new Set(totals.map(([key]) => key)).size === totals.length)
-
-    return new Map(totals)
-}
-
-export async function portal_deltas_wait(
-    before: Totals,
-    expected: Readonly<Record<string, number>>,
-): Promise<void> {
-    assert(before.size === STATISTICS.length * CAMPAIGNS.length)
-    assert(Object.keys(expected).length > 0)
-
-    const wanted = Object.fromEntries(Object.entries(expected).sort(entry_compare))
-    const options = { intervals: [...POLL_INTERVALS_MS], timeout: PORTAL_WAIT_MS }
-
-    await expect.poll(async () => portal_deltas(before), options).toEqual(wanted)
-}
-
-async function portal_deltas(before: Totals): Promise<Record<string, number>> {
-    assert(before.size > 0)
-
-    const after = await portal_totals()
-
-    assert(after.size === before.size)
-
-    const moved = [...after].filter(([key, total]) => total !== before.get(key))
-
-    const deltas = moved.map(([key, total]) => {
-        const change = Math.round((total - (before.get(key) ?? 0)) * QUANTUM_PLACES)
-
-        return [key, change / QUANTUM_PLACES] as const
-    })
-
-    return Object.fromEntries(deltas.sort(entry_compare))
 }
 
 function array_field(value: unknown, field: string): unknown[] {
@@ -259,6 +209,64 @@ function number_field(value: unknown, field: string): number {
     assert(typeof found === 'number', `${field} is not a number`)
 
     return found
+}
+
+async function portal_day_values(
+    { day, statistic }: { day: string, statistic: string },
+): Promise<PortalValue[]> {
+    assert(DAY_PATTERN.test(day))
+    assert(PORTAL_STATISTICS.includes(statistic))
+
+    const descriptor = descriptor_read()
+
+    const query = new URLSearchParams({
+        limit: String(PORTAL_PAGE_SIZE),
+        sub_domain_key: PORTAL_SUB_DOMAIN_KEY,
+        value_date: day,
+    })
+
+    const base = `${descriptor.portal_url}/ds/api/v1/metric/domain/statistic`
+    const headers = { 'x-api-key': descriptor.portal_api_key }
+    const response = await fetch(`${base}/${statistic}/values?${query.toString()}`, { headers })
+
+    assert(response.ok, `the portal answered ${String(response.status)} for ${statistic}`)
+
+    const reply: unknown = await response.json()
+
+    assert(Array.isArray(reply), `the portal sent the ${statistic} values as no list`)
+    assert(reply.length < PORTAL_PAGE_SIZE, `${statistic} on ${day} fills a page of values`)
+
+    return reply.map(portal_value_of)
+}
+
+async function portal_deltas(before: Totals): Promise<Record<string, number>> {
+    assert([...before.values()].every((total) => total > 0), 'a total before is not positive')
+
+    const after = await portal_totals()
+    const references = [...new Set([...before.keys(), ...after.keys()])]
+
+    const deltas = references.map((reference) => {
+        const change = (after.get(reference) ?? 0) - (before.get(reference) ?? 0)
+
+        return [reference, Math.round(change * QUANTUM_PLACES) / QUANTUM_PLACES] as const
+    })
+
+    const moved = deltas.filter(([, delta]) => delta !== 0)
+
+    assert(moved.length <= references.length)
+
+    return Object.fromEntries(moved.sort(entry_compare))
+}
+
+function portal_value_of(value: unknown): PortalValue {
+    const reference = text_field(value, 'reference')
+    const amount = Number(text_field(value, 'value'))
+
+    assert(reference.startsWith(PORTAL_REFERENCE_PREFIX), `${reference} is outside remi`)
+    assert(Number.isFinite(amount), `${reference} carries ${String(amount)}`)
+    assert(amount > 0, `${reference} carries ${String(amount)}`)
+
+    return { reference, value: amount }
 }
 
 function record_of(value: unknown): object {

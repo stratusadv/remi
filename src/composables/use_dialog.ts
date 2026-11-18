@@ -2,7 +2,7 @@ import { ref } from 'vue'
 import { assert } from '../lib/assert'
 
 
-export type DialogKind = 'info' | 'warning' | 'error'
+export type DialogKind = 'error' | 'info' | 'success' | 'warning'
 
 export interface DialogConfirmOptions {
     title?: string

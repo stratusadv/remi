@@ -11,15 +11,33 @@ import {
 import type { Locator, Page } from '@playwright/test'
 
 
+interface CheckoutPanels {
+    card_below: boolean
+    card_left: boolean
+    edges_aligned: boolean
+}
+
 const BALANCE_LINE_SIGNED_IN = '250 hours of transcription left'
 const BILLING_EMPTY = '/?billing=empty'
 const BILLING_SIGNED_IN = '/?billing=signed-in'
 const BILLING_SIGNED_OUT = '/?billing=signed-out'
 const LABEL_SIGN_IN_CODE = 'Sign-in code'
+const PANELS_BESIDE = Object.freeze({ card_below: false, card_left: true, edges_aligned: true })
+const PANELS_STACKED = Object.freeze({ card_below: true, card_left: false, edges_aligned: false })
 const PLACEHOLDER_PROMO = 'Enter a promo code'
+const THANKS_PAID = 'Your payment went through. You now have 260 hours of transcription.'
+const VIEWPORT_SHORT = Object.freeze({ height: 800, width: 1280 })
+const VIEWPORT_STACKED = Object.freeze({ height: 720, width: 1000 })
+const VIEWPORT_TALL = Object.freeze({ height: 900, width: 1280 })
 
 const MESSAGE_BALANCE = 'This recording needs 3 minutes of transcription and the account has '
     + '0 minutes left. Buy more hours to transcribe it.'
+
+const POINTS = Object.freeze([
+    '$1.00 per hour of transcription',
+    'Unlimited notes and Ask questions for monthly active users',
+    'One-time payment, no subscription',
+])
 
 const STRIPE_STANDIN = `
 window.Stripe = function () {
@@ -65,8 +83,14 @@ window.Stripe.version = 'endive'
 
 const STRIPE_STANDIN_HEADERS = Object.freeze({ 'content-type': 'application/javascript' })
 
-const TITLE_BUY = 'the buy hours page pays for the pack chosen and lets the account buy again'
+const TITLE_BUY = 'the buy hours page pays for the hours typed and lets the account buy again'
 const TITLE_CHARGE = 'a transcription takes its started seconds from the balance the sidebar shows'
+const TITLE_PANELS = 'the hours card sits left of the points and below them when narrow'
+const TITLE_PANELS_TALL = 'the hours card and the points grow with the height of the window'
+const TITLE_SIGN_UP = 'a copy with no account signs up and is welcomed with its promo code applied'
+
+const WELCOME_PROMO = 'Your promo code wib2026 has been applied. '
+    + 'You have 250 hours of transcription to start.'
 
 
 async function account_tab_open(page: Page): Promise<void> {
@@ -77,12 +101,61 @@ async function account_tab_open(page: Page): Promise<void> {
     await page.getByRole('tab', { name: 'Account' }).click()
 }
 
+async function hours_buy(page: Page): Promise<void> {
+    assert(!page.isClosed())
+    assert(page.url().includes('billing='))
+
+    await hours_card(page).getByRole('button', { name: 'Buy hours' }).click()
+}
+
+function hours_card(page: Page): Locator {
+    assert(!page.isClosed())
+    assert(page.url().includes('billing='))
+
+    return page.locator('.hours-card')
+}
+
 async function billing_open(page: Page, path: string): Promise<void> {
     assert(!page.isClosed())
     assert(path.startsWith('/?billing='))
 
     await page.goto(path)
     await expect(page.locator('.app-shell[data-ready="true"]')).toBeVisible()
+}
+
+async function card_height(page: Page): Promise<number | null> {
+    assert(!page.isClosed())
+    assert(page.url().includes('billing='))
+
+    return page.evaluate(() => {
+        const card = document.querySelector('.hours-card')?.getBoundingClientRect()
+
+        if (card === undefined) return null
+
+        return Math.round(card.height)
+    })
+}
+
+async function checkout_panels(page: Page): Promise<CheckoutPanels | null> {
+    assert(!page.isClosed())
+    assert(page.url().includes('billing='))
+
+    return page.evaluate(() => {
+        const card = document.querySelector('.hours-card')?.getBoundingClientRect()
+        const header = document.querySelector('.checkout-header')?.getBoundingClientRect()
+
+        if (card === undefined) return null
+        if (header === undefined) return null
+
+        const bottom_same = Math.abs(card.bottom - header.bottom) < 1
+        const top_same = Math.abs(card.top - header.top) < 1
+
+        return {
+            card_below: card.top > header.bottom,
+            card_left: card.right < header.left,
+            edges_aligned: bottom_same && top_same,
+        }
+    })
 }
 
 function sidebar_balance(page: Page): Locator {
@@ -111,7 +184,7 @@ async function transcribe_picked(page: Page): Promise<void> {
     await page.getByRole('button', { name: 'Transcribe' }).click()
 }
 
-test('a copy with no account signs up and is credited its promo code', async ({ page }) => {
+test(TITLE_SIGN_UP, async ({ page }) => {
     await billing_open(page, BILLING_SIGNED_OUT)
 
     await expect(page.getByRole('heading', { name: 'Welcome to remi' })).toBeVisible()
@@ -121,11 +194,18 @@ test('a copy with no account signs up and is credited its promo code', async ({ 
     await page.getByLabel('Email', { exact: true }).fill('avery@example.com')
     await page.getByLabel('Promo code (optional)').fill(' wib2026 ')
     await expect(page.getByRole('button', { name: 'Get started' })).toBeDisabled()
-    await page.getByLabel('Province or state').selectOption({ label: 'Alberta' })
+    await page.getByLabel('Province or territory').selectOption({ label: 'Alberta' })
     await page.getByRole('button', { name: 'Get started' }).click()
 
+    const welcome = dialog(page, 'Welcome to remi')
+
+    await expect(welcome).toContainText(WELCOME_PROMO)
     await expect(sidebar_balance(page)).toHaveText('250 hours left')
-    await expect(page.getByRole('heading', { name: 'Welcome to remi' })).toHaveCount(0)
+    await expect(page.locator('.welcome')).toHaveCount(0)
+
+    await welcome.getByRole('button', { name: 'OK' }).click()
+
+    await expect(welcome).toHaveCount(0)
 })
 
 test('a sign-in code from another computer signs the copy in', async ({ page }) => {
@@ -169,41 +249,113 @@ test(TITLE_BUY, async ({ page }) => {
     await billing_open(page, BILLING_SIGNED_IN)
     await page.getByRole('button', { name: 'Buy hours', exact: true }).click()
 
+    const hours = hours_card(page).getByLabel('How many hours?')
+
     await expect(page.getByRole('heading', { name: 'Buy hours' })).toBeVisible()
     await expect(page.getByText(BALANCE_LINE_SIGNED_IN)).toBeVisible()
-    await expect(page.locator('.offer')).toHaveCount(3)
-    await expect(page.locator('.offer[data-best="true"]')).toContainText('Best value')
-    await expect(page.locator('.offer[data-best="true"]')).toContainText('Save 50%')
+    await expect(page.locator('.checkout-points li')).toHaveText(POINTS)
+    await expect(hours).toHaveValue('10')
+    await expect(hours_card(page)).toContainText('260 hours')
+    await expect(hours_card(page)).toContainText('$10.00')
 
-    await page.getByRole('button', { name: 'Buy 50 hours' }).click()
+    await hours_buy(page)
+
+    const order = page.locator('.checkout-order')
 
     await expect(page.getByLabel('Card number')).toBeVisible()
-    await expect(page.locator('.checkout-order')).toContainText('300 hours')
+    await expect(order).toContainText('260 hours')
 
     await page.getByRole('button', { name: 'Pay $10.00' }).click()
 
-    await expect(page.getByText('You now have 300 hours of transcription.')).toBeVisible()
-    await expect(page.getByText('300 hours of transcription left')).toBeVisible()
-    await expect(sidebar_balance(page)).toHaveText('300 hours left')
+    const thanks = dialog(page, 'Thank you')
 
-    await page.getByRole('button', { name: 'Buy more hours' }).click()
-    await page.getByRole('button', { name: 'Buy 200 hours' }).click()
+    await expect(thanks).toContainText(THANKS_PAID)
+    await expect(sidebar_balance(page)).toHaveText('260 hours left')
 
-    await expect(page.locator('.checkout-order')).toContainText('$30.00')
-    await expect(page.locator('.checkout-order')).toContainText('500 hours')
+    await thanks.getByRole('button', { name: 'OK' }).click()
 
-    await page.getByRole('button', { name: 'All packs' }).click()
-    await page.getByRole('button', { name: 'Buy 50 hours' }).click()
+    await expect(thanks).toHaveCount(0)
+    await expect(page.getByText('260 hours of transcription left')).toBeVisible()
+
+    await hours.fill('200')
+
+    await expect(hours_card(page)).toContainText('460 hours')
+    await expect(hours_card(page)).toContainText('$200.00')
+
+    await hours_buy(page)
+
+    await expect(order).toContainText('$200.00')
+    await expect(order).toContainText('460 hours')
+
+    await page.getByRole('button', { name: 'Change hours' }).click()
+
+    await expect(hours).toHaveValue('200')
+
+    await hours.fill('10')
+    await hours_buy(page)
 
     await expect(page.getByLabel('Card number')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Pay $10.00' })).toBeEnabled()
+})
+
+test('the buy hours page refuses hours it does not sell', async ({ page }) => {
+    await billing_open(page, BILLING_SIGNED_IN)
+    await page.getByRole('button', { name: 'Buy hours', exact: true }).click()
+
+    const buy = hours_card(page).getByRole('button', { name: 'Buy hours' })
+    const hint = hours_card(page).locator('.hours-card-hint')
+    const hours = hours_card(page).getByLabel('How many hours?')
+
+    await expect(hint).toHaveText('Choose from 1 to 1000 hours.')
+    await expect(hint).toHaveAttribute('data-invalid', 'false')
+
+    await hours.fill('0')
+
+    await expect(buy).toBeDisabled()
+    await expect(hint).toHaveAttribute('data-invalid', 'true')
+
+    await hours.fill('1001')
+
+    await expect(buy).toBeDisabled()
+    await expect(hint).toHaveAttribute('data-invalid', 'true')
+    await expect(page.getByLabel('Card number')).toHaveCount(0)
+})
+
+test(TITLE_PANELS, async ({ page }) => {
+    await billing_open(page, BILLING_SIGNED_IN)
+    await page.getByRole('button', { name: 'Buy hours', exact: true }).click()
+
+    await expect.poll(async () => checkout_panels(page)).toEqual(PANELS_BESIDE)
+
+    await page.setViewportSize(VIEWPORT_STACKED)
+
+    await expect.poll(async () => checkout_panels(page)).toEqual(PANELS_STACKED)
+})
+
+test(TITLE_PANELS_TALL, async ({ page }) => {
+    await page.setViewportSize(VIEWPORT_SHORT)
+    await billing_open(page, BILLING_SIGNED_IN)
+    await page.getByRole('button', { name: 'Buy hours', exact: true }).click()
+
+    await expect.poll(async () => checkout_panels(page)).toEqual(PANELS_BESIDE)
+
+    const height_short = await card_height(page)
+
+    assert(height_short !== null)
+
+    const height_tall = height_short + VIEWPORT_TALL.height - VIEWPORT_SHORT.height
+
+    await page.setViewportSize(VIEWPORT_TALL)
+
+    await expect.poll(async () => card_height(page)).toBe(height_tall)
+    await expect.poll(async () => checkout_panels(page)).toEqual(PANELS_BESIDE)
 })
 
 test('a test card pays the open checkout in one click', async ({ page }) => {
     await stripe_standin_route(page)
     await billing_open(page, BILLING_SIGNED_IN)
     await page.getByRole('button', { name: 'Buy hours', exact: true }).click()
-    await page.getByRole('button', { name: 'Buy 50 hours' }).click()
+    await hours_buy(page)
 
     const test_cards = page.locator('.checkout-test')
 
@@ -211,8 +363,8 @@ test('a test card pays the open checkout in one click', async ({ page }) => {
 
     await test_cards.getByRole('button', { name: 'Succeeds (4242)' }).click()
 
-    await expect(page.getByText('You now have 300 hours of transcription.')).toBeVisible()
-    await expect(sidebar_balance(page)).toHaveText('300 hours left')
+    await expect(dialog(page, 'Thank you')).toContainText(THANKS_PAID)
+    await expect(sidebar_balance(page)).toHaveText('260 hours left')
 })
 
 test('the account tab sends a purchase to the buy hours page', async ({ page }) => {
@@ -222,7 +374,7 @@ test('the account tab sends a purchase to the buy hours page', async ({ page }) 
     await setting(page, 'Balance').getByRole('button', { name: 'Buy hours' }).click()
 
     await expect(page.getByRole('heading', { name: 'Buy hours' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Buy 50 hours' })).toBeEnabled()
+    await expect(hours_card(page).getByRole('button', { name: 'Buy hours' })).toBeEnabled()
 })
 
 test(TITLE_CHARGE, async ({ page }) => {

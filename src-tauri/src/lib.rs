@@ -28,6 +28,7 @@ mod transcription;
 mod workspace;
 
 use account::{
+    account_action_report,
     account_checkout_finish,
     account_checkout_start,
     account_code_get,
@@ -557,6 +558,7 @@ fn invoke_handler_general() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
         account_promo_redeem,
         account_checkout_start,
         account_checkout_finish,
+        account_action_report,
         notes_templates_list,
         notes_template_save,
         notes_template_delete,

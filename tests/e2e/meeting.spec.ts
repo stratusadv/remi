@@ -4,8 +4,10 @@ import {
     HAS_TEXT,
     RECORDING_TITLED,
     RECORDING_UNTITLED,
+    STREAM_TIMEOUT_MS,
     app_open,
     dialog,
+    editor,
     folder_item,
     nav_to,
     recording_open,
@@ -217,6 +219,7 @@ test('the template select changes the template and Next opens Notes', async ({ p
     await page.getByRole('button', { name: 'Next' }).click()
 
     await expect(step_current(page)).toHaveText('Notes')
+    await expect(editor(page)).toBeVisible({ timeout: STREAM_TIMEOUT_MS })
 
     await page.getByRole('button', { name: 'Back' }).click()
 

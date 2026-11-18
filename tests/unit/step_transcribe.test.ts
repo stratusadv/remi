@@ -449,6 +449,37 @@ describe('StepTranscribe while the microphone starts', () => {
     })
 })
 
+describe('StepTranscribe reports', () => {
+    it('reports a picked file as an upload, and nothing for a closed picker', async () => {
+        vi.mocked(documentDir).mockResolvedValue(FOLDER_DOCUMENTS)
+        vi.mocked(dialog_open).mockResolvedValueOnce(null).mockResolvedValueOnce(PATH_PICKED)
+
+        const { step } = await mount_step()
+
+        await button_click(step, 'Replace')
+
+        expect(ipc.account_action_report).not.toHaveBeenCalled()
+
+        await button_click(step, 'Replace')
+
+        expect(pipeline.source_path.value).toBe(PATH_PICKED)
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([['upload-recording']])
+    })
+
+    it('reports a recording, and no upload for its file or a refused drop or pick', async () => {
+        const stream = microphone_prepare()
+        const step = await recorder_step_mount()
+
+        await record_through_prompt(step)
+        stream.resolve(stream_new(vi.fn<() => void>()))
+        await flushPromises()
+        await button_click(step, LABEL_STOP)
+
+        expect(pipeline.source_path.value).toBe(PATH_RECORDING)
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([['in-app-recording']])
+    })
+})
+
 describe('StepTranscribe while a recording stops', () => {
     it('disables Stop and Discard until the file is finished', async () => {
         const finished = deferred_new<string>()

@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head>
+    <script type="module" src="assets/consent.js"></script>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>remi: your meetings, remembered</title>
@@ -19,7 +20,7 @@
     <link rel="stylesheet" href="assets/cubist.css">
     <link rel="stylesheet" href="assets/home.css">
 </head>
-<body data-campaign="general">
+<body data-campaign="general" data-page="landing">
     <header class="bar">
         <a class="brand" href="./" aria-label="remi home">
             <svg class="lockup" viewBox="0 0 349.00 112.75" role="img" aria-label="remi">
@@ -37,7 +38,7 @@
             <a href="overview/">Docs</a>
         </nav>
 
-        <a class="button small" href="#download">Download</a>
+        <a class="button small" data-cta href="#download">Download</a>
     </header>
 
     <main>
@@ -61,7 +62,7 @@
                     <p class="lede">Never take meeting notes again. remi writes them for you, remembers every word, and tells you exactly what was decided.</p>
 
                     <div class="cta">
-                        <a class="button" id="get" data-get href="#download">Download remi</a>
+                        <a class="button" id="get" data-cta data-get href="#download">Download remi</a>
                         <a class="button quiet" href="#how">How it works</a>
                     </div>
 
@@ -1312,13 +1313,13 @@
                             <p>The remi app runs on your computer, not your phone. Send yourself this page and open it there.</p>
 
                             <div class="cta">
-                                <button class="button small" id="share" type="button" hidden>Send this page</button>
-                                <a class="button quiet small" href="mailto:?subject=remi%20download%20link&amp;body=Open%20this%20on%20your%20computer%20to%20download%20remi%3A%20https%3A%2F%2Fremirememberthat.com%2Fdownload%2F">Email me the link</a>
+                                <button class="button small" id="share" data-cta type="button" hidden>Send this page</button>
+                                <a class="button quiet small" data-cta href="mailto:?subject=remi%20download%20link&amp;body=Open%20this%20on%20your%20computer%20to%20download%20remi%3A%20https%3A%2F%2Fremirememberthat.com%2Fdownload%2F">Email me the link</a>
                             </div>
                         </div>
 
                         <div class="cta">
-                            <a class="button" id="get-main" data-get href="https://github.com/stratusadv/remi/releases/latest">Download remi</a>
+                            <a class="button" id="get-main" data-cta data-get href="https://github.com/stratusadv/remi/releases/latest">Download remi</a>
                         </div>
 
                         <p class="release" id="release" hidden></p>
@@ -1337,6 +1338,8 @@
             <a href="overview/">Documentation</a>
             <a href="https://github.com/stratusadv/remi/releases">All releases</a>
             <a href="https://github.com/stratusadv/remi/blob/main/LICENSE">MIT license</a>
+            <a href="privacy/">Privacy policy</a>
+            <a href="#cookie-settings">Cookie settings</a>
         </nav>
 
         <a class="stratus" href="https://stratusadv.com">

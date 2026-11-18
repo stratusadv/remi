@@ -7,6 +7,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from types import MappingProxyType
 from typing_extensions import NamedTuple
 
 from django.utils import timezone
@@ -16,19 +17,25 @@ from app.funnel.choices import CampaignChoices
 
 
 CAMPAIGN_GENERAL = 'general'
-CENTS_PER_DOLLAR = 100
 CHARGE_SECONDS_MAX = 21_600
+CHECKOUT_HOURS_MAX = 1_000
 CURRENCY_CODE_LENGTH = 3
 HOURS_QUANTUM = Decimal('0.0001')
 JOB_ID_PATTERN = re.compile(r'[0-9a-f]{32}')
+METRIC_STATISTICS = ('acquisition', 'action')
+OFFER_HOURS_LISTED = (10, 50, 200)
 PROMO_CODE_LENGTH_MAX = 64
 QUESTION_TOKENS_MAX = 1_000_000
 REFERENCE_TOPUP_PREFIX = 'topup:'
-REVENUE_QUANTUM = Decimal('0.01')
 SECONDS_PER_HOUR = 3600
-STATISTIC_PREFIX = 'remi--'
 TOKEN_LENGTH_MAX = 256
 TOPUP_BALANCE_SECONDS = 1000 * SECONDS_PER_HOUR
+
+PLATFORM_QUALIFIERS = MappingProxyType({
+    'linux': 'linux',
+    'macos': 'mac',
+    'windows': 'windows',
+})
 
 
 class Expected(NamedTuple):
@@ -38,7 +45,7 @@ class Expected(NamedTuple):
 
 
 class Metric(NamedTuple):
-    campaign: str
+    reference: str
     statistic: str
 
 
@@ -137,18 +144,6 @@ def metric_hours(seconds: int) -> Decimal:
     return hours
 
 
-def metric_revenue(cents: int) -> Decimal:
-    if cents <= 0:
-        message = f'cents must be positive: {cents}'
-        raise ValueError(message)
-
-    revenue = (Decimal(cents) / CENTS_PER_DOLLAR).quantize(REVENUE_QUANTUM)
-
-    assert revenue * CENTS_PER_DOLLAR == cents
-
-    return revenue
-
-
 def _promo_text_refusal(stripped: str) -> Expected | None:
     assert stripped == stripped.strip()
 
@@ -171,7 +166,7 @@ def token_digest(token: str) -> str:
 @dataclass
 class WorldModel:
     limits: AskLimits
-    offers: dict[int, int]
+    price_hour_cents: int
     accounts: dict[int, AccountModel] = field(default_factory=dict)
     address_sent_at: dict[str, datetime] = field(default_factory=dict)
     email_day_counts: Counter[str] = field(default_factory=Counter)
@@ -181,15 +176,27 @@ class WorldModel:
     promos: dict[str, PromoModel] = field(default_factory=dict)
     sessions: dict[str, SessionModel] = field(default_factory=dict)
 
-    def metric_add(self, *, campaign: str, statistic: str, value: Decimal = Decimal(1)) -> None:
+    def download_record(self, *, campaign: str, platform: str) -> None:
         assert campaign in CampaignChoices.values
-        assert value > 0
+        assert platform in PLATFORM_QUALIFIERS
 
-        if not statistic.startswith(STATISTIC_PREFIX):
-            message = f'statistic must be a stored remi key: {statistic!r}'
+        self.metric_add('remi:acquisition:click:download')
+        self.metric_add(f'remi:acquisition:click:download:{PLATFORM_QUALIFIERS[platform]}')
+
+        if campaign != CAMPAIGN_GENERAL:
+            self.metric_add(f'remi:acquisition:click:{campaign}:download')
+
+    def metric_add(self, reference: str, *, value: Decimal = Decimal(1)) -> None:
+        assert value > 0
+        assert reference == reference.strip()
+
+        statistic = reference.split(':')[1] if reference.startswith('remi:') else ''
+
+        if statistic not in METRIC_STATISTICS:
+            message = f'reference must name a remi statistic: {reference!r}'
             raise ValueError(message)
 
-        key = Metric(campaign=campaign, statistic=statistic)
+        key = Metric(reference=reference, statistic=f'remi--remi-metric--{statistic}')
         self.metric_counts[key] += 1
         self.metric_sums[key] = self.metric_sums.get(key, Decimal(0)) + value
 
@@ -285,8 +292,6 @@ class WorldModel:
 
         account.promos[promo.code] = promo.hours * SECONDS_PER_HOUR
 
-        self.metric_add(campaign=account.campaign, statistic='remi--funnel--promos')
-
     def charge_expected(self, account: AccountModel, job_id: str, seconds: int) -> Expected:
         assert self.accounts.get(account.id) is account
         assert JOB_ID_PATTERN.fullmatch(job_id) is not None
@@ -312,20 +317,11 @@ class WorldModel:
             message = f'account {account.id} cannot pay {seconds} seconds'
             raise ValueError(message)
 
-        first = not account.charges
         account.charges[job_id] = seconds
         account.charges_asked.append(timezone.now())
 
-        self.metric_add(campaign=account.campaign, statistic='remi--usage--meetings')
-
-        self.metric_add(
-            campaign=account.campaign,
-            statistic='remi--usage--hours',
-            value=metric_hours(seconds),
-        )
-
-        if first:
-            self.metric_add(campaign=account.campaign, statistic='remi--funnel--activations')
+        self.metric_add('remi:action:meeting-transcribed')
+        self.metric_add('remi:action:hours-transcribed', value=metric_hours(seconds))
 
     def purchase_apply(self, session: SessionModel) -> None:
         assert self.sessions.get(session.session_id) is session
@@ -336,23 +332,19 @@ class WorldModel:
             return
 
         account = self.accounts[session.account_pk]
-        first = not account.purchases
         session.credited = True
         account.purchases[session.session_id] = session.hours * SECONDS_PER_HOUR
 
-        self.metric_add(campaign=account.campaign, statistic='remi--funnel--purchases')
+        self.metric_add('remi:action:purchase-hours')
 
-        if first:
-            self.metric_add(campaign=account.campaign, statistic='remi--funnel--paying-clients')
+    def signup_record(self, account: AccountModel) -> None:
+        assert self.accounts.get(account.id) is account
+        assert account.campaign in CampaignChoices.values
 
-        if session.amount_cents > 0:
-            revenue = metric_revenue(session.amount_cents)
+        self.metric_add('remi:acquisition:signup:completed')
 
-            self.metric_add(
-                campaign=account.campaign,
-                statistic='remi--sales--revenue',
-                value=revenue,
-            )
+        if account.campaign != CAMPAIGN_GENERAL:
+            self.metric_add(f'remi:acquisition:signup:{account.campaign}:promo-code')
 
     def topup_apply(self, account: AccountModel, reference: str) -> int:
         assert self.accounts.get(account.id) is account
@@ -415,6 +407,6 @@ class WorldModel:
         assert currency.islower()
 
         return [
-            {'currency': currency, 'hours': hours, 'price_cents': price_cents}
-            for hours, price_cents in sorted(self.offers.items())
+            {'currency': currency, 'hours': hours, 'price_cents': hours * self.price_hour_cents}
+            for hours in OFFER_HOURS_LISTED
         ]

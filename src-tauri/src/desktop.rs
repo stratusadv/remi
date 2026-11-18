@@ -11,6 +11,7 @@ use gtk::gio::{AppInfo, AppLaunchContext, BusType, Cancellable, DBusCallFlags, F
 use gtk::glib::{ToVariant as _, Variant};
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::path::Path;
 use tauri::ipc::Invoke;
 use tauri::{AppHandle, State};
@@ -19,6 +20,8 @@ use tauri_plugin_notification::NotificationExt as _;
 
 pub(crate) const COMMAND_PREFIX: &str = "desktop_";
 const NOTIFICATION_CHARS_MAX: u32 = 1024;
+const PRIVACY_URL: &str = "https://remirememberthat.com/privacy/";
+const WEBSITE_URL: &str = "https://stratusadv.com";
 #[cfg(target_os = "linux")]
 const NOTIFICATION_APPLICATION_FALLBACK: &str = "remi";
 #[cfg(target_os = "linux")]
@@ -69,8 +72,23 @@ pub(crate) async fn desktop_notification_show(
     .await
 }
 
+#[tauri::command]
+pub(crate) async fn desktop_privacy_open() -> AppResult<()> {
+    blocking::run(|| url_open_default(PRIVACY_URL)).await
+}
+
+#[tauri::command]
+pub(crate) async fn desktop_website_open() -> AppResult<()> {
+    blocking::run(|| url_open_default(WEBSITE_URL)).await
+}
+
 pub(crate) fn invoke_handler() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
-    tauri::generate_handler![desktop_export_open, desktop_notification_show]
+    tauri::generate_handler![
+        desktop_export_open,
+        desktop_notification_show,
+        desktop_privacy_open,
+        desktop_website_open,
+    ]
 }
 
 #[cfg(target_os = "linux")]
@@ -193,6 +211,34 @@ fn text_bounded(text: &str) -> String {
     assert!(bounded.len() <= text.len());
 
     bounded
+}
+
+#[cfg(target_os = "linux")]
+fn url_open_default(url: &str) -> AppResult<()> {
+    assert!(url.starts_with("https://"));
+    assert!(!url.contains(char::is_whitespace));
+
+    AppInfo::launch_default_for_uri(url, None::<&AppLaunchContext>)
+        .map_err(|error| url_open_failure(url, &error))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn url_open_default(url: &str) -> AppResult<()> {
+    assert!(url.starts_with("https://"));
+    assert!(!url.contains(char::is_whitespace));
+
+    tauri_plugin_opener::open_url(url, None::<&str>).map_err(|error| url_open_failure(url, &error))
+}
+
+fn url_open_failure(url: &str, error: &dyn Display) -> AppError {
+    let detail = error.to_string();
+
+    assert_ne!(url, "");
+    assert_ne!(detail, "");
+
+    tracing::warn!("{url} could not be opened: {detail}");
+
+    AppError::Task(format!("{url} could not be opened in the browser"))
 }
 
 #[cfg(test)]

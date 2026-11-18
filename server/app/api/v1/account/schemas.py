@@ -8,6 +8,7 @@ from pydantic_core import PydanticCustomError
 
 from django.conf import settings
 
+from app.account.constants import CHECKOUT_HOURS_MAX
 from app.checkout import client
 
 if TYPE_CHECKING:
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 
 BODY_OBJECT_ERROR = 'body_object'
 BODY_OBJECT_MESSAGE = 'a request body is a JSON object, not {kind}'
+OFFER_HOURS = (10, 50, 200)
 
 
 class RequestBodySchema(Schema):
@@ -33,6 +35,10 @@ class RequestBodySchema(Schema):
             raise PydanticCustomError(BODY_OBJECT_ERROR, BODY_OBJECT_MESSAGE, context)
 
         return handler(data)
+
+
+class AccountActionSchema(RequestBodySchema):
+    action: str
 
 
 class AccountChargeSchema(RequestBodySchema):
@@ -59,10 +65,13 @@ class AccountPromoSchema(RequestBodySchema):
 
 class AccountSchema(Schema):
     balance_seconds: int
+    checkout_hours_max: int
     email: str
     name: str
     offers: list[AccountOfferSchema]
     payments: bool
+    price_currency: str
+    price_hour_cents: int
     publishable_key: str
 
     @staticmethod
@@ -74,16 +83,25 @@ class AccountSchema(Schema):
         return account.ledger_entries.balance_seconds()
 
     @staticmethod
+    def resolve_checkout_hours_max(account: Account) -> int:
+        if account.pk is None:
+            message = f'account must be saved: {account!r}'
+            raise ValueError(message)
+
+        return CHECKOUT_HOURS_MAX
+
+    @staticmethod
     def resolve_offers(account: Account) -> list[AccountOfferSchema]:
         if account.pk is None:
             message = f'account must be saved: {account!r}'
             raise ValueError(message)
 
         currency = settings.REMI_PRICE_CURRENCY
+        price_hour_cents = settings.REMI_PRICE_HOUR_CENTS
 
         return [
-            AccountOfferSchema(currency=currency, hours=hours, price_cents=price_cents)
-            for hours, price_cents in settings.REMI_OFFERS.items()
+            AccountOfferSchema(currency=currency, hours=hours, price_cents=hours * price_hour_cents)
+            for hours in OFFER_HOURS
         ]
 
     @staticmethod
@@ -93,6 +111,22 @@ class AccountSchema(Schema):
             raise ValueError(message)
 
         return client.payments_configured()
+
+    @staticmethod
+    def resolve_price_currency(account: Account) -> str:
+        if account.pk is None:
+            message = f'account must be saved: {account!r}'
+            raise ValueError(message)
+
+        return settings.REMI_PRICE_CURRENCY
+
+    @staticmethod
+    def resolve_price_hour_cents(account: Account) -> int:
+        if account.pk is None:
+            message = f'account must be saved: {account!r}'
+            raise ValueError(message)
+
+        return settings.REMI_PRICE_HOUR_CENTS
 
     @staticmethod
     def resolve_publishable_key(account: Account) -> str:

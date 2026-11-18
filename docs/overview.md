@@ -6,7 +6,7 @@ remi is a desktop app that turns a recording of a meeting into a formatted docum
 
 | Page | Description |
 |------|-------------|
-| Home | The page lists each recording. |
+| Home | The page lists each recording and tags it with its folder. |
 | Ask | The page answers a question about your recordings and names the ones it used. |
 | Templates | The page holds the layouts a document can follow. |
 | People | The page holds each person once, with a role and a description for the AI. |

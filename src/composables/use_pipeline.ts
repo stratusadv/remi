@@ -31,6 +31,7 @@ export type View =
 
 export type ViewIntent =
     | 'group_add'
+    | 'notes_generate'
     | 'person_add'
     | 'settings_account'
     | 'settings_general'
@@ -65,6 +66,7 @@ const WAVEFORM_BAR_COUNT_DEFAULT = 360
 
 const VIEW_OF_INTENT: Readonly<Record<ViewIntent, View>> = Object.freeze({
     group_add: 'people',
+    notes_generate: 'notes',
     person_add: 'people',
     settings_account: 'settings',
     settings_general: 'settings',

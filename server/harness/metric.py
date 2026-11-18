@@ -25,6 +25,9 @@ class MetricExecutorFake:
     def __call__(self) -> Self:
         return self
 
+    def references(self) -> list[str]:
+        return [dispatch.reference for dispatch in self.dispatched]
+
     def statistic_keys(self) -> list[str]:
         return [dispatch.statistic_key for dispatch in self.dispatched]
 

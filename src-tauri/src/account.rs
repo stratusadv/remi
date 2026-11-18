@@ -29,7 +29,7 @@ use tauri::WebviewWindow;
 
 const ACCOUNT_HOST_BUILTIN: Option<&str> = option_env!("REMI_ACCOUNT_HOST");
 const CHARGE_SECONDS_MAX: u64 = 21_600;
-const CHECKOUT_HOURS_MAX: u32 = 10_000;
+const CHECKOUT_HOURS_MAX: u32 = 1_000;
 const CHECKOUT_KEY_PREFIXES: [&str; 2] = ["pk_live_", "pk_test_"];
 const CHECKOUT_SECRET_SEPARATOR: &str = "_secret_";
 const CHECKOUT_SESSION_ID_PREFIX: &str = "cs_";
@@ -43,6 +43,7 @@ const HTTP_TIMEOUTS: ClientTimeouts = ClientTimeouts {
 };
 
 const LABEL_ACCOUNT: &str = "account";
+const LABEL_ACTION: &str = "action report";
 const LABEL_CHARGE: &str = "transcription charge";
 const LABEL_CHECKOUT: &str = "checkout";
 const LABEL_CHECKOUT_FINISH: &str = "checkout confirmation";
@@ -50,7 +51,7 @@ const LABEL_PROMO: &str = "promo code";
 const LABEL_QUESTION: &str = "question";
 const LABEL_QUESTION_FINISH: &str = "question tokens";
 const LABEL_SIGN_UP: &str = "account sign-up";
-const MESSAGE_CHECKOUT_HOURS: &str = "That pack of hours is not on offer.";
+const MESSAGE_CHECKOUT_HOURS: &str = "Choose from 1 to 1000 hours.";
 const MESSAGE_CHECKOUT_MALFORMED: &str = "the account server sent a checkout remi cannot open";
 const MESSAGE_CHECKOUT_UNKNOWN: &str = "That is not a checkout this copy of remi started.";
 const MESSAGE_CODE_INVALID: &str = "That sign-in code is not valid.";
@@ -59,6 +60,7 @@ const MESSAGE_KEY_MALFORMED: &str =
 const MESSAGE_QUESTION_MALFORMED: &str = "the account server sent a question turn remi cannot read";
 pub(crate) const MESSAGE_SIGNED_OUT: &str = "This copy of remi is not signed in to an account.";
 const PATH_ACCOUNT: &str = "/api/v1/account/";
+const PATH_ACTION: &str = "/api/v1/account/action/";
 const PATH_CHARGE: &str = "/api/v1/account/charge/";
 const PATH_CHECKOUT: &str = "/api/v1/account/checkout/";
 const PATH_CHECKOUT_FINISH: &str = "/api/v1/account/checkout/finish/";
@@ -84,11 +86,27 @@ static HTTP_CLIENT: ClientCell = LazyLock::new(|| client_build(&HTTP_TIMEOUTS));
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct Account {
     balance_seconds: i64,
+    checkout_hours_max: u32,
     email: String,
     name: String,
-    offers: Vec<Offer>,
     payments: bool,
+    price_currency: String,
+    price_hour_cents: u32,
     publishable_key: PublishableKey,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum AccountAction {
+    AskFolderQuestion,
+    AskLibraryQuestion,
+    AskNoteQuestion,
+    ChangeTheme,
+    InAppRecording,
+    NewChat,
+    NewFolderCreated,
+    NewTemplate,
+    UploadRecording,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +127,11 @@ pub(crate) struct AccountSignUp {
 pub(crate) struct AccountStatus {
     billing: bool,
     signed_in: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct ActionRequest {
+    action: AccountAction,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -151,13 +174,6 @@ pub(crate) struct CheckoutStarted {
 #[derive(Clone, Copy, Debug, Serialize)]
 struct CheckoutStartRequest {
     hours: NonZeroU32,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct Offer {
-    currency: String,
-    hours: u32,
-    price_cents: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -239,6 +255,15 @@ impl TryFrom<TextRaw> for PublishableKey {
 
         Ok(Self(str::to_owned(&raw)))
     }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub(crate) async fn account_action_report(action: AccountAction) -> AppResult<()> {
+    let Some(host) = host_builtin() else {
+        return Ok(());
+    };
+
+    action_report(host, action).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -491,10 +516,45 @@ async fn account_fetch(session: &Session<'_>) -> AppResult<Option<Account>> {
     Ok(Some(response_json_bounded(response).await?))
 }
 
+async fn action_report(host: &str, action: AccountAction) -> AppResult<()> {
+    let host_owned = host.to_owned();
+
+    let Some(token) = blocking::run(move || token_load(&host_owned)).await? else {
+        return Ok(());
+    };
+
+    action_send(&Session { host, token: &token }, action).await
+}
+
+async fn action_send(session: &Session<'_>, action: AccountAction) -> AppResult<()> {
+    let call = Call {
+        host: session.host,
+        label: LABEL_ACTION,
+        path: PATH_ACTION,
+        token: Some(session.token),
+    };
+
+    let request = ActionRequest { action };
+    let response = call_send(&call, &request).await?;
+
+    assert!(response.status().is_success());
+
+    Ok(())
+}
+
 async fn call_post<Body, Reply>(call: &Call<'_>, body: &Body) -> AppResult<Reply>
 where
     Body: Serialize + Sync,
     Reply: DeserializeOwned + Send,
+{
+    let response = call_send(call, body).await?;
+
+    response_json_bounded(response).await
+}
+
+async fn call_send<Body>(call: &Call<'_>, body: &Body) -> AppResult<reqwest::Response>
+where
+    Body: Serialize + Sync,
 {
     let client = client_get(&HTTP_CLIENT)?;
     let mut request = client.post(call_url(call)).json(body);
@@ -504,9 +564,8 @@ where
     }
 
     let sent = request.send().await?;
-    let response = reply_ensure_ok(sent, call.label).await?;
 
-    response_json_bounded(response).await
+    reply_ensure_ok(sent, call.label).await
 }
 
 fn call_url(call: &Call<'_>) -> String {
@@ -774,11 +833,24 @@ mod tests {
     use tokio::task::JoinHandle;
 
     const ACCOUNT_REPLY: &str = concat!(
-        r#"{"balance_seconds": 900000, "email": "avery@example.com", "name": "Avery", "#,
-        r#""offers": [{"currency": "cad", "hours": 10, "price_cents": 300}, "#,
-        r#"{"currency": "cad", "hours": 50, "price_cents": 1000}], "#,
-        r#""payments": false, "publishable_key": ""}"#,
+        r#"{"balance_seconds": 900000, "checkout_hours_max": 1000, "#,
+        r#""email": "avery@example.com", "name": "Avery", "#,
+        r#""offers": [{"currency": "cad", "hours": 10, "price_cents": 1000}], "#,
+        r#""payments": false, "price_currency": "cad", "price_hour_cents": 100, "#,
+        r#""publishable_key": ""}"#,
     );
+
+    const ACTIONS: [(AccountAction, &str); 9] = [
+        (AccountAction::AskFolderQuestion, "ask-folder-question"),
+        (AccountAction::AskLibraryQuestion, "ask-library-question"),
+        (AccountAction::AskNoteQuestion, "ask-note-question"),
+        (AccountAction::ChangeTheme, "change-theme"),
+        (AccountAction::InAppRecording, "in-app-recording"),
+        (AccountAction::NewChat, "new-chat"),
+        (AccountAction::NewFolderCreated, "new-folder-created"),
+        (AccountAction::NewTemplate, "new-template"),
+        (AccountAction::UploadRecording, "upload-recording"),
+    ];
 
     const CHECKOUT_KEY: &str = "pk_test_51Hremi";
     const CHECKOUT_SECRET: &str = "cs_test_a1B2c3_secret_eyJ1aSI6MX0";
@@ -951,7 +1023,11 @@ mod tests {
     }
 
     #[test]
-    fn a_checkout_asks_for_a_pack_of_one_to_ten_thousand_hours() {
+    fn a_checkout_asks_for_one_to_a_thousand_hours() {
+        let expected = format!("Choose from 1 to {CHECKOUT_HOURS_MAX} hours.");
+
+        assert_eq!(MESSAGE_CHECKOUT_HOURS, expected);
+
         for hours in [1, 50, CHECKOUT_HOURS_MAX] {
             assert!(checkout_hours_is_valid(NonZeroU32::new(hours).unwrap()), "{hours}");
         }
@@ -975,7 +1051,8 @@ mod tests {
 
             assert_eq!(account.publishable_key.0, key);
             assert_eq!(sent["publishable_key"], key);
-            assert_eq!(sent["offers"][1]["hours"], 50_u32);
+            assert_eq!(sent["price_hour_cents"], 100_u32);
+            assert!(sent.get("offers").is_none());
         }
 
         for key in ["sk_test_51Hremi", "rk_live_51Hremi", "pk_test_", "pk_test_51H/remi"] {
@@ -1066,11 +1143,11 @@ mod tests {
         assert!(requests[0].starts_with("GET /api/v1/account/ HTTP/1.1\r\n"));
         assert!(requests[0].to_ascii_lowercase().contains(&header));
         assert_eq!(account.balance_seconds, 900_000);
+        assert_eq!(account.checkout_hours_max, 1000);
         assert_eq!(account.email, "avery@example.com");
-        assert_eq!(account.offers.len(), 2);
-        assert_eq!(account.offers[1].hours, 50);
-        assert_eq!(account.offers[1].price_cents, 1000);
         assert!(!account.payments);
+        assert_eq!(account.price_currency, "cad");
+        assert_eq!(account.price_hour_cents, 100);
         assert_eq!(account.publishable_key.0, "");
     }
 
@@ -1180,6 +1257,82 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(sent_first, sent_second);
         assert_eq!(sent_first["job_id"], JOB_ID);
+    }
+
+    #[test]
+    fn an_action_goes_by_the_reference_name_the_server_records_and_by_no_other() {
+        let names = ACTIONS.map(|(_, name)| name);
+
+        assert!(names.is_sorted_by(|left, right| left < right));
+
+        for (action, name) in ACTIONS {
+            let sent = serde_json::to_value(ActionRequest { action }).unwrap();
+            let read: AccountAction = serde_json::from_value(name.into()).unwrap();
+
+            assert_eq!(sent, serde_json::json!({ "action": name }));
+            assert_eq!(read, action);
+        }
+
+        let refused = ["", "NewChat", "new_chat", "purchase-hours", "meeting-transcribed"];
+
+        for name in refused {
+            assert!(serde_json::from_value::<AccountAction>(name.into()).is_err(), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_action_report_while_signed_out_sends_nothing_and_succeeds() {
+        let _root = root_scoped();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let host = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+
+        drop(listener);
+
+        for (action, _name) in ACTIONS {
+            account_action_report(action).await.unwrap();
+            action_report(&host, action).await.unwrap();
+        }
+
+        token_save(&Session { host: HOST, token: TOKEN }).unwrap();
+
+        for (action, _name) in ACTIONS {
+            action_report(&host, action).await.unwrap();
+        }
+
+        let session = Session { host: &host, token: TOKEN };
+        let refused = action_send(&session, AccountAction::NewChat).await;
+
+        assert!(refused.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_action_report_posts_its_event_with_the_token_and_reads_no_reply_body() {
+        let _root = root_scoped();
+        let (host, serving) = service_replying(vec![(204, String::new())]).await;
+
+        token_save(&Session { host: &host, token: TOKEN }).unwrap();
+        action_report(&host, AccountAction::AskLibraryQuestion).await.unwrap();
+
+        let requests = serving.await.unwrap();
+        let (head, sent) = request_parts(&requests[0]);
+        let header = format!("authorization: bearer {}", TOKEN.to_ascii_lowercase());
+
+        assert_eq!(requests.len(), 1);
+        assert!(head.starts_with("POST /api/v1/account/action/ HTTP/1.1\r\n"));
+        assert!(head.to_ascii_lowercase().contains(&header));
+        assert_eq!(sent, serde_json::json!({ "action": "ask-library-question" }));
+    }
+
+    #[tokio::test]
+    async fn an_action_report_the_server_could_not_take_fails_once_and_is_not_sent_again() {
+        let replies = vec![(503, REPLY_BUSY.to_owned()), (204, String::new())];
+        let (host, serving) = service_replying(replies).await;
+        let session = Session { host: &host, token: TOKEN };
+        let failed = action_send(&session, AccountAction::NewChat).await.unwrap_err().to_string();
+
+        serving.abort();
+
+        assert!(failed.contains("503 action report"), "{failed}");
     }
 
     #[tokio::test]
@@ -1427,11 +1580,9 @@ mod live {
             assert_eq!(fetched.email, account.email);
             assert!(fetched.payments);
             assert_eq!(fetched.publishable_key.0, PUBLISHABLE_KEY_WORLD);
-
-            let offers: Vec<(u32, u32)> =
-                fetched.offers.iter().map(|offer| (offer.hours, offer.price_cents)).collect();
-
-            assert_eq!(offers, vec![(10, 1000), (50, 5000), (200, 20_000)]);
+            assert_eq!(fetched.checkout_hours_max, CHECKOUT_HOURS_MAX);
+            assert_eq!(fetched.price_currency, "cad");
+            assert_eq!(fetched.price_hour_cents, 100);
         });
     }
 

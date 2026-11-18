@@ -40,6 +40,7 @@ const {
     view_current,
     meta_refresh,
     template_id_ensure,
+    view_intent_open,
     view_set,
 } = use_pipeline()
 
@@ -302,14 +303,17 @@ async function next(): Promise<void> {
     if (timer_id.value !== null) {
         clearTimeout(timer_id.value)
 
-        return autosave_flush().then(() => {
-            view_set('notes')
-
-            assert(view_current.value === 'notes')
-        })
+        return autosave_flush().then(notes_open)
     }
 
-    view_set('notes')
+    notes_open()
+}
+
+function notes_open(): void {
+    assert(template_id_selected.value !== null)
+    assert(job_id_current.value !== null)
+
+    view_intent_open('notes_generate')
 
     assert(view_current.value === 'notes')
 }

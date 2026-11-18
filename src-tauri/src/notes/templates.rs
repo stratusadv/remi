@@ -24,8 +24,9 @@ pub(crate) const PROMPT_NOTES_SYSTEM: &str = concat!(
     "the document. A table in the template shows its columns; fill it with one row per item ",
     "and keep the header row as given. A checklist item in the template shows the shape of ",
     "one item; write one `- [ ]` item per real item. Add no sections the template does not ",
-    "have. If the recording has nothing for a section, keep the heading and write ",
-    "'Nothing recorded.' under it rather than inventing content or dropping the section.\n\n",
+    "have, unless a note asks for them. If the recording has nothing for a section, keep the ",
+    "heading and write 'Nothing recorded.' under it rather than inventing content or dropping ",
+    "the section, unless its note says to leave it out.\n\n",
     "Facts: only include what was actually said. Never invent names, numbers, prices, dates, ",
     "or decisions. Where the recording is unclear or people disagreed without resolving it, ",
     "say so plainly. Use the meeting details you were given (title, project, people present, ",
@@ -117,14 +118,60 @@ const INSTRUCTIONS_SITE_VISIT: &str = concat!(
 );
 
 const INSTRUCTIONS_PROCEDURE: &str = concat!(
-    "## Before you begin\n\n",
-    "- The tools, parts, and preparation needed before starting.\n\n",
-    "## Steps\n\n",
-    "1. Each step in the order it was explained, written so a new person could follow it.\n\n",
-    "## Safety warnings\n\n",
-    "- Every safety warning that was mentioned.\n\n",
-    "## Common mistakes\n\n",
-    "- Mistakes to avoid that were mentioned.",
+    "## Document details\n\n",
+    "- **Title:** The name of the policy or procedure, from the recording or the meeting ",
+    "title.\n",
+    "- **Company:** The company name, if it was said.\n",
+    "- **Document owner:** The role or department that owns the policy or procedure.\n",
+    "- **Status:** Draft, Active, or Archived, if it was said; otherwise Draft.\n",
+    "- **Last updated:** The recorded-on date, written like 2025-01-21.\n",
+    "- **Review frequency:** Annually or As needed, if it was said.\n\n",
+    "## 1. Purpose\n\n",
+    "Why the policy or procedure exists: the problem it solves, the outcome it supports, and ",
+    "why it matters to the company, in two to four sentences.\n\n",
+    "## 2. Scope\n\n",
+    "- Who must follow the policy or procedure.\n",
+    "- When, or under what circumstances, it applies.\n",
+    "- Any exclusions or exceptions.\n\n",
+    "## 3. Policy and expectations\n\n",
+    "- Each rule or standard that must be followed, as a short, actionable statement. Start ",
+    "each with **Required:** for a mandatory requirement or **Recommended:** for a ",
+    "recommended practice.\n\n",
+    "## 4. Roles and responsibilities\n\n",
+    "| Role | Responsibility |\n",
+    "| --- | --- |\n",
+    "| A role this document involves, such as Process Owner, Team Member, or Approver | What ",
+    "that role is accountable or responsible for |\n\n",
+    "## 5. Procedure\n\n",
+    "1. **Action:** What must be done, written so a new person could follow it. **Timing or ",
+    "trigger:** When the step happens or what starts it. **Expected outcome:** What shows the ",
+    "step is complete. Leave out a label the recording says nothing about, and include any ",
+    "decision, approval, or exception that applies to the step. When the procedure has ",
+    "distinct stages, give each stage a ### heading named for it, with its own numbered ",
+    "steps.\n\n",
+    "## 6. Exceptions and escalation\n\n",
+    "- Common exceptions or unusual situations, and how each is handled.\n",
+    "- Who has the authority to approve a deviation.\n",
+    "- When an issue must be escalated, and to whom.\n",
+    "- How an exception is documented.\n\n",
+    "## 7. Verification and accountability\n\n",
+    "- The evidence, records, or deliverables that must be kept.\n",
+    "- Who verifies completion or compliance.\n",
+    "- How non-compliance or a process failure is addressed.\n",
+    "- Any performance or quality measures.\n\n",
+    "## 8. Related documents and processes\n\n",
+    "- **Prerequisites:** Processes that come first.\n",
+    "- **Next steps:** Processes that follow completion.\n",
+    "- **Related policies:** Other company standards that apply.\n",
+    "- **Resources:** Forms, templates, tools, and reference links.\n\n",
+    "## 9. Definitions\n\n",
+    "- **Term:** What an uncommon term, acronym, or piece of technical language means. Leave ",
+    "this section out when no terms need defining.\n\n",
+    "## Document revision history\n\n",
+    "| Date | Change summary | Updated by |\n",
+    "| --- | --- | --- |\n",
+    "| The recorded-on date, written like 2025-01-21 | Initial creation | The person who ",
+    "explained the procedure, if that is clear |",
 );
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,19 +287,16 @@ fn default_templates_seed() -> Vec<NotesTemplate> {
             name: "Site visit or job notes".to_owned(),
         },
         NotesTemplate {
-            description: concat!(
-                "How to do a task: preparation, numbered steps, safety warnings, ",
-                "and mistakes to avoid.",
-            )
-            .to_owned(),
+            description: "Best practices for company policy and procedures.".to_owned(),
             edited: false,
             id: "default-procedure".to_owned(),
             instructions: INSTRUCTIONS_PROCEDURE.to_owned(),
-            name: "Step-by-step procedure".to_owned(),
+            name: "Company procedure".to_owned(),
         },
     ];
 
     assert!(seeds.iter().all(|seed| !seed.edited));
+    assert!(seeds.iter().all(|seed| template_validate(seed).is_ok()));
     assert!(seeds.len() <= usize_of!(TEMPLATE_COUNT_MAX));
 
     seeds
@@ -276,6 +320,11 @@ fn seeds_refresh(templates: &mut [NotesTemplate]) -> bool {
 
         if template.description != seed.description {
             template.description.clone_from(&seed.description);
+            changed = true;
+        }
+
+        if template.name != seed.name {
+            template.name.clone_from(&seed.name);
             changed = true;
         }
     }
@@ -460,7 +509,9 @@ mod tests {
         assert!(seeds_refresh(&mut templates));
         assert_eq!(templates[0].instructions, "i");
         assert_eq!(templates[0].description, "d");
-        assert!(templates[1].description.starts_with("How to do a task"));
+        assert_eq!(templates[0].name, "Custom");
+        assert_eq!(templates[1].description, "Best practices for company policy and procedures.");
+        assert_eq!(templates[1].name, "Company procedure");
         assert!(!seeds_refresh(&mut templates));
         assert!(!seeds_refresh(&mut []));
     }

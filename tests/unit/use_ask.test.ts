@@ -30,6 +30,7 @@ const EXCHANGES_MAX = 30
 const NOTICE_HALF = 'You have used half of this month\'s full-speed questions. About 40 are left.'
 const NOTICE_WAIT = 'You have asked 20 questions in the last 10 minutes, so remi is pacing them.'
 const SCOPE_ALL = Object.freeze<AskScope>({ kind: 'all' })
+const SCOPE_MEETING = Object.freeze<AskScope>({ kind: 'meeting', job_id: 'job-1' })
 const SCOPE_PROJECT = Object.freeze<AskScope>({ kind: 'project', project: 'remi' })
 
 const ENDPOINT_NOTES = Object.freeze<APIEndpoint>({
@@ -177,6 +178,126 @@ describe('ask', () => {
         expect(ask_state.exchanges.value[0]?.state).toBe('done')
         expect(ask_state.busy.value).toBe(false)
         expect(unlisten).toHaveBeenCalledTimes(vi.mocked(listen).mock.calls.length)
+    })
+})
+
+describe('ask reports', () => {
+    it('reports a new chat with its first question and the scope of every question', async () => {
+        vi.mocked(ipc.notes_ask_streaming).mockResolvedValue('Sam drafts it [M1].')
+
+        await ask_state.ask('Who drafts the banner?', SCOPE_ALL)
+        await ask_state.ask('What is due on Friday?', SCOPE_PROJECT)
+        await ask_state.ask('What did Sam say?', SCOPE_MEETING)
+        await flushPromises()
+
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([
+            ['new-chat'],
+            ['ask-library-question'],
+            ['ask-folder-question'],
+            ['ask-note-question'],
+        ])
+    })
+
+    it('reports a new chat again after a clear, and never for a saved chat', async () => {
+        vi.mocked(ipc.notes_ask_streaming).mockResolvedValue('Sam drafts it [M1].')
+
+        await ask_state.ask('Who drafts the banner?', SCOPE_ALL)
+        await ask_state.clear()
+        await ask_state.ask('Who drafts the banner?', SCOPE_ALL)
+        await ask_state.chat_open(CHAT_SAVED)
+        await ask_state.ask('And after that?', SCOPE_PROJECT)
+        await flushPromises()
+
+        const reported = vi.mocked(ipc.account_action_report).mock.calls.map(([action]) => action)
+
+        expect(reported.filter((action) => action === 'new-chat')).toHaveLength(2)
+        expect(reported.at(-1)).toBe('ask-folder-question')
+        expect(reported).toHaveLength(5)
+    })
+
+    it('reports nothing for a retry or a question turned away while one is answering', async () => {
+        const answered = deferred_new<string>()
+
+        vi.mocked(ipc.notes_ask_streaming)
+            .mockRejectedValueOnce(new Error('api error: overloaded'))
+            .mockReturnValueOnce(answered.promise)
+
+        await ask_state.ask('Who drafts the banner?', SCOPE_ALL)
+        await flushPromises()
+        vi.mocked(ipc.account_action_report).mockClear()
+
+        const retrying = ask_state.retry()
+
+        await ask_state.ask('Second?', SCOPE_ALL)
+        answered.resolve('Sam drafts it.')
+        await retrying
+        await flushPromises()
+
+        expect(ipc.account_action_report).not.toHaveBeenCalled()
+    })
+})
+
+describe('new chat reports', () => {
+    it('reports New chat from a started chat once, and not at its first question', async () => {
+        vi.mocked(ipc.notes_ask_streaming).mockResolvedValue('Sam drafts it [M1].')
+
+        await ask_state.ask('Who drafts the banner?', SCOPE_ALL)
+        await ask_state.chat_start()
+        await flushPromises()
+
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([
+            ['new-chat'],
+            ['ask-library-question'],
+            ['new-chat'],
+        ])
+
+        await ask_state.ask('What is due on Friday?', SCOPE_ALL)
+        await flushPromises()
+
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([
+            ['new-chat'],
+            ['ask-library-question'],
+            ['new-chat'],
+            ['ask-library-question'],
+        ])
+    })
+
+    it('reports nothing for New chat in an empty chat, once at its first question', async () => {
+        vi.mocked(ipc.notes_ask_streaming).mockResolvedValue('Sam drafts it [M1].')
+
+        await ask_state.chat_start()
+        await ask_state.chat_start()
+        await flushPromises()
+
+        expect(ipc.account_action_report).not.toHaveBeenCalled()
+
+        await ask_state.ask('Who drafts the banner?', SCOPE_ALL)
+        await flushPromises()
+
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([
+            ['new-chat'],
+            ['ask-library-question'],
+        ])
+    })
+
+    it('reports a new chat when a folder or meeting chat replaces a started chat', async () => {
+        vi.mocked(ipc.notes_ask_streaming).mockResolvedValue('Sam drafts it [M1].')
+
+        await ask_state.ask('Who drafts the banner?', SCOPE_ALL)
+        await ask_state.folder_ask('remi')
+        await ask_state.ask('What is due on Friday?', SCOPE_PROJECT)
+        await ask_state.meeting_ask('job-1')
+        await ask_state.ask('What did Sam say?', SCOPE_MEETING)
+        await flushPromises()
+
+        expect(vi.mocked(ipc.account_action_report).mock.calls).toEqual([
+            ['new-chat'],
+            ['ask-library-question'],
+            ['new-chat'],
+            ['ask-folder-question'],
+            ['new-chat'],
+            ['ask-note-question'],
+        ])
     })
 })
 

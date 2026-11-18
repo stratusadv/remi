@@ -7,19 +7,19 @@ A first launch opens a welcome screen that creates your remi account. The accoun
 ## Create Your Account
 
 1. Enter your name and your email.
-2. Pick your province or state. Pick *Outside Canada and the United States* if you live elsewhere.
+2. Pick your province or territory.
 3. Enter a promo code if you have one. A code adds free hours to the account.
 4. Press *Get started*.
 
-The balance shows in the sidebar. A transcription takes the length of its recording from the balance, rounded up to the second, and notes, rewrites, and questions take nothing.
+A welcome message confirms the account and any promo code it applied. The balance shows in the sidebar. A transcription takes the length of its recording from the balance, rounded up to the second, and notes, rewrites, and questions take nothing.
 
 ## Buy Hours
 
 1. Press *Buy hours* in the sidebar, or on the *Account* tab of Settings.
-2. Pick a pack of hours.
-3. Pay on the same page.
+2. Type how many hours you want. The card shows the price and the balance you will have.
+3. Press *Buy hours* on the card, then pay on the same page.
 
-The hours land in your balance once the payment goes through. A purchase is a one-time payment, so nothing renews.
+The hours land in your balance once the payment goes through, and a message shows the new balance. A purchase is a one-time payment, so nothing renews.
 
 The *Promo code* box on the *Account* tab redeems a code later. Each code works once per email address, and an email address gets one offer from each event, whichever of the event's codes it uses.
 

@@ -43,7 +43,7 @@ const SUGGESTIONS_MEETING = Object.freeze([
     'What action items came up?',
 ])
 
-const { exchanges, busy, chat_id, scope, thread_scroll, ask, clear, retry, stop } = use_ask()
+const { exchanges, busy, chat_id, scope, thread_scroll, ask, chat_start, retry, stop } = use_ask()
 const { folders } = use_folders()
 const { jobs, refresh: jobs_refresh } = use_jobs()
 const { online } = use_network()
@@ -88,7 +88,7 @@ async function chat_new(): Promise<void> {
     assert(!empty.value)
     assert(composer_component.value !== null)
 
-    return clear().then(async () => {
+    return chat_start().then(async () => {
         pinned.value = true
 
         await nextTick()

@@ -4,6 +4,8 @@ import {
     HAS_TEXT,
     RECORDING_TITLED,
     RECORDING_UNTITLED,
+    actions_reported,
+    actions_watch,
     app_open,
     dialog,
     folder_item,
@@ -166,6 +168,28 @@ test('a folder is created, refused when repeated, renamed, and opened', async ({
     await expect(folder_item(page, FOLDER_RENAMED)).toHaveAttribute('aria-current', 'page')
     await expect(page.locator('main')).toContainText('This folder is empty')
     await expect(page.locator('main').getByRole('button', { name: 'New recording' })).toHaveCount(0)
+})
+
+test('a new folder reports once, and a name refused as a repeat nothing', async ({ page }) => {
+    await actions_watch(page)
+    await folder_create(page, FOLDER_NEW)
+
+    await expect.poll(async () => actions_reported(page)).toEqual(['new-folder-created'])
+
+    await page.locator('aside').getByRole('button', { name: 'New folder' }).click()
+    await prompt_focused(page, 'New folder')
+    await page.keyboard.type(FOLDER_NEW)
+    await page.keyboard.press('Enter')
+
+    await expect(dialog(page, 'New folder')).toContainText('already exists')
+
+    await page.keyboard.press('Enter')
+
+    await expect(dialog(page, 'New folder')).toHaveCount(0)
+
+    const reported = await actions_reported(page)
+
+    expect(reported).toEqual(['new-folder-created'])
 })
 
 test('a long folder name is shortened and leaves every folder count in view', async ({ page }) => {

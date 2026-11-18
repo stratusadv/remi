@@ -1,35 +1,33 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-    offer_cards,
-    offer_hours,
-    offer_price,
+    hours_is_valid,
+    hours_quote,
+    price_hour_text,
     use_account,
 } from '../../src/composables/use_account'
 import { assert } from '../../src/lib/assert'
 import { MESSAGE_UNSHOWN } from '../../src/lib/errors'
 import { ipc } from '../../src/lib/ipc'
 import { WRITE_TEXT, deferred_new } from './fixtures'
-import type { Account, AccountOffer, AccountSignUp } from '../../src/types'
+import type { Account, AccountSignUp } from '../../src/types'
 
 
 vi.mock('../../src/lib/ipc')
 
+const CHECKOUT_HOURS_MAX = 1000
 const CHECKOUT_SESSION_ID = 'cs_test_a1B2c3'
 const MESSAGE_ASSERTION = 'an assertion failed'
+const PRICE_HOUR_CENTS = 60
 const SIGN_IN_CODE = 'k3Yq_9-wR'
-
-const OFFERS = Object.freeze<AccountOffer[]>([
-    { currency: 'cad', hours: 10, price_cents: 300 },
-    { currency: 'cad', hours: 50, price_cents: 1000 },
-    { currency: 'cad', hours: 200, price_cents: 3000 },
-])
 
 const ACCOUNT_SAMPLE = Object.freeze<Account>({
     balance_seconds: 5400,
+    checkout_hours_max: CHECKOUT_HOURS_MAX,
     email: 'avery@example.com',
     name: 'Avery',
-    offers: [...OFFERS],
     payments: true,
+    price_currency: 'cad',
+    price_hour_cents: PRICE_HOUR_CENTS,
     publishable_key: 'pk_test_51Hscribe',
 })
 
@@ -44,7 +42,7 @@ const account_state = use_account()
 
 function account_with(balance_seconds: number): Account {
     assert(Number.isSafeInteger(balance_seconds))
-    assert(ACCOUNT_SAMPLE.offers.every((offer, index) => offer === OFFERS[index]))
+    assert(ACCOUNT_SAMPLE.price_hour_cents === PRICE_HOUR_CENTS)
 
     return { ...ACCOUNT_SAMPLE, balance_seconds }
 }
@@ -138,7 +136,7 @@ describe('account_load', () => {
         await account_state.account_load()
 
         expect(account_state.balance_text.value).toBe('1.5 hours')
-        expect(account_state.account.value?.offers).toHaveLength(3)
+        expect(account_state.account.value?.price_hour_cents).toBe(PRICE_HOUR_CENTS)
         expect(account_state.error_message.value).toBeNull()
     })
 
@@ -403,7 +401,7 @@ describe('checkout', () => {
         expect(ipc.account_checkout_start).not.toHaveBeenCalled()
     })
 
-    it('starts a checkout only for a pack the server offers', async () => {
+    it('starts a checkout only for whole hours from one to the most the server sells', async () => {
         const client_secret = `${CHECKOUT_SESSION_ID}_secret_x`
         const started = { client_secret, session_id: CHECKOUT_SESSION_ID }
 
@@ -411,11 +409,19 @@ describe('checkout', () => {
         account_state.account.value = account_with(5400)
         vi.mocked(ipc.account_checkout_start).mockResolvedValue(started)
 
-        await expect(account_state.checkout_start(200)).resolves.toEqual(started)
-        await expect(account_state.checkout_start(49)).rejects.toThrow(MESSAGE_ASSERTION)
+        const accepted = [1, 200, CHECKOUT_HOURS_MAX].map(async (hours) =>
+            expect(account_state.checkout_start(hours)).resolves.toEqual(started))
 
-        expect(ipc.account_checkout_start).toHaveBeenCalledTimes(1)
-        expect(ipc.account_checkout_start).toHaveBeenCalledWith(200)
+        const refused = [0, 2.5, CHECKOUT_HOURS_MAX + 1].map(async (hours) =>
+            expect(account_state.checkout_start(hours)).rejects.toThrow(MESSAGE_ASSERTION))
+
+        await Promise.all([...accepted, ...refused])
+
+        expect(vi.mocked(ipc.account_checkout_start).mock.calls).toEqual([
+            [1],
+            [200],
+            [CHECKOUT_HOURS_MAX],
+        ])
     })
 
     it('shows the balance the server credited once a paid checkout is finished', async () => {
@@ -459,66 +465,65 @@ describe('code_copy', () => {
     })
 })
 
-describe('offer_hours and offer_price', () => {
-    it('name the pack and price it in the currency the server names', () => {
-        const offer = { currency: 'cad', hours: 50, price_cents: 1000 }
+describe('hours_is_valid', () => {
+    it('takes whole hours from one to the most the server sells and nothing else', () => {
+        const account = account_with(0)
+        const accepted = [1, 7, CHECKOUT_HOURS_MAX - 1, CHECKOUT_HOURS_MAX]
 
-        expect(offer_hours(offer)).toBe('50 hours')
-        expect(offer_hours({ ...offer, hours: 1 })).toBe('1 hour')
-        expect(offer_price(offer)).toBe('$10.00')
-        expect(offer_price({ ...offer, currency: 'usd' })).toBe('US$10.00')
-        expect(offer_price({ ...offer, price_cents: 199 })).toBe('$1.99')
+        const refused = [
+            0,
+            -1,
+            CHECKOUT_HOURS_MAX + 1,
+            2.5,
+            Number.NaN,
+            Number.POSITIVE_INFINITY,
+            '50',
+            '',
+            null,
+        ]
+
+        expect(accepted.map((hours) => hours_is_valid(account, hours))).toEqual([
+            true,
+            true,
+            true,
+            true,
+        ])
+
+        expect(refused.some((hours) => hours_is_valid(account, hours))).toBe(false)
+        expect(hours_is_valid({ ...account, checkout_hours_max: 20 }, 21)).toBe(false)
     })
 })
 
-describe('offer_cards', () => {
-    it('prices each pack per hour and marks the cheapest hour as the best value', () => {
-        const cards = offer_cards(OFFERS, 5400)
+describe('hours_quote and price_hour_text', () => {
+    it('prices the hours at the hourly rate in the currency the server names', () => {
+        const account = account_with(5400)
+        const dollar = { ...account, price_hour_cents: 100 }
+        const american = { ...account, price_currency: 'usd' }
+        const single = { balance_after_text: '2.5 hours', price_text: '$0.60' }
 
-        expect(cards.map((card) => card.rate_text)).toEqual(['$0.30', '$0.20', '$0.15'])
-        expect(cards.map((card) => card.saving_percent)).toEqual([0, 33, 50])
-        expect(cards.map((card) => card.best)).toEqual([false, false, true])
-        expect(cards.map((card) => card.price_text)).toEqual(['$3.00', '$10.00', '$30.00'])
-
-        expect(cards.map((card) => card.balance_after_text)).toEqual([
-            '11.5 hours',
-            '51.5 hours',
-            '201.5 hours',
-        ])
+        expect(price_hour_text(account)).toBe('$0.60')
+        expect(price_hour_text(dollar)).toBe('$1.00')
+        expect(price_hour_text(american)).toBe('US$0.60')
+        expect(hours_quote(account, 1)).toEqual(single)
+        expect(hours_quote(dollar, 50).price_text).toBe('$50.00')
+        expect(hours_quote(account, 50).balance_after_text).toBe('51.5 hours')
+        expect(hours_quote(account, CHECKOUT_HOURS_MAX).price_text).toBe('$600.00')
     })
 
-    it('never overstates a saving and names no best value without one cheapest hour', () => {
-        const thirds = { currency: 'cad', hours: 3, price_cents: 1000 }
-        const tied = { currency: 'cad', hours: 100, price_cents: 1500 }
-        const tied_twice = { currency: 'cad', hours: 200, price_cents: 3000 }
-        const tens = { currency: 'cad', hours: 10, price_cents: 300 }
-        const cards = offer_cards([tens, thirds, tied], 0)
-        const ties = offer_cards([tied, tied_twice], 0)
-        const lone = offer_cards([thirds], 0)
+    it('shows the exact cents the hours cost at every count it sells', () => {
+        const account = { ...account_with(0), price_hour_cents: 29 }
 
-        expect(cards.map((card) => card.saving_percent)).toEqual([91, 0, 95])
-        expect(cards.map((card) => card.best)).toEqual([false, false, true])
-        expect(ties.map((card) => card.best)).toEqual([false, false])
-        expect(ties.map((card) => card.saving_percent)).toEqual([0, 0])
-        expect(lone[0]?.best).toBe(false)
-        expect(lone[0]?.saving_percent).toBe(0)
-        expect(lone[0]?.rate_text).toBe('$3.33')
+        for (let hours = 1; hours <= account.checkout_hours_max; hours += 1) {
+            const digits = hours_quote(account, hours).price_text.replaceAll(/\D/gu, '')
+
+            expect(Number(digits)).toBe(hours * 29)
+        }
     })
 
-    it('prices each pack at the dearest hourly rate to show the money it saves', () => {
-        const cards = offer_cards(OFFERS, 0)
+    it('refuses to quote hours the server does not sell', () => {
+        const account = account_with(0)
 
-        expect(cards.map((card) => card.regular_text)).toEqual(['$3.00', '$15.00', '$60.00'])
-        expect(cards.map((card) => card.saving_text)).toEqual(['$0.00', '$5.00', '$30.00'])
-    })
-
-    it('rounds an uneven regular price to the cent so price and saving still add up', () => {
-        const thirds = { currency: 'cad', hours: 3, price_cents: 1000 }
-        const tens = { currency: 'cad', hours: 10, price_cents: 300 }
-        const tied = { currency: 'cad', hours: 100, price_cents: 1500 }
-        const cards = offer_cards([tens, thirds, tied], 0)
-
-        expect(cards.map((card) => card.regular_text)).toEqual(['$33.33', '$10.00', '$333.33'])
-        expect(cards.map((card) => card.saving_text)).toEqual(['$30.33', '$0.00', '$318.33'])
+        expect(() => hours_quote(account, 0)).toThrow(MESSAGE_ASSERTION)
+        expect(() => hours_quote(account, CHECKOUT_HOURS_MAX + 1)).toThrow(MESSAGE_ASSERTION)
     })
 })

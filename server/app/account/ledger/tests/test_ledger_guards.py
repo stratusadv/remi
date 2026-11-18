@@ -385,15 +385,18 @@ def test_entry_create_refuses_a_payment_or_promo_code_unsaved_or_of_another_acco
     assert payment_other.ledger_entries.balance_seconds() == 60
 
 
-def test_revenue_record_refuses_a_non_purchase_entry_or_a_negative_amount() -> None:
+def test_purchase_record_refuses_a_non_purchase_entry_or_another_accounts_entry() -> None:
     account = create_test_account(seconds=60)
     promo_entry = account.ledger_entries.get()
-    message_kind = re.escape(f'revenue is recorded only for a purchase entry: {promo_entry!r}')
+
+    message_kind = re.escape(
+        f'purchase hours are recorded only for a purchase entry: {promo_entry!r}',
+    )
 
     assert promo_entry.kind == AccountLedgerEntryKindChoices.PROMO
 
     with pytest.raises(RuntimeError, match=message_kind):
-        _factory()._revenue_record(account=account, amount_cents=1000, entry=promo_entry)
+        _factory()._purchase_record(account=account, entry=promo_entry)
 
     payment = create_test_payment(account, session_id=SESSION_ID)
 
@@ -407,8 +410,11 @@ def test_revenue_record_refuses_a_non_purchase_entry_or_a_negative_amount() -> N
 
     assert account.ledger_entries.purchases().get() == purchase
 
-    with pytest.raises(ValueError, match='amount_cents must not be negative: -5'):
-        _factory()._revenue_record(account=account, amount_cents=-5, entry=purchase)
+    other = create_test_account(email='morgan@example.com')
+    message_owner = f'entry {purchase.pk} belongs to account {account.pk}, not {other.pk}'
+
+    with pytest.raises(ValueError, match=message_owner):
+        _factory()._purchase_record(account=other, entry=purchase)
 
 
 def test_charge_grant_and_promo_entries_refuse_amounts_outside_their_bounds() -> None:

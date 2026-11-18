@@ -17,6 +17,7 @@ import { use_pipeline } from '../composables/use_pipeline'
 import { use_recorder } from '../composables/use_recorder'
 import { use_shortcuts } from '../composables/use_shortcuts'
 import { is_cancelled_error, use_tasks } from '../composables/use_tasks'
+import { action_report } from '../lib/actions'
 import { assert } from '../lib/assert'
 import { seconds_to_clock_hours } from '../lib/duration'
 import { error_dialog_show, error_shown } from '../lib/errors'
@@ -25,6 +26,7 @@ import { AUDIO_EXTENSIONS, MEDIA_EXTENSIONS, VIDEO_EXTENSIONS } from '../lib/med
 import { folder_start, path_file_name, path_file_name_short } from '../lib/paths'
 import { SURROGATE_HIGH_TRAILING } from '../lib/text'
 import NoticeBanner from './notice_banner.vue'
+import RecordingTrace from './recording_trace.vue'
 import StepBar from './step_bar.vue'
 import StepCitation from './step_citation.vue'
 import TranscriptPane from './transcript_pane.vue'
@@ -360,6 +362,7 @@ async function file_pick(): Promise<void> {
             assert(selected.length > 0)
 
             source_replace(selected)
+            action_report('upload-recording')
         })
         .catch((error: unknown) => {
             error_message.value = error_shown(error)
@@ -689,6 +692,7 @@ use_shortcuts({
 
         <div v-if="!transcript && !busy" class="file-picker">
             <div v-if="recording" class="file-picker-filled">
+                <RecordingTrace />
                 <div class="file-picker-name">
                     <span class="mic-dot" aria-hidden="true" />
                     Recording {{ seconds_to_clock_hours(recording_elapsed_seconds) }}

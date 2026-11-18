@@ -319,7 +319,7 @@ def portal_start(
     )
 
     url = f'http://127.0.0.1:{port}'
-    probe = f'{url}/ds/api/v1/metric/domain/statistic/remi--funnel--visits/total'
+    probe = f'{url}/ds/api/v1/metric/domain/statistic/remi--remi-metric--acquisition/total'
     headers = {'X-API-Key': WORLD_PORTAL_API_KEY}
 
     ready_wait(probe, headers=headers, log_path=log_path, process=process)

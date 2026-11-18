@@ -1,4 +1,5 @@
 import { computed, ref } from 'vue'
+import { action_report } from '../lib/actions'
 import { assert } from '../lib/assert'
 import { error_shown } from '../lib/errors'
 import { ipc } from '../lib/ipc'
@@ -79,6 +80,12 @@ async function enqueue(paths: string[]): Promise<void> {
     }))
 
     queue.value = [...queue.value, ...entries_new]
+
+    for (const entry of entries_new) {
+        assert(queue.value.includes(entry))
+
+        action_report('upload-recording')
+    }
 
     if (running.value) return
 

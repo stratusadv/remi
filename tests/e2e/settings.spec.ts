@@ -1,5 +1,14 @@
 import { expect, test } from '@playwright/test'
-import { HAS_TEXT, app_open, nav_to, setting } from './helpers'
+import {
+    HAS_TEXT,
+    actions_reported,
+    actions_watch,
+    app_open,
+    command_count,
+    command_watch,
+    nav_to,
+    setting,
+} from './helpers'
 
 
 const RECORDINGS_DIRECTORY_DEFAULT = 'C:\\Users\\mock\\Music\\remi'
@@ -74,6 +83,37 @@ test('the theme select switches to Standard and its Graphite colour scheme', asy
     await expect(html).toHaveAttribute('data-palette', 'cubist')
 })
 
+test('each change of mode, colour scheme, or theme reports a theme change', async ({ page }) => {
+    const html = page.locator('html')
+    const theme = page.getByLabel('Theme', { exact: true })
+
+    await actions_watch(page)
+    await page.getByLabel('Mode', { exact: true }).selectOption('light')
+
+    await expect(html).toHaveClass(/mode-light/u)
+    await expect.poll(async () => actions_reported(page)).toEqual(['change-theme'])
+
+    await page.getByLabel('Colour scheme', { exact: true }).selectOption('nord')
+
+    await expect(html).toHaveAttribute('data-palette', 'nord')
+    await expect.poll(async () => actions_reported(page)).toEqual(['change-theme', 'change-theme'])
+
+    await theme.selectOption('standard')
+
+    await expect(html).toHaveAttribute('data-theme', 'standard')
+
+    await theme.selectOption('cubism')
+
+    await expect(html).toHaveAttribute('data-theme', 'cubism')
+
+    await expect.poll(async () => actions_reported(page)).toEqual([
+        'change-theme',
+        'change-theme',
+        'change-theme',
+        'change-theme',
+    ])
+})
+
 test('the default template select feeds the Templates page', async ({ page }) => {
     const template = page.getByRole('combobox').filter({ [HAS_TEXT]: 'Ask each time' })
 
@@ -138,9 +178,14 @@ test('About shows the version and checks for updates', async ({ page }) => {
 
 test('About credits Stratus with a link that opens in the browser', async ({ page }) => {
     const credit = setting(page, 'About').getByRole('link', { name: CREDIT })
+    const url = page.url()
 
+    await command_watch(page, 'desktop_website_open')
     await expect(credit).toHaveAttribute('href', 'https://stratusadv.com')
-    await expect(credit).toHaveAttribute('target', '_blank')
+    await credit.click()
+
+    await expect.poll(async () => command_count(page, 'desktop_website_open')).toBe(1)
+    await expect(page).toHaveURL(url)
 })
 
 test('the General tab is the only tab without an account', async ({ page }) => {

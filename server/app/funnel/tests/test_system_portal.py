@@ -6,7 +6,7 @@ import pytest
 
 from decimal import Decimal
 from pathlib import Path
-from typing_extensions import TYPE_CHECKING
+from typing_extensions import TYPE_CHECKING, Any
 
 from app.funnel.metric import RemiMetric
 from harness.world.client import (
@@ -34,7 +34,7 @@ LOOKAHEAD_LINES = 40
 METRIC_FAILED = 'Metric record failed'
 METRIC_FAILED_KNOWN = "AttributeError: 'dict' object has no attribute 'json'"
 PURCHASE_HOURS = 50
-PURCHASE_PRICE = Decimal('50.00')
+REFERENCE_DOWNLOAD = 'remi:acquisition:click:download'
 
 pytestmark = pytest.mark.system
 
@@ -59,13 +59,23 @@ def _metric_failures_unknown(log_text: str) -> list[str]:
     return unknown
 
 
-def _wib(statistic: str) -> tuple[str, str]:
-    assert statistic.partition('--')[0] in ('funnel', 'sales', 'usage')
+def _purchase_paid(world: World, token: str) -> dict[str, Any]:
+    assert token != ''
+    assert PURCHASE_HOURS > 0
 
-    return (f'remi--{statistic}', 'wib')
+    checkout = {'hours': PURCHASE_HOURS}
+    started = remi_post(world, '/api/v1/account/checkout/', checkout, token=token)
+    pay = {'session_id': started.json()['session_id']}
+    paid = fakes_control(world, '/control/stripe/pay', pay)
+    finished = remi_post(world, '/api/v1/account/checkout/finish/', pay, token=token)
+
+    assert paid['webhook_status'] == 200
+    assert finished.json()['paid'] is True
+
+    return finished.json()
 
 
-def test_the_portal_holds_every_statistic_and_campaign_remi_records(
+def test_the_portal_holds_every_statistic_and_subdomain_remi_records(
     settings: Settings,
     world_live: World,
 ) -> None:
@@ -77,20 +87,23 @@ def test_the_portal_holds_every_statistic_and_campaign_remi_records(
     assert summary.errors == []
 
 
-def test_a_conference_journey_lands_every_statistic_in_the_portal_under_its_campaign(
+def test_a_conference_journey_lands_each_of_its_references_in_the_portal(
     world_live: World,
 ) -> None:
     before = portal_totals(world_live)
     address = address_unique('journey')
-    visit = {'campaign': 'wib', 'source': 'qr'}
+    landing = {'campaign': 'general', 'page': 'landing'}
+    promo = {'campaign': 'wib', 'page': 'promo'}
     email = {'campaign': 'wib', 'email': address}
 
     assert all(total >= 0 for total in before.values())
 
-    visited = remi_beacon(world_live, '/api/v1/funnel/visit/', visit)
+    clicked_landing = remi_beacon(world_live, '/api/v1/funnel/click/', landing)
+    clicked_promo = remi_beacon(world_live, '/api/v1/funnel/click/', promo)
     emailed = remi_beacon(world_live, '/api/v1/funnel/email/', email)
 
-    assert visited.status == 204
+    assert clicked_landing.status == 204
+    assert clicked_promo.status == 204
     assert emailed.status == 204
 
     messages = [
@@ -111,39 +124,37 @@ def test_a_conference_journey_lands_every_statistic_in_the_portal_under_its_camp
     token = remi_signup(world_live, email=address, promo_code=code.group().lower())
     charge = {'job_id': JOB_ID, 'seconds': CHARGE_SECONDS}
     charged = remi_post(world_live, '/api/v1/account/charge/', charge, token=token)
+    action = {'action': 'new-chat'}
+    acted = remi_post(world_live, '/api/v1/account/action/', action, token=token)
 
     assert charged.status == 200
+    assert acted.status == 204
 
-    checkout = {'hours': PURCHASE_HOURS}
-    started = remi_post(world_live, '/api/v1/account/checkout/', checkout, token=token)
-    session_id = started.json()['session_id']
-    paid = fakes_control(world_live, '/control/stripe/pay', {'session_id': session_id})
-    finish = {'session_id': session_id}
-    finished = remi_post(world_live, '/api/v1/account/checkout/finish/', finish, token=token)
-
-    assert paid['webhook_status'] == 200
-    assert finished.json()['paid'] is True
+    finished = _purchase_paid(world_live, token)
 
     expected = {
-        _wib('funnel--activations'): Decimal(1),
-        _wib('funnel--checkouts'): Decimal(1),
-        _wib('funnel--downloads'): Decimal(1),
-        _wib('funnel--paying-clients'): Decimal(1),
-        _wib('funnel--promos'): Decimal(1),
-        _wib('funnel--purchases'): Decimal(1),
-        _wib('funnel--scans'): Decimal(1),
-        _wib('funnel--signups'): Decimal(1),
-        _wib('funnel--visits'): Decimal(1),
-        _wib('sales--revenue'): PURCHASE_PRICE,
-        _wib('usage--hours'): Decimal('0.5'),
-        _wib('usage--meetings'): Decimal(1),
+        'remi:acquisition:click:download': Decimal(1),
+        'remi:acquisition:click:download:windows': Decimal(1),
+        'remi:acquisition:click:landing': Decimal(1),
+        'remi:acquisition:click:wib:download': Decimal(1),
+        'remi:acquisition:click:wib:promo': Decimal(1),
+        'remi:acquisition:signup:completed': Decimal(1),
+        'remi:acquisition:signup:wib:promo-code': Decimal(1),
+        'remi:action:hours-transcribed': Decimal('0.5'),
+        'remi:action:meeting-transcribed': Decimal(1),
+        'remi:action:new-chat': Decimal(1),
+        'remi:action:purchase-hours': Decimal(1),
     }
 
     portal_totals_wait(world_live, before=before, expected=expected)
 
+    after = portal_totals(world_live)
+    qualifiers = ('linux', 'mac', 'windows')
+    platforms = [after.get(f'{REFERENCE_DOWNLOAD}:{qualifier}', 0) for qualifier in qualifiers]
     balance_seconds = (50 + PURCHASE_HOURS) * 3600 - CHARGE_SECONDS
 
-    assert finished.json()['account']['balance_seconds'] == balance_seconds
+    assert after[REFERENCE_DOWNLOAD] == sum(platforms)
+    assert finished['account']['balance_seconds'] == balance_seconds
 
 
 def test_a_one_second_recording_keeps_its_hours_to_four_places_in_the_portal(
@@ -157,11 +168,9 @@ def test_a_one_second_recording_keeps_its_hours_to_four_places_in_the_portal(
     assert charged.status == 200
 
     expected = {
-        ('remi--funnel--activations', 'general'): Decimal(1),
-        ('remi--funnel--promos', 'general'): Decimal(1),
-        ('remi--funnel--signups', 'general'): Decimal(1),
-        ('remi--usage--hours', 'general'): Decimal('0.0003'),
-        ('remi--usage--meetings', 'general'): Decimal(1),
+        'remi:acquisition:signup:completed': Decimal(1),
+        'remi:action:hours-transcribed': Decimal('0.0003'),
+        'remi:action:meeting-transcribed': Decimal(1),
     }
 
     portal_totals_wait(world_live, before=before, expected=expected)

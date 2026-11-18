@@ -1,3 +1,4 @@
+import TEMPLATES_SOURCE from '../../src-tauri/src/notes/templates.rs?raw'
 import { assert } from './assert'
 import { JOBS_MAX, folder_key } from './folders'
 import { log_information, log_warn } from './log'
@@ -5,7 +6,6 @@ import { region_is_known } from './regions'
 import type {
     APIEndpoint,
     Account,
-    AccountOffer,
     AccountStatus,
     AskScope,
     AskSource,
@@ -113,6 +113,7 @@ const ACCOUNT_PROMO_SECONDS = 900_000
 const ACCOUNT_SCENARIO_EMPTY = 'empty'
 const ACCOUNT_SCENARIO_SIGNED_IN = 'signed-in'
 const ACCOUNT_SIGN_IN_CODE = 'mock-sign-in-code'
+const ACTION_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
 const API_HOST = 'https://ai.example.invalid'
 const ASK_ANSWER_BANNER = 'Sam is drafting the offline banner copy'
 const ASK_ANSWER_SAMPLE = 'The team agreed to ship the transcription retry work this week [M1].'
@@ -131,6 +132,7 @@ const ASK_SNIPPET_CHARS_MAX = 200
 const ASK_SOURCES_MAX = 6
 const ASK_SUMMARY_WORD = 'summar'
 const ASK_WORD_CHARS_MIN = 3
+const CHECKOUT_HOURS_MAX = 1000
 const CHECKOUT_PUBLISHABLE_KEY = 'pk_test_mock'
 const CHECKOUT_SESSION_PREFIX = 'cs_test_mock'
 const CHUNK_DELAY_MS = 45
@@ -148,8 +150,12 @@ const EVENT_ASK_WAIT = 'notes_ask_wait'
 const JOB_ID_SAMPLE = '86dfb1d3b0140ecf2fd59075421f1cb5'
 const JOB_ID_SAMPLE_SECOND = '47ead100cc5cd956aa10b3c4d5e6f708'
 const KEY_LENGTH_MAX = 64
+const PRICE_HOUR_CENTS = 100
+const PROCEDURE_SOURCE = /^const INSTRUCTIONS_PROCEDURE: &str = concat!\((?<body>.*?)^\);$/msu
 const RECORDING_PATH_SAMPLE = 'C:\\Users\\mock\\Music\\remi\\Recording mock.wav'
 const RECORDINGS_DIRECTORY_SAMPLE = 'C:\\Users\\mock\\Music\\remi'
+const RUST_ESCAPE_NEWLINE = '\\n'
+const RUST_STRING = /"(?<text>(?:[^"\\]|\\.)*)"/gu
 const SECONDS_PER_HOUR = 3600
 const SECONDS_PER_LINE = 18
 const SECONDS_PER_MINUTE = 60
@@ -197,6 +203,8 @@ const NOTES_SAMPLE = NOTES_SAMPLE_LINES.join('\n')
 const REPLIES_FIXED: Readonly<Record<string, unknown>> = Object.freeze({
     desktop_export_open: null,
     desktop_notification_show: null,
+    desktop_privacy_open: null,
+    desktop_website_open: null,
     job_audio_clip_get: null,
     job_audio_path_get: null,
     log_write: null,
@@ -320,12 +328,13 @@ const SEED_NOTES_TEMPLATES: readonly NotesTemplate[] = Object.freeze([
         ].join('\n'),
         edited: false,
     },
-])
-
-const SEED_OFFERS: readonly Readonly<AccountOffer>[] = Object.freeze([
-    { currency: 'cad', hours: 10, price_cents: 300 },
-    { currency: 'cad', hours: 50, price_cents: 1000 },
-    { currency: 'cad', hours: 200, price_cents: 3000 },
+    {
+        id: 'default-procedure',
+        name: 'Company procedure',
+        description: 'Best practices for company policy and procedures.',
+        instructions: procedure_instructions(),
+        edited: false,
+    },
 ])
 
 const SEED_PEOPLE: readonly Person[] = Object.freeze([
@@ -390,6 +399,16 @@ export function tauri_browser_mock_install(): void {
     log_information('[remi] browser mock backend active: no Tauri, no real network calls')
 }
 
+function account_action_report(call: CommandCall): null {
+    assert(typeof call === 'object')
+
+    const action = text_field(call, 'action')
+
+    assert(ACTION_PATTERN.test(action), `the action ${action} is not a reference segment`)
+
+    return null
+}
+
 function account_charge(job_id: JobID, seconds: number): void {
     assert(job_id.length > 0)
     assert(Number.isSafeInteger(seconds))
@@ -447,10 +466,11 @@ function account_checkout_start(call: CommandCall): CheckoutStarted {
     assert(store.account !== null)
 
     const hours = number_field(call, 'hours')
+    const refusal = `api error: Choose from 1 to ${String(CHECKOUT_HOURS_MAX)} hours.`
 
-    if (!store.account.offers.some((offer) => offer.hours === hours)) {
-        throw new Error('api error: That pack of hours is no longer on offer. Choose another pack.')
-    }
+    if (!Number.isSafeInteger(hours)) throw new Error(refusal)
+    if (hours < 1) throw new Error(refusal)
+    if (hours > store.account.checkout_hours_max) throw new Error(refusal)
 
     const session_id = `${CHECKOUT_SESSION_PREFIX}${crypto.randomUUID().replaceAll('-', '')}`
 
@@ -470,7 +490,7 @@ function account_create(call: CommandCall): Account {
     const region = text_field(sign_up, 'region')
 
     if (name === '') throw new Error('api error: Enter a name of 1 to 200 characters.')
-    if (!region_is_known(region)) throw new Error('api error: Choose your province or state.')
+    if (!region_is_known(region)) throw new Error('api error: Choose your province or territory.')
     if (!email.includes('@')) throw new Error('api error: Enter a valid email address.')
 
     const claim = { code: promo_code, email }
@@ -557,13 +577,13 @@ function account_sample(balance_seconds: number, who: Pick<Account, 'email' | 'n
     assert(Number.isSafeInteger(balance_seconds))
     assert(who.email.length > 0)
 
-    const offers = structuredClone([...SEED_OFFERS])
-
     return {
         balance_seconds,
+        checkout_hours_max: CHECKOUT_HOURS_MAX,
         ...who,
-        offers,
         payments: true,
+        price_currency: 'cad',
+        price_hour_cents: PRICE_HOUR_CENTS,
         publishable_key: CHECKOUT_PUBLISHABLE_KEY,
     }
 }
@@ -896,6 +916,8 @@ function commands_account(command: string, call: CommandCall): unknown {
     assert(typeof call === 'object')
 
     switch (command) {
+        case 'account_action_report':
+            return account_action_report(call)
         case 'account_checkout_finish':
             return account_checkout_finish(call)
         case 'account_checkout_start':
@@ -1567,6 +1589,17 @@ function person_remove(id: RecordID): null {
     }
 
     return null
+}
+
+function procedure_instructions(): string {
+    const body = PROCEDURE_SOURCE.exec(TEMPLATES_SOURCE)?.groups?.['body'] ?? ''
+    const literals = [...body.matchAll(RUST_STRING)].map((match) => match.groups?.['text'] ?? '')
+    const instructions = literals.join('').replaceAll(RUST_ESCAPE_NEWLINE, '\n')
+
+    assert(instructions.startsWith('## Document details'))
+    assert(!instructions.includes('\\'))
+
+    return instructions
 }
 
 function record_field<Key extends keyof PayloadFields>(

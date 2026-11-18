@@ -48,6 +48,17 @@ ci:
 clean:
     cargo clean --manifest-path {{ manifest }}
 
+[doc('Run the what is new demo in a browser window with its narration')]
+[unix]
+demo SPEED="normal":
+    DEMO_MODE=narrate DEMO_SPEED={{ SPEED }} uv run --only-group demo pytest tests/demo --headed
+
+[doc('Record the what is new demo to .demos/whats-new/video.mp4 with its walkthrough')]
+[unix]
+demo-video:
+    DEMO_MODE=narrate DEMO_VIDEO=1 uv run --only-group demo pytest tests/demo
+    uv run --only-group demo limelight-render .demos/whats-new --title "What is new in remi"
+
 [doc('Build the documentation site and fail on a broken link')]
 docs:
     uv run --only-group docs zensical build --strict

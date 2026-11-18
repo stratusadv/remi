@@ -18,6 +18,7 @@ from app.account.tests.simulation_engine import (
     snapshot_model,
 )
 from app.account.tests.simulation_model import (
+    CHECKOUT_HOURS_MAX,
     AccountModel,
     PromoModel,
     QuestionModel,
@@ -164,7 +165,7 @@ class RemiConcurrency:
 
         self.model.accounts[account.id] = account
 
-        self.model.metric_add(campaign='general', statistic='remi--funnel--signups')
+        self.model.signup_record(account)
 
         if self.model.promo_refusal(account_email=email, code='SEED') is None:
             stored.services.processor.promo_redeem('SEED')
@@ -172,7 +173,7 @@ class RemiConcurrency:
 
     def _session_seed(self, account: AccountModel, *, paid: bool) -> None:
         assert self.model.accounts.get(account.id) is account
-        assert SESSION_HOURS in self.model.offers
+        assert 1 <= SESSION_HOURS <= CHECKOUT_HOURS_MAX
 
         stored = Account.objects.get(pk=account.id)
 
@@ -185,14 +186,12 @@ class RemiConcurrency:
 
         self.model.sessions[session.id] = SessionModel(
             account_pk=account.id,
-            amount_cents=self.model.offers[SESSION_HOURS],
+            amount_cents=SESSION_HOURS * self.model.price_hour_cents,
             hours=SESSION_HOURS,
             owned=True,
             paid=paid,
             session_id=session.id,
         )
-
-        self.model.metric_add(campaign=account.campaign, statistic='remi--funnel--checkouts')
 
         if paid:
             self.world.stripe.pay(session.id)

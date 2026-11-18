@@ -1,7 +1,9 @@
 import { ref } from 'vue'
+import { action_report } from '../lib/actions'
 import { assert } from '../lib/assert'
 import { ipc } from '../lib/ipc'
 import { log_warn } from '../lib/log'
+import { trace_points, trace_ring_frames } from '../lib/trace'
 import { use_dialog } from './use_dialog'
 
 
@@ -16,6 +18,8 @@ interface Capture {
     append_error: unknown
     flushes_in_flight: number
     flush_timer_id: ReturnType<typeof setInterval> | null
+    ring: Float32Array
+    ring_cursor: number
 }
 
 const CHUNK_BYTES_MAX = 1 << 20
@@ -76,6 +80,8 @@ function audio_process(event: MessageEvent): void {
     capture.samples_pending += converted.length
     capture.samples_total += converted.length
 
+    ring_write(event.data)
+
     assert(capture.samples_total >= capture.samples_pending)
 }
 
@@ -102,6 +108,8 @@ function capture_new(): Capture {
         append_error: null,
         flushes_in_flight: 0,
         flush_timer_id: null,
+        ring: new Float32Array(0),
+        ring_cursor: 0,
     }
 }
 
@@ -139,6 +147,7 @@ function capture_started(): void {
 async function capture_stream_attach(stream: MediaStream): Promise<void> {
     capture.stream = stream
     capture.context = context_create()
+    capture.ring = new Float32Array(trace_ring_frames(capture.context.sampleRate))
 
     await ipc.recording_start(capture.context.sampleRate)
     await capture.context.audioWorklet.addModule(worklet_url_create())
@@ -313,6 +322,33 @@ function pending_flush(): void {
     }
 }
 
+function ring_ordered(): Float32Array {
+    const { ring, ring_cursor } = capture
+
+    assert(ring_cursor >= 0)
+    assert(ring_cursor <= ring.length)
+
+    const ordered = new Float32Array(ring.length)
+
+    ordered.set(ring.subarray(ring_cursor))
+    ordered.set(ring.subarray(0, ring_cursor), ring.length - ring_cursor)
+
+    return ordered
+}
+
+function ring_write(samples: Float32Array): void {
+    const { ring } = capture
+
+    assert(samples.length > 0)
+    assert(ring.length > 0)
+    assert(capture.ring_cursor < ring.length)
+
+    for (const sample of samples) {
+        ring[capture.ring_cursor] = sample
+        capture.ring_cursor = (capture.ring_cursor + 1) % ring.length
+    }
+}
+
 function samples_to_pcm16(input: Float32Array): Int16Array {
     assert(input instanceof Float32Array)
     assert(Number.isInteger(input.length))
@@ -332,6 +368,8 @@ async function start(): Promise<void> {
     if (recording.value) return
     if (starting.value) return
     if (!('mediaDevices' in navigator)) throw new Error(MESSAGE_UNAVAILABLE)
+
+    action_report('in-app-recording')
 
     state_reset()
 
@@ -396,7 +434,28 @@ async function stop_after_failure(failure: Error): Promise<string> {
         })
 }
 
-const api = Object.freeze({ recording, starting, stopping, elapsed_seconds, start, stop, discard })
+function trace_current(): number[] {
+    const { context } = capture
+
+    if (!recording.value) return []
+    if (context === null) return []
+
+    assert(capture.ring.length === trace_ring_frames(context.sampleRate))
+    assert(capture.ring_cursor < capture.ring.length)
+
+    return trace_points(ring_ordered(), context.sampleRate)
+}
+
+const api = Object.freeze({
+    recording,
+    starting,
+    stopping,
+    elapsed_seconds,
+    start,
+    stop,
+    discard,
+    trace_current,
+})
 
 function worklet_url_create(): string {
     assert(WORKLET_SOURCE.includes(WORKLET_NAME))
