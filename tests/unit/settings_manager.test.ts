@@ -27,6 +27,8 @@ async function mount_settings(): Promise<VueWrapper> {
 
     await flushPromises()
 
+    assert(wrapper.vm.$.isMounted)
+
     return wrapper
 }
 

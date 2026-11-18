@@ -26,6 +26,7 @@ from app.gateway import client as gateway_client
 from app.gateway.constants import (
     GATEWAY_AUDIO_BYTES_MAX,
     MODEL_CHAT,
+    MODEL_CHAT_REASONING_EFFORT,
     MODEL_EMBEDDINGS,
     MODEL_TRANSCRIPTION,
 )
@@ -197,6 +198,7 @@ def _chat(
 ) -> _MonkeyPatchedWSGIResponse:
     assert token
     assert model
+    assert fields is None or not fields.keys() & {'messages', 'model', 'stream'}
 
     messages = [
         {'content': 'Write a short title for this meeting.', 'role': 'system'},
@@ -387,6 +389,8 @@ def test_a_chat_asking_for_more_thinking_than_low_is_refused(
     effort: str,
     gateway: FakesServer,
 ) -> None:
+    assert effort != MODEL_CHAT_REASONING_EFFORT
+
     _, token = _account_ready(seconds=SECONDS_PER_HOUR)
     fields = {'reasoning_effort': effort}
 
@@ -401,12 +405,14 @@ def test_the_gateway_decides_whether_the_model_thinks(
     client: Client,
     slow_gateway: _SlowGateway,
 ) -> None:
+    assert slow_gateway.bodies == []
+
     _, token = _account_ready(seconds=SECONDS_PER_HOUR)
     asked = {'chat_template_kwargs': {'enable_thinking': True}}
     low = {'chat_template_kwargs': {'enable_thinking': False}, 'reasoning_effort': 'low'}
 
-    _body(_chat(client, token, fields=asked))
-    _body(_chat(client, token, fields=low))
+    _ = _body(_chat(client, token, fields=asked))
+    _ = _body(_chat(client, token, fields=low))
 
     sent_asked, sent_low = (json.loads(body) for body in slow_gateway.bodies)
 

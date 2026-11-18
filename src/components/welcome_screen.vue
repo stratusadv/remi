@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, nextTick, reactive, ref, useTemplateRef, watch } from 'vue'
 import { use_account } from '../composables/use_account'
 import { assert } from '../lib/assert'
 import { error_shown } from '../lib/errors'
@@ -33,6 +33,7 @@ const STEP_ACTIONS_BUSY: Readonly<Record<WelcomeStep, string>> = Object.freeze({
 
 const { create: account_create, sign_in: account_sign_in } = use_account()
 const problem = ref<string | null>(null)
+const side_element = useTemplateRef<HTMLElement>('side_element')
 const sign_in_draft = ref('')
 const sign_up_draft = reactive<AccountSignUp>({ email: '', name: '', promo_code: '', region: '' })
 const step = ref<WelcomeStep>('sign_up')
@@ -47,6 +48,22 @@ const ready = computed(() => {
     }
 })
 
+
+watch(problem, (shown) => {
+    assert(shown === null || shown.length > 0)
+
+    if (shown === null) return
+
+    void nextTick(problem_reveal)
+})
+
+function problem_reveal(): void {
+    const side = side_element.value
+
+    if (side === null) return
+
+    side.scrollTo({ behavior: 'instant', top: side.scrollHeight })
+}
 
 function sign_in_toggle(): void {
     const step_previous = step.value
@@ -113,7 +130,7 @@ async function submit_step(): Promise<void> {
 
 <template>
     <section class="welcome">
-        <div class="welcome-side">
+        <div ref="side_element" class="welcome-side">
             <div class="welcome-facets" aria-hidden="true">
                 <i />
                 <i />
@@ -520,6 +537,30 @@ async function submit_step(): Promise<void> {
     .welcome-text,
     .welcome-form {
         animation: none;
+    }
+}
+
+@media (max-height: 760px) {
+    .welcome-side {
+        padding-block: 0.75rem;
+    }
+
+    .welcome-mark {
+        margin-bottom: 1rem;
+        font-size: 2.25rem;
+    }
+
+    .welcome-eyebrow {
+        margin-bottom: 0.5rem;
+    }
+
+    .welcome-form {
+        gap: 0.75rem;
+        margin-top: 1.25rem;
+    }
+
+    .welcome-switch {
+        margin-top: 1rem;
     }
 }
 </style>

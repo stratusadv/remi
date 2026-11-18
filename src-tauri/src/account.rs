@@ -14,6 +14,7 @@ use crate::http::{
     retry_run,
     status_is_transient,
 };
+use crate::search::vector;
 use crate::secrets::{protected_read, protected_write};
 use crate::stripe_tls;
 use crate::workspace::{self, AUDIO_SECONDS_MAX};
@@ -320,6 +321,7 @@ pub(crate) async fn account_create(sign_up: AccountSignUp) -> AppResult<Account>
     let token = created.token;
 
     blocking::run(move || token_save(&Session { host, token: &token })).await?;
+    vector::worker_wake();
 
     Ok(created.account)
 }
@@ -363,6 +365,7 @@ pub(crate) async fn account_sign_in(code: SignInCode) -> AppResult<Account> {
         .ok_or_else(|| AppError::Config(MESSAGE_CODE_INVALID.into()))?;
 
     blocking::run(move || token_save(&Session { host, token: &token })).await?;
+    vector::worker_wake();
 
     Ok(account)
 }
@@ -740,7 +743,7 @@ fn token_save(session: &Session<'_>) -> AppResult<()> {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::{QuestionAccount, token_is_valid};
+    use super::{QuestionAccount, Session, host_builtin, token_is_valid, token_save};
 
     const TOKEN: &str = "_5l7Sfe4jlqihWxQ9KAatIUrtHzIF7uQ_90oRpUP2MY";
 
@@ -749,6 +752,14 @@ pub(crate) mod test_support {
         assert!(token_is_valid(TOKEN));
 
         QuestionAccount { host, token: TOKEN.to_owned() }
+    }
+
+    pub(crate) fn token_saved() -> Option<&'static str> {
+        let host = host_builtin()?;
+
+        token_save(&Session { host, token: TOKEN }).unwrap();
+
+        Some(TOKEN)
     }
 }
 

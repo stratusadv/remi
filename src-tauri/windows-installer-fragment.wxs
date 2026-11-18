@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Fragment>
+        <DirectoryRef Id="ProgramMenuFolder">
+            <Directory Id="ScribeProgramsFolder" Name="scribe"/>
+        </DirectoryRef>
+
+        <DirectoryRef Id="ProgramFiles64Folder">
+            <Directory Id="ScribeInstallFolder" Name="scribe"/>
+        </DirectoryRef>
+
+        <DirectoryRef Id="INSTALLDIR">
+            <Component Id="ScribeShortcutsRemove" Guid="*">
+                <RemoveFile Id="ScribeShortcutDesktop" Directory="DesktopFolder" Name="scribe.lnk" On="install"/>
+                <RemoveFile Id="ScribeShortcutStartMenu" Directory="ScribeProgramsFolder" Name="scribe.lnk" On="install"/>
+                <RemoveFile Id="ScribeShortcutUninstall" Directory="ScribeInstallFolder" Name="Uninstall scribe.lnk" On="install"/>
+                <RemoveFolder Id="ScribeProgramsFolderRemove" Directory="ScribeProgramsFolder" On="install"/>
+                <RemoveFolder Id="ScribeInstallFolderRemove" Directory="ScribeInstallFolder" On="install"/>
+                <RegistryValue Root="HKCU" Key="Software\stratusadv\remi" Name="Scribe Shortcuts Removed" Type="integer" Value="1" KeyPath="yes"/>
+            </Component>
+        </DirectoryRef>
+    </Fragment>
+</Wix>

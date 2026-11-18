@@ -24,10 +24,13 @@ pub(crate) fn embeddings_target_load() -> AppResult<Option<EmbeddingsTarget>> {
         return Ok(None);
     };
 
-    let api_key = gateway_token_load()?.unwrap_or_default();
+    let Some(api_key) = gateway_token_load()? else {
+        return Ok(None);
+    };
 
     assert_ne!(host, "");
     assert!(!host.ends_with('/'));
+    assert_ne!(api_key, "");
 
     Ok(Some(EmbeddingsTarget {
         api_key,
@@ -130,6 +133,7 @@ fn builtins() -> [APIEndpoint; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account::test_support::token_saved;
     use crate::workspace::test_support::root_scoped;
 
     #[test]
@@ -210,19 +214,21 @@ mod tests {
     #[test]
     fn the_search_target_is_the_gateway_with_the_pinned_model_or_nothing() {
         let _root = root_scoped();
-        let loaded = embeddings_target_load().unwrap();
 
-        let Some(builtin) = gateway_host_builtin() else {
-            assert!(loaded.is_none());
+        assert!(embeddings_target_load().unwrap().is_none());
+
+        let Some(token) = token_saved() else {
+            assert!(gateway_host_builtin().is_none());
+            assert!(embeddings_target_load().unwrap().is_none());
 
             return;
         };
 
-        let target = loaded.unwrap();
+        let target = embeddings_target_load().unwrap().unwrap();
 
-        assert_eq!(target.host, builtin);
+        assert_eq!(target.host, gateway_host_builtin().unwrap());
         assert_eq!(target.model, MODEL_EMBEDDINGS);
-        assert_eq!(target.api_key, "");
+        assert_eq!(target.api_key, token);
     }
 
     #[test]

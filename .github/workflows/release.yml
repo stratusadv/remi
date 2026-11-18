@@ -18,7 +18,7 @@ jobs:
                     - os: macos-latest
                       args: --target universal-apple-darwin
                       targets: aarch64-apple-darwin,x86_64-apple-darwin
-                    - os: ubuntu-26.04
+                    - os: ubuntu-24.04
                       args: ""
                       targets: ""
                     - os: windows-latest
@@ -67,3 +67,44 @@ jobs:
                   releaseBody: See the assets below to download this version.
                   releaseDraft: false
                   updaterJsonPreferNsis: true
+
+    updater:
+        needs: build
+        if: github.event_name == 'push'
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: write
+        env:
+            GH_REPO: ${{ github.repository }}
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        steps:
+            - name: Point the updater at release download links
+              shell: bash
+              run: |
+                  api="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/assets/"
+                  base="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/"
+
+                  gh release download "$GITHUB_REF_NAME" --pattern latest.json --output latest-api.json
+                  gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
+                      | jq '.assets | map({key: (.id | tostring), value: .name}) | from_entries' \
+                      > names.json
+
+                  jq \
+                      --arg api "$api" \
+                      --arg base "$base" \
+                      --slurpfile names names.json \
+                      '.platforms |= map_values(.url |= (if startswith($api) then $base + (($names[0][ltrimstr($api)] // error("no release asset has the id in " + .)) | @uri) else . end))' \
+                      latest-api.json > latest.json
+
+                  jq --exit-status --arg base "$base" 'all(.platforms[]; .url | startswith($base))' latest.json
+
+                  for url in $(jq --raw-output '.platforms[].url' latest.json | sort --unique); do
+                      status=$(curl --head --silent --output /dev/null --write-out '%{http_code}' "$url")
+
+                      if [ "$status" != 302 ]; then
+                          echo "$url answered $status, not a redirect to its file"
+                          exit 1
+                      fi
+                  done
+
+                  gh release upload "$GITHUB_REF_NAME" latest.json --clobber

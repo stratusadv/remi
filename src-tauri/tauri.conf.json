@@ -74,7 +74,13 @@
         },
         "windows": {
             "nsis": {
-                "installerHooks": "./windows-installer-hooks.nsh"
+                "installerHooks": "./windows-installer-hooks.nsh",
+                "installerIcon": "./icons/icon.ico"
+            },
+            "wix": {
+                "componentRefs": ["ScribeShortcutsRemove"],
+                "fragmentPaths": ["./windows-installer-fragment.wxs"],
+                "upgradeCode": "bf2ad339-eede-58db-8a6d-46fec6852bf2"
             }
         }
     },

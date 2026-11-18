@@ -53,14 +53,11 @@ def _chat_payload_read(request: AccountRequest) -> dict[str, object]:
 
 
 def _chat_thinking(effort: object) -> bool:
-    if effort is None:
-        return False
+    if effort not in (None, MODEL_CHAT_REASONING_EFFORT):
+        message = f'The AI service thinks at {MODEL_CHAT_REASONING_EFFORT} at most, not {effort!r}.'
+        raise RequestInvalidError(message)
 
-    if effort == MODEL_CHAT_REASONING_EFFORT:
-        return True
-
-    message = f'The AI service thinks at {MODEL_CHAT_REASONING_EFFORT} at most, not {effort!r}.'
-    raise RequestInvalidError(message)
+    return effort == MODEL_CHAT_REASONING_EFFORT
 
 
 def _fields_read(request: AccountRequest) -> list[tuple[str, str]]:
