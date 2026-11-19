@@ -12,7 +12,7 @@ Each question, request, or complaint about your personal information goes to the
 
 ### Google Analytics
 
-The website uses Google Analytics, loaded through Google Tag Manager, to learn how people find the site and which pages they read. A banner on your first visit asks for your choice, and the website loads neither Google Analytics nor Google Tag Manager until you click *Accept*. Google Analytics then records the pages you view, how far you scroll, the links you follow to other sites, the files you download, and the forms you use. Its records also hold your browser, your device, and an approximate location that Google derives from your IP address. Google Analytics never receives your name or email address.
+The website uses Google Analytics, loaded through Google Tag Manager, to learn how people find the site and which pages they read. Each page loads them when it opens, and a banner on your first visit tells you so and offers *Decline* to turn them off. Google Analytics records the pages you view, how far you scroll, the links you follow to other sites, the files you download, and the forms you use. Its records also hold your browser, your device, and an approximate location that Google derives from your IP address. Google Analytics never receives your name or email address.
 
 Google Analytics keeps two cookies in your browser:
 

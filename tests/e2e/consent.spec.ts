@@ -12,8 +12,10 @@ const PAGE_WIB = '/docs/wib/index.html'
 const PRIVACY = 'Privacy policy'
 const SETTINGS = 'Cookie settings'
 const TAG_MANAGER = /^https:\/\/www\.googletagmanager\.com\/gtm\.js\?id=GTM-W33NVHZH$/u
+const TAG_SCRIPT = 'script[src^="https://www.googletagmanager.com/gtm.js"]'
 const TITLE_ACCEPTED = 'an accepted choice loads the Google tag on later pages without asking again'
 const TITLE_DECLINED = 'a declined visitor gets no Google tag until accepting in cookie settings'
+const TITLE_REMOVED = 'a tag script removed by instant navigation still counts as started'
 const TITLE_WITHDRAWN = 'declining after accepting deletes the analytics cookies and stops the tag'
 
 const PAGES = Object.freeze([
@@ -63,20 +65,20 @@ async function site_open(page: Page, path: string): Promise<string[]> {
 }
 
 for (const path of PAGES) {
-    test(`${path} loads the Google tag only after the visitor accepts`, async ({ page }) => {
+    test(`${path} loads the Google tag on arrival beside the cookie banner`, async ({ page }) => {
         const requests = await site_open(page, path)
         const privacy = new URL('/docs/privacy/', page.url()).href
         const link = banner(page).getByRole('link', { name: PRIVACY })
 
         await expect(banner(page)).toBeVisible()
         await expect(link).toHaveAttribute('href', privacy)
-        expect(requests).toEqual([])
+        await expect.poll(() => requests.length).toBe(1)
 
         await banner(page).getByRole('button', { name: ACCEPT }).click()
 
-        await expect.poll(() => requests.length).toBe(1)
         await expect(banner(page)).toHaveCount(0)
         await expect.poll(async () => choice_stored(page)).toBe('granted')
+        expect(requests).toHaveLength(1)
     })
 }
 
@@ -94,12 +96,15 @@ test(TITLE_ACCEPTED, async ({ page }) => {
 test(TITLE_DECLINED, async ({ page }) => {
     const requests = await site_open(page, PAGE_GENERAL)
 
+    await expect.poll(() => requests.length).toBe(1)
+
+    const reloaded = page.waitForEvent('load')
+
     await banner(page).getByRole('button', { name: DECLINE }).click()
-    await expect(banner(page)).toHaveCount(0)
-    await page.reload()
+    await reloaded
 
     await expect(banner(page)).toHaveCount(0)
-    expect(requests).toEqual([])
+    expect(requests).toHaveLength(1)
     await expect.poll(async () => choice_stored(page)).toBe('denied')
 
     await page.getByRole('link', { name: SETTINGS }).click()
@@ -109,7 +114,7 @@ test(TITLE_DECLINED, async ({ page }) => {
 
     await banner(page).getByRole('button', { name: ACCEPT }).click()
 
-    await expect.poll(() => requests.length).toBe(1)
+    await expect.poll(() => requests.length).toBe(2)
     await expect.poll(async () => choice_stored(page)).toBe('granted')
 })
 
@@ -137,5 +142,30 @@ test(TITLE_WITHDRAWN, async ({ page }) => {
     expect(cookies.map((cookie) => cookie.name)).toEqual(['theme'])
     expect(requests).toHaveLength(1)
     await expect(banner(page)).toHaveCount(0)
+    await expect.poll(async () => choice_stored(page)).toBe('denied')
+})
+
+test(TITLE_REMOVED, async ({ page }) => {
+    const requests = await site_open(page, PAGE_GENERAL)
+
+    await expect.poll(() => requests.length).toBe(1)
+
+    await page.locator(TAG_SCRIPT).evaluate((script) => {
+        script.remove()
+    })
+
+    await banner(page).getByRole('button', { name: ACCEPT }).click()
+    await expect.poll(async () => choice_stored(page)).toBe('granted')
+    await expect(page.locator(TAG_SCRIPT)).toHaveCount(0)
+    expect(requests).toHaveLength(1)
+
+    await page.getByRole('link', { name: SETTINGS }).click()
+
+    const reloaded = page.waitForEvent('load')
+
+    await banner(page).getByRole('button', { name: DECLINE }).click()
+    await reloaded
+
+    expect(requests).toHaveLength(1)
     await expect.poll(async () => choice_stored(page)).toBe('denied')
 })

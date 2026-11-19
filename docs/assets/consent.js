@@ -13,7 +13,7 @@ const tag_manager_selector = `script[src="${tag_manager_address}"]`;
 const banner_markup = `
     <p>
         This website uses Google Analytics cookies to learn how visitors find and use it.
-        Google Analytics loads only if you accept. <a href="${privacy_address}">Privacy policy</a>
+        The Decline button turns them off. <a href="${privacy_address}">Privacy policy</a>
     </p>
     <div class="consent-actions">
         <button type="button" value="denied">Decline</button>
@@ -83,12 +83,13 @@ const banner_styles = `
 `;
 
 const choice_stored = choice_read();
+let tag_manager_started = false;
 
 banner_sheet.replaceSync(banner_styles);
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, banner_sheet];
 addEventListener('click', settings_open, { capture: true });
 
-if (choice_stored === 'granted') tag_manager_load();
+if (choice_stored !== 'denied') tag_manager_load();
 if (choice_stored === 'denied') cookies_clear();
 if (choice_stored === null) banner_show();
 
@@ -125,7 +126,7 @@ function banner_choose(event) {
     window[measurement_disable_key] = true;
     cookies_clear();
 
-    if (document.querySelector(tag_manager_selector) !== null) location.reload();
+    if (tag_manager_started) location.reload();
 }
 
 function banner_show() {
@@ -213,7 +214,7 @@ function settings_open(event) {
 }
 
 function tag_manager_load() {
-    if (document.querySelector(tag_manager_selector) !== null) return;
+    if (tag_manager_started) return;
 
     const script = document.createElement('script');
 
@@ -225,6 +226,7 @@ function tag_manager_load() {
     script.async = true;
     script.src = tag_manager_address;
     document.head.append(script);
+    tag_manager_started = true;
 
     assert(script.isConnected, 'the tag manager script is on the page');
     assert(document.querySelector(tag_manager_selector) === script, 'the tag manager loads once');
