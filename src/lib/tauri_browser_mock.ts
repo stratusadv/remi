@@ -109,6 +109,8 @@ interface PayloadFields {
 const ACCOUNT_EMAIL_SAMPLE = 'jordan@example.com'
 const ACCOUNT_NAME_SAMPLE = 'Jordan Lee'
 const ACCOUNT_PROMO_CODE = 'WIB2026'
+const ACCOUNT_PROMO_PERSONAL_PATTERN = /^WIB-[2-9A-HJKMNP-TV-Z]{4}-[2-9A-HJKMNP-TV-Z]{4}$/u
+const ACCOUNT_PROMO_PERSONAL_SECONDS = 180_000
 const ACCOUNT_PROMO_SECONDS = 900_000
 const ACCOUNT_SCENARIO_EMPTY = 'empty'
 const ACCOUNT_SCENARIO_SIGNED_IN = 'signed-in'
@@ -222,6 +224,11 @@ const REPLIES_FIXED: Readonly<Record<string, unknown>> = Object.freeze({
     recordings_directory_default: RECORDINGS_DIRECTORY_SAMPLE,
     window_resize_rendered: null,
 })
+
+const SCENARIO_BY_PARAMETER = Object.freeze({
+    library: 'empty',
+    settings: 'initial',
+} as const)
 
 const SEED_ENDPOINTS: readonly APIEndpoint[] = Object.freeze([
     {
@@ -364,6 +371,15 @@ const SEED_PEOPLE: readonly Person[] = Object.freeze([
 const SEED_SETTINGS: Readonly<Settings> = Object.freeze({
     notes_template_id_default: 'default-meeting-notes',
     mode: 'dark',
+    theme: null,
+    palette: null,
+    recordings_directory: null,
+    jobs_view: null,
+})
+
+const SETTINGS_INITIAL: Readonly<Settings> = Object.freeze({
+    notes_template_id_default: null,
+    mode: null,
     theme: null,
     palette: null,
     recordings_directory: null,
@@ -540,8 +556,11 @@ function account_promo_seconds(claim: PromoClaim): number {
     assert(claim.email.length > 0)
 
     const redemption = account_redemption(claim)
+    const code = claim.code.toUpperCase()
+    const personal = ACCOUNT_PROMO_PERSONAL_PATTERN.test(code)
+    const known = personal || code === ACCOUNT_PROMO_CODE
 
-    if (claim.code.toUpperCase() !== ACCOUNT_PROMO_CODE) {
+    if (!known) {
         throw new Error('api error: That promo code is not valid.')
     }
 
@@ -551,7 +570,7 @@ function account_promo_seconds(claim: PromoClaim): number {
 
     store.promos_redeemed.add(redemption)
 
-    return ACCOUNT_PROMO_SECONDS
+    return personal ? ACCOUNT_PROMO_PERSONAL_SECONDS : ACCOUNT_PROMO_SECONDS
 }
 
 function account_redemption(claim: PromoClaim): string {
@@ -1333,6 +1352,15 @@ function job_meta_update(call: CommandCall): JobMeta {
     return { ...job }
 }
 
+function job_sample_new(): JobMeta {
+    const seed = SEED_JOBS.find((job) => job.id === JOB_ID_SAMPLE)
+
+    assert(seed !== undefined, 'the seed jobs hold the sample job')
+    assert(job_find(JOB_ID_SAMPLE) === null, 'the sample job is new to the library')
+
+    return structuredClone(seed)
+}
+
 function job_transcript_range_find(call: CommandCall): SegmentRange | null {
     assert(typeof call === 'object')
 
@@ -1662,6 +1690,19 @@ async function sleep(milliseconds: number): Promise<void> {
     })
 }
 
+function scenario_chosen(parameter: keyof typeof SCENARIO_BY_PARAMETER): boolean {
+    assert(typeof window === 'object')
+    assert(Object.hasOwn(SCENARIO_BY_PARAMETER, parameter))
+
+    const expected = SCENARIO_BY_PARAMETER[parameter]
+    const scenario = new URLSearchParams(window.location.search).get(parameter)
+    const known = scenario === null || scenario === expected
+
+    assert(known, `the ${parameter} scenario ${String(scenario)} is unknown`)
+
+    return scenario === expected
+}
+
 function scope_field(value: unknown): AskScope {
     const scope = field_of(value, 'scope')
     const kind = text_field(scope, 'kind')
@@ -1706,6 +1747,9 @@ function store_new(): MockStore {
     assert(SEED_ENDPOINTS.length > 0)
     assert(SEED_JOBS.length > 0)
 
+    const empty = scenario_chosen('library')
+    const initial = scenario_chosen('settings')
+
     return {
         account: account_seed(),
         account_status: account_status_seed(),
@@ -1713,7 +1757,7 @@ function store_new(): MockStore {
         checkouts_credited: new Set<string>(),
         checkouts_started: new Map<string, number>(),
         promos_redeemed: account_redemptions_seed(),
-        settings: { ...SEED_SETTINGS },
+        settings: initial ? { ...SETTINGS_INITIAL } : { ...SEED_SETTINGS },
         endpoints: [...structuredClone(SEED_ENDPOINTS)],
         notes_templates: [...structuredClone(SEED_NOTES_TEMPLATES)],
         people: [...structuredClone(SEED_PEOPLE)],
@@ -1722,8 +1766,8 @@ function store_new(): MockStore {
         ],
         folders: [],
         chats: new Map<ChatID, ChatStored>(),
-        jobs: [...structuredClone(SEED_JOBS)],
-        notes_markdown: notes_markdown_seed(),
+        jobs: empty ? [] : [...structuredClone(SEED_JOBS)],
+        notes_markdown: empty ? new Map<string, string>() : notes_markdown_seed(),
         transcripts: transcripts_seed(),
         callbacks: new Map<number, CallbackEntry>(),
         listeners: new Map<number, ListenerEntry>(),
@@ -1877,6 +1921,8 @@ async function transcription_remote(call: CommandCall): Promise<TranscriptionRes
 
     const transcript = store.transcripts.get(JOB_ID_SAMPLE)
         ?? transcript_build(['No sample audio.'])
+
+    if (job_find(JOB_ID_SAMPLE) === null) store.jobs.unshift(job_sample_new())
 
     const result = { job_id: JOB_ID_SAMPLE, transcript, cached }
 

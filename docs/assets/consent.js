@@ -2,12 +2,13 @@ const banner_sheet = new CSSStyleSheet();
 const choice_key = 'remi.consent';
 const choices = Object.freeze(['denied', 'granted']);
 const cookie_pattern = /^_ga(?:_|$)/u;
+const data_layer_key = 'dataLayer';
 const measurement_disable_key = 'ga-disable-G-GYQQ1H2S7Z';
 const module_address = import.meta.url;
 const privacy_address = new URL('../privacy/', module_address).href;
 const settings_selector = 'a[href$="#cookie-settings"]';
 const tag_manager_address = 'https://www.googletagmanager.com/gtm.js?id=GTM-W33NVHZH';
-let tag_manager_started = false;
+const tag_manager_selector = `script[src="${tag_manager_address}"]`;
 
 const banner_markup = `
     <p>
@@ -113,6 +114,8 @@ function banner_choose(event) {
     choice_write(choice);
     banner.remove();
 
+    assert(!banner.isConnected, 'the banner leaves the page once a choice is made');
+
     if (choice === 'granted') {
         tag_manager_load();
 
@@ -122,7 +125,7 @@ function banner_choose(event) {
     window[measurement_disable_key] = true;
     cookies_clear();
 
-    if (tag_manager_started) location.reload();
+    if (document.querySelector(tag_manager_selector) !== null) location.reload();
 }
 
 function banner_show() {
@@ -147,6 +150,7 @@ function banner_show() {
     document.body.prepend(banner);
 
     assert(banner.isConnected, 'the banner is on the page');
+    assert(document.body.firstElementChild === banner, 'the banner leads the page');
 
     return banner;
 }
@@ -209,16 +213,19 @@ function settings_open(event) {
 }
 
 function tag_manager_load() {
-    if (tag_manager_started) return;
+    if (document.querySelector(tag_manager_selector) !== null) return;
 
     const script = document.createElement('script');
 
-    window.dataLayer ??= [];
-    window.dataLayer.push({ 'gtm.start': Date.now(), event: 'gtm.js' });
+    window[data_layer_key] ??= [];
+
+    assert(Array.isArray(window[data_layer_key]), 'the data layer is a list');
+
+    window[data_layer_key].push({ 'gtm.start': Date.now(), event: 'gtm.js' });
     script.async = true;
     script.src = tag_manager_address;
     document.head.append(script);
-    tag_manager_started = true;
 
     assert(script.isConnected, 'the tag manager script is on the page');
+    assert(document.querySelector(tag_manager_selector) === script, 'the tag manager loads once');
 }

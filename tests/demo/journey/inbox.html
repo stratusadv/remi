@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Inbox</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+        }
+
+        body {
+            background: #f3f4f6;
+            color: #1f2329;
+            display: grid;
+            font-family: system-ui, sans-serif;
+            grid-template-columns: 240px 440px 1fr;
+        }
+
+        .folders {
+            background: #e8eaee;
+            padding: 28px 16px;
+        }
+
+        .account {
+            color: #59606b;
+            font-size: 14px;
+            margin: 0 12px 24px;
+        }
+
+        .folder {
+            border-radius: 8px;
+            display: flex;
+            font-size: 15px;
+            justify-content: space-between;
+            padding: 10px 12px;
+        }
+
+        .folder.current {
+            background: #d3dae6;
+            font-weight: 600;
+        }
+
+        .list {
+            background: #fff;
+            border-right: 1px solid #e1e4e9;
+        }
+
+        .list h1 {
+            border-bottom: 1px solid #e1e4e9;
+            font-size: 22px;
+            margin: 0;
+            padding: 28px 24px 18px;
+        }
+
+        .message {
+            background: #fff;
+            border: 0;
+            border-bottom: 1px solid #eef0f3;
+            color: inherit;
+            cursor: pointer;
+            display: grid;
+            font: inherit;
+            gap: 4px;
+            grid-template-columns: 1fr auto;
+            padding: 16px 24px;
+            text-align: left;
+            width: 100%;
+        }
+
+        .message.unread {
+            box-shadow: inset 4px 0 0 #e0457b;
+        }
+
+        .message.unread .from,
+        .message.unread .subject {
+            font-weight: 700;
+        }
+
+        .message.open {
+            background: #eef2f8;
+        }
+
+        .time,
+        .preview {
+            color: #6b7280;
+            font-size: 14px;
+        }
+
+        .subject,
+        .preview {
+            grid-column: 1 / -1;
+        }
+
+        .reader {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .reader[hidden] {
+            display: none;
+        }
+
+        .reader header {
+            background: #fff;
+            border-bottom: 1px solid #e1e4e9;
+            padding: 24px 32px;
+        }
+
+        .reader h2 {
+            font-size: 24px;
+            margin: 0 0 8px;
+        }
+
+        .reader p {
+            color: #59606b;
+            margin: 0;
+        }
+
+        .reader iframe {
+            border: 0;
+            flex: 1;
+            width: 100%;
+        }
+
+        .empty {
+            align-self: center;
+            color: #8a919c;
+            font-size: 18px;
+            justify-self: center;
+        }
+    </style>
+</head>
+<body>
+    <nav class="folders" aria-label="Folders">
+        <p class="account">avery@example.com</p>
+        <div class="folder current"><span>Inbox</span><span id="unread">1</span></div>
+        <div class="folder"><span>Sent</span></div>
+        <div class="folder"><span>Drafts</span></div>
+        <div class="folder"><span>Archive</span></div>
+    </nav>
+
+    <section class="list" aria-label="Messages">
+        <h1>Inbox</h1>
+
+        <button class="message unread" id="message" type="button">
+            <span class="from">remi</span>
+            <span class="time">Just now</span>
+            <span class="subject">Your remi code for Women in Business</span>
+            <span class="preview">Your code WIB-7KQ4-M9TX and the link to download remi.</span>
+        </button>
+    </section>
+
+    <p class="empty" id="empty">Select a message to read it.</p>
+
+    <section class="reader" id="reader" aria-label="Message" hidden>
+        <header>
+            <h2>Your remi code for Women in Business</h2>
+            <p>remi &lt;noreply@remirememberthat.com&gt; to avery@example.com</p>
+        </header>
+
+        <iframe id="email" title="The email from remi" src="email.html"></iframe>
+    </section>
+
+    <script>
+        document.getElementById('message').addEventListener('click', (event) => {
+            event.currentTarget.classList.remove('unread');
+            event.currentTarget.classList.add('open');
+            document.getElementById('empty').remove();
+            document.getElementById('reader').hidden = false;
+            document.getElementById('unread').textContent = '';
+        });
+    </script>
+</body>
+</html>

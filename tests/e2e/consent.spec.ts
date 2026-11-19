@@ -51,6 +51,8 @@ async function site_open(page: Page, path: string): Promise<string[]> {
     })
 
     await page.route(TAG_MANAGER, async (route) => {
+        assert(TAG_MANAGER.test(route.request().url()))
+
         requests.push(route.request().url())
         await route.fulfill({ body: '', headers: { 'content-type': 'text/javascript' } })
     })
@@ -74,7 +76,7 @@ for (const path of PAGES) {
 
         await expect.poll(() => requests.length).toBe(1)
         await expect(banner(page)).toHaveCount(0)
-        expect(await choice_stored(page)).toBe('granted')
+        await expect.poll(async () => choice_stored(page)).toBe('granted')
     })
 }
 
@@ -98,7 +100,7 @@ test(TITLE_DECLINED, async ({ page }) => {
 
     await expect(banner(page)).toHaveCount(0)
     expect(requests).toEqual([])
-    expect(await choice_stored(page)).toBe('denied')
+    await expect.poll(async () => choice_stored(page)).toBe('denied')
 
     await page.getByRole('link', { name: SETTINGS }).click()
 
@@ -108,7 +110,7 @@ test(TITLE_DECLINED, async ({ page }) => {
     await banner(page).getByRole('button', { name: ACCEPT }).click()
 
     await expect.poll(() => requests.length).toBe(1)
-    expect(await choice_stored(page)).toBe('granted')
+    await expect.poll(async () => choice_stored(page)).toBe('granted')
 })
 
 test(TITLE_WITHDRAWN, async ({ page }) => {
@@ -135,5 +137,5 @@ test(TITLE_WITHDRAWN, async ({ page }) => {
     expect(cookies.map((cookie) => cookie.name)).toEqual(['theme'])
     expect(requests).toHaveLength(1)
     await expect(banner(page)).toHaveCount(0)
-    expect(await choice_stored(page)).toBe('denied')
+    await expect.poll(async () => choice_stored(page)).toBe('denied')
 })

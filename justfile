@@ -51,12 +51,23 @@ clean:
 [doc('Run the what is new demo in a browser window with its narration')]
 [unix]
 demo SPEED="normal":
-    DEMO_MODE=narrate DEMO_SPEED={{ SPEED }} uv run --only-group demo pytest tests/demo --headed
+    DEMO_MODE=narrate DEMO_SPEED={{ SPEED }} uv run --only-group demo pytest tests/demo/test_whats_new.py --headed
+
+[doc('Run the Women in Business journey demo, from the table card to asking the notes, in a browser window')]
+[unix]
+demo-journey SPEED="normal":
+    DEMO_MODE=narrate DEMO_SPEED={{ SPEED }} uv run --only-group demo pytest tests/demo/test_wib_journey.py --headed
+
+[doc('Record the Women in Business journey demo to .demos/wib-journey/video.mp4 with its walkthrough')]
+[unix]
+demo-journey-video:
+    DEMO_MODE=narrate DEMO_VIDEO=1 uv run --only-group demo pytest tests/demo/test_wib_journey.py
+    uv run --only-group demo limelight-render .demos/wib-journey --title "remi at Women in Business"
 
 [doc('Record the what is new demo to .demos/whats-new/video.mp4 with its walkthrough')]
 [unix]
 demo-video:
-    DEMO_MODE=narrate DEMO_VIDEO=1 uv run --only-group demo pytest tests/demo
+    DEMO_MODE=narrate DEMO_VIDEO=1 uv run --only-group demo pytest tests/demo/test_whats_new.py
     uv run --only-group demo limelight-render .demos/whats-new --title "What is new in remi"
 
 [doc('Build the documentation site and fail on a broken link')]

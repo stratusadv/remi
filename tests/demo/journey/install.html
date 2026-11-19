@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Install remi on Windows</title>
+    <style>
+        html,
+        body {
+            background: #000;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        .screen {
+            height: 1080px;
+            left: 0;
+            position: absolute;
+            top: 0;
+            width: 1920px;
+        }
+
+        .spot {
+            background: transparent;
+            border: 0;
+            cursor: pointer;
+            position: absolute;
+        }
+
+        .file {
+            height: 20px;
+            left: 586px;
+            top: 402px;
+            width: 130px;
+        }
+
+        .more {
+            height: 20px;
+            left: 712px;
+            top: 370px;
+            width: 70px;
+        }
+
+        .run {
+            height: 35px;
+            left: 975px;
+            top: 689px;
+            width: 109px;
+        }
+
+        .next {
+            height: 22px;
+            left: 1036px;
+            top: 675px;
+            width: 73px;
+        }
+    </style>
+</head>
+<body>
+    <img class="screen" src="downloads.jpg" alt="The Downloads folder holds the remi installer">
+    <img class="screen" src="smartscreen.jpg" alt="Windows SmartScreen protects the PC" hidden>
+    <img class="screen" src="smartscreen-more.jpg" alt="SmartScreen offers Run anyway" hidden>
+    <img class="screen" src="setup-welcome.jpg" alt="The remi setup welcome page" hidden>
+    <img class="screen" src="setup-folder.jpg" alt="The remi setup install location" hidden>
+    <img class="screen" src="setup-complete.jpg" alt="The remi setup installation complete page" hidden>
+    <img class="screen" src="setup-finish.jpg" alt="The remi setup finish page" hidden>
+    <img class="screen" src="remi-welcome.jpg" alt="remi opens on its welcome screen" hidden>
+
+    <button class="spot file" type="button" aria-label="remi_0.2.0_x64-setup"></button>
+    <button class="spot more" type="button" aria-label="More info" hidden></button>
+    <button class="spot run" type="button" aria-label="Run anyway" hidden></button>
+    <button class="spot next" type="button" aria-label="Next" hidden></button>
+    <button class="spot next" type="button" aria-label="Next" hidden></button>
+    <button class="spot next" type="button" aria-label="Next" hidden></button>
+    <button class="spot next" type="button" aria-label="Finish" hidden></button>
+
+    <script>
+        const screens = [...document.querySelectorAll('.screen')];
+        const spots = [...document.querySelectorAll('.spot')];
+
+        if (spots.length !== screens.length - 1) {
+            throw new Error('each screen but the last has one spot to click');
+        }
+
+        spots.forEach((spot, index) => {
+            spot.addEventListener('click', () => {
+                screens[index].hidden = true;
+                spot.hidden = true;
+                screens[index + 1].hidden = false;
+
+                if (index + 1 < spots.length) {
+                    spots[index + 1].hidden = false;
+                }
+            });
+        });
+    </script>
+</body>
+</html>

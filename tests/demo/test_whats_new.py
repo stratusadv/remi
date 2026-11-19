@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import re
+import pytest
 
 from typing_extensions import TYPE_CHECKING
 
@@ -8,7 +8,7 @@ from limelight import Demo, StaticApplication
 from playwright.sync_api import expect
 
 if TYPE_CHECKING:
-    from playwright.sync_api import Locator, Page, Route, WebSocketRoute
+    from playwright.sync_api import Locator, Page
 
 
 ACCOUNT_EMAIL = 'avery@example.com'
@@ -18,12 +18,9 @@ ACCOUNT_REGION = 'Alberta'
 CHECKOUT_HOURS = '20'
 CHECKOUT_PAY = 'Pay $20.00'
 EDITOR = '.rich-editor-content .ProseMirror'
-HMR_SOCKET = re.compile(r'^ws://[^/]+/\?token=')
 NOTES_TIMEOUT_MS = 30_000
 RECORDING_MEETING = 'discovery-call.wav'
 RECORDING_TITLE = 'Weekly platform sync'
-STRIPE_ROUTE = 'https://js.stripe.com/**'
-STRIPE_STANDIN_TYPE = 'application/javascript'
 
 MICROPHONE_FAKE = """
 navigator.mediaDevices.getUserMedia = async () => {
@@ -49,48 +46,6 @@ navigator.mediaDevices.getUserMedia = async () => {
 }
 """
 
-STRIPE_STANDIN = """
-window.Stripe = function () {
-    return {
-        createPaymentMethod: function () {
-            return Promise.resolve({ paymentMethod: { id: 'pm_standin' } })
-        },
-        initCheckoutElementsSdk: function () {
-            var handlers = {}
-            var total = { amount: '$20.00', minorUnitsAmount: 2000 }
-            var session = {
-                currency: 'cad',
-                email: 'avery@example.com',
-                minorUnitsAmountDivisor: 100,
-                total: { total: total },
-            }
-
-            var actions = {
-                confirm: function () { return Promise.resolve({ type: 'success', session }) },
-                getSession: function () { return session },
-            }
-
-            var element = {
-                destroy: function () {},
-                mount: function (host) {
-                    host.innerHTML = '<input aria-label="Card number" value="4242 4242 4242 4242">'
-                    setTimeout(function () { handlers.ready({ elementType: 'payment' }) }, 0)
-                },
-                on: function (event, handler) { handlers[event] = handler; return element },
-            }
-
-            return {
-                changeAppearance: function () {},
-                createPaymentElement: function () { return element },
-                loadActions: function () { return Promise.resolve({ type: 'success', actions }) },
-            }
-        },
-    }
-}
-
-window.Stripe.version = 'endive'
-"""
-
 
 def _dialog(page: Page, title: str) -> Locator:
     assert not page.is_closed()
@@ -99,11 +54,6 @@ def _dialog(page: Page, title: str) -> Locator:
     heading = page.get_by_role('heading', name=title)
 
     return page.get_by_role('dialog').filter(has=heading)
-
-
-def _hmr_socket_stub(websocket: WebSocketRoute) -> None:
-    assert HMR_SOCKET.match(websocket.url) is not None
-    assert not websocket.url.endswith('=')
 
 
 def _scene_checkout(demo: Demo) -> None:
@@ -284,20 +234,12 @@ def _sidebar_button(page: Page, label: str) -> Locator:
     return page.locator('aside').get_by_role('button', name=label, exact=True)
 
 
-def _stripe_standin_serve(route: Route) -> None:
-    assert route.request.url.startswith('https://js.stripe.com/')
-    assert route.request.method == 'GET'
-
-    route.fulfill(body=STRIPE_STANDIN, content_type=STRIPE_STANDIN_TYPE)
-
-
+@pytest.mark.usefixtures('standins')
 def test_whats_new(base_url: str, page: Page) -> None:
     assert base_url.startswith('http://')
     assert not page.is_closed()
 
     page.add_init_script(script=MICROPHONE_FAKE)
-    page.route(STRIPE_ROUTE, _stripe_standin_serve)
-    page.route_web_socket(HMR_SOCKET, _hmr_socket_stub)
 
     application = StaticApplication(base_url=base_url)
     demo = Demo(page, application, name='whats-new')
