@@ -187,9 +187,9 @@ async function restart_abandoned(): Promise<Deferred<Account | null>> {
     const reloaded = deferred_new<Account | null>()
 
     vi.mocked(ipc.account_checkout_start).mockRejectedValueOnce(new Error('api error: refused'))
-    vi.mocked(ipc.account_get).mockReturnValueOnce(reloaded.promise)
 
     await page_mount()
+    vi.mocked(ipc.account_get).mockReturnValueOnce(reloaded.promise)
     await hours_buy(50)
 
     button('Try again').click()
@@ -285,12 +285,15 @@ describe('CheckoutView hours', () => {
 describe('CheckoutView account', () => {
     it('explains a server that takes no payments and checks again on request', async () => {
         const fake = form_fake_install()
+        const unready = { ...ACCOUNT, payments: false, publishable_key: '' }
 
-        account_state.account.value = { ...ACCOUNT, payments: false, publishable_key: '' }
+        account_state.account.value = unready
+        vi.mocked(ipc.account_get).mockResolvedValueOnce(unready)
 
         await page_mount()
 
         expect(fake.destroy).not.toHaveBeenCalled()
+        expect(ipc.account_get).toHaveBeenCalledTimes(1)
 
         expect(text_of('.checkout-view')).toContain(PAYMENTS_OFF)
         expect(document.body.querySelectorAll('.hours-card')).toHaveLength(0)
@@ -299,7 +302,7 @@ describe('CheckoutView account', () => {
         button('Try again').click()
         await flushPromises()
 
-        expect(ipc.account_get).toHaveBeenCalledTimes(1)
+        expect(ipc.account_get).toHaveBeenCalledTimes(2)
         expect(document.body.querySelectorAll('.hours-card')).toHaveLength(1)
         expect(stripe_preload).toHaveBeenCalledWith(KEY)
         expect(ipc.account_checkout_start).not.toHaveBeenCalled()
@@ -326,6 +329,21 @@ describe('CheckoutView account', () => {
         expect(stripe_preload).toHaveBeenLastCalledWith(rotated)
         expect(checkout_preload).toHaveBeenLastCalledWith(rotated, expect.any(Promise))
         expect(button('Pay $30.00').disabled).toBe(false)
+    })
+})
+
+describe('CheckoutView when it opens', () => {
+    it('quotes the hours after from the balance the server holds now', async () => {
+        const refunded = { ...ACCOUNT, balance_seconds: 9000 }
+
+        vi.mocked(ipc.account_get).mockResolvedValueOnce(refunded)
+
+        await page_mount()
+        await hours_type('50')
+
+        expect(ipc.account_get).toHaveBeenCalledTimes(1)
+        expect(account_state.balance_text.value).toBe('2.5 hours')
+        expect(text_of('.hours-card-after')).toBe('52.5 hours')
     })
 })
 
@@ -554,6 +572,7 @@ describe('CheckoutView when something fails', () => {
         await hours_buy(50)
 
         expect(fake.confirm).not.toHaveBeenCalled()
+        expect(ipc.account_get).toHaveBeenCalledTimes(1)
 
         button('Pay $30.00').click()
         await flushPromises()
@@ -561,7 +580,7 @@ describe('CheckoutView when something fails', () => {
         expect(dialog_shown()?.title).toBe('Payment processing')
         expect(dialog_shown()?.message).toContain('Your payment is being confirmed.')
         expect(dialog_shown()?.kind).toBe('info')
-        expect(ipc.account_get).toHaveBeenCalledTimes(1)
+        expect(ipc.account_get).toHaveBeenCalledTimes(2)
         expect(fake.destroy).toHaveBeenCalledTimes(1)
     })
 
@@ -576,11 +595,12 @@ describe('CheckoutView when something fails', () => {
 
         expect(text_of('.checkout-panel')).toContain('Stripe could not start the checkout.')
         expect(text_of('.checkout-ghost')).toContain('Card number')
+        expect(ipc.account_get).toHaveBeenCalledTimes(1)
 
         button('Try again').click()
         await flushPromises()
 
-        expect(ipc.account_get).toHaveBeenCalledTimes(1)
+        expect(ipc.account_get).toHaveBeenCalledTimes(2)
         expect(ipc.account_checkout_start).toHaveBeenCalledTimes(2)
         expect(text_of('.checkout-panel')).not.toContain('Stripe could not start the checkout.')
         expect(button('Pay $30.00').disabled).toBe(false)

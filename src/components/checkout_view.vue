@@ -1,5 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, shallowRef, useTemplateRef, watch } from 'vue'
+import {
+    computed,
+    nextTick,
+    onBeforeUnmount,
+    onMounted,
+    ref,
+    shallowRef,
+    useTemplateRef,
+    watch,
+} from 'vue'
 import {
     hours_is_valid,
     hours_quote,
@@ -144,6 +153,8 @@ const rate_text = computed(() => (account.value === null ? '' : price_hour_text(
 watch(() => account.value?.publishable_key ?? '', key_preload, { immediate: true })
 
 onBeforeUnmount(checkout_unmount)
+
+onMounted(account_load)
 
 function account_retry(): void {
     assert(phase.value === 'choosing')
