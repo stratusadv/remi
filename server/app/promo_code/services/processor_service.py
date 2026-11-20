@@ -13,6 +13,7 @@ from app.account.constants import ACCOUNT_EMAIL_LENGTH_MAX, ACCOUNT_NAME_LENGTH_
 from app.account.ledger.models import AccountLedgerEntry
 from app.core.exceptions import PromoInvalidError
 from app.funnel.choices import CampaignChoices
+from app.funnel.metric import funnel_lead_record, funnel_redemption_record
 from app.promo_code.constants import (
     PROMO_CODE_INVALID_MESSAGE,
     PROMO_CODE_ISSUE_ALPHABET,
@@ -107,6 +108,7 @@ class PromoCodeProcessorService(BaseDjangoModelService['PromoCode']):
                 raise RuntimeError(message)
 
             personal.services.save_model_obj()
+            funnel_lead_record(campaign=personal.campaign)
 
         return personal
 
@@ -269,6 +271,7 @@ class PromoCodeProcessorService(BaseDjangoModelService['PromoCode']):
             account.services.save_model_obj()
 
         AccountLedgerEntry.services.factory.promo_create(account=account, promo=self.obj)
+        funnel_redemption_record(campaign=self.obj.campaign)
 
     def terms_save(self, *, campaign: str, hours: int, redemptions_max: int) -> None:
         if campaign not in CampaignChoices.values:

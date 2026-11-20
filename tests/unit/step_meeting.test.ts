@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import StepMeeting from '../../src/components/step_meeting.vue'
 import { use_notes_templates } from '../../src/composables/use_notes_templates'
 import { use_pipeline } from '../../src/composables/use_pipeline'
+import { use_settings } from '../../src/composables/use_settings'
 import { assert } from '../../src/lib/assert'
 import { ipc } from '../../src/lib/ipc'
 import {
@@ -23,6 +24,7 @@ const TITLE_FIRST = 'Weekly sync'
 const TITLE_SECOND = 'Retro'
 const pipeline = use_pipeline()
 const { templates } = use_notes_templates()
+const { settings } = use_settings()
 
 
 async function meeting_open(meta: JobMeta): Promise<void> {
@@ -128,6 +130,8 @@ beforeEach(() => {
     templates.value = [
         { id: 'meeting', name: 'Meeting', description: '', instructions: '', edited: false },
     ]
+
+    settings.value = { ...settings.value, notes_template_id_default: 'meeting' }
 })
 
 describe('StepMeeting autosave across meetings', () => {
@@ -244,5 +248,61 @@ describe('StepMeeting autosave order', () => {
         expect(titles_saved()).toEqual([`${TITLE_FIRST} A`, `${TITLE_FIRST} B`])
         expect(title_value(wrapper)).toBe(`${TITLE_FIRST} B`)
         expect(wrapper.find('.banner').exists()).toBe(false)
+    })
+})
+
+describe('StepMeeting template', () => {
+    beforeEach(() => {
+        templates.value = [
+            ...templates.value,
+            { id: 'standup', name: 'Standup', description: '', instructions: '', edited: false },
+        ]
+    })
+
+    it('saves the template picked for the meeting with its details', async () => {
+        const wrapper = mount_meeting()
+
+        vi.useFakeTimers({ [TO_FAKE]: ['setTimeout', 'clearTimeout'] })
+        await wrapper.get('#details-template').setValue('standup')
+        vi.advanceTimersByTime(AUTOSAVE_DEBOUNCE_MS)
+        await flushPromises()
+
+        expect(ipc.job_meta_update).toHaveBeenCalledExactlyOnceWith(
+            'job-1',
+            expect.objectContaining({ template_id: 'standup', title: TITLE_FIRST }),
+        )
+    })
+
+    it('saves nothing when another meeting opens on a template of its own', async () => {
+        const meta_second = job_meta_build({
+            id: 'job-2',
+            template_id: 'standup',
+            title: TITLE_SECOND,
+        })
+
+        const wrapper = mount_meeting()
+
+        vi.useFakeTimers({ [TO_FAKE]: ['setTimeout', 'clearTimeout'] })
+        await meeting_open(meta_second)
+        vi.advanceTimersByTime(AUTOSAVE_DEBOUNCE_MS)
+        await flushPromises()
+
+        expect(title_value(wrapper)).toBe(TITLE_SECOND)
+        expect(pipeline.template_id_selected.value).toBe('standup')
+        expect(ipc.job_meta_update).not.toHaveBeenCalled()
+    })
+
+    it('saves nothing for a template it only filled in from the default', async () => {
+        settings.value = { ...settings.value, notes_template_id_default: 'standup' }
+        pipeline.template_id_selected.value = null
+
+        vi.useFakeTimers({ [TO_FAKE]: ['setTimeout', 'clearTimeout'] })
+        mount_meeting()
+        await flushPromises()
+        vi.advanceTimersByTime(AUTOSAVE_DEBOUNCE_MS)
+        await flushPromises()
+
+        expect(pipeline.template_id_selected.value).toBe('standup')
+        expect(ipc.job_meta_update).not.toHaveBeenCalled()
     })
 })

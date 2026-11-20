@@ -12,6 +12,7 @@ from functools import partialmethod
 from typing_extensions import TYPE_CHECKING
 
 from app.account.constants import (
+    HUNDREDTHS_PER_HOUR,
     SECONDS_PER_HOUR,
     SECONDS_PER_MINUTE,
     TENTHS_PER_HOUR,
@@ -114,6 +115,17 @@ def _grant_short(
     grant_create(service, account=account, reference=reference, seconds=seconds - 1)
 
 
+def _hours_parsed(text: str) -> Fraction:
+    assert re.fullmatch(r'\d{1,3}(,\d{3})*\.\d{2} hours', text), text
+
+    amount = text.removesuffix(' hours').replace(',', '')
+    seconds = Fraction(amount) * SECONDS_PER_HOUR
+
+    assert seconds.denominator == 1, text
+
+    return seconds
+
+
 def test_duration_text_reads_whole_minutes_under_an_hour_and_tenths_above() -> None:
     examples = [
         (0, False, '0 minutes'),
@@ -169,6 +181,41 @@ def test_duration_and_quotient_refuse_negative_or_zero_inputs() -> None:
     for divisor in (0, -60):
         with pytest.raises(ValueError, match=f'divisor must be positive: {divisor}'):
             processor_service._quotient(dividend=60, divisor=divisor, rounded_up=False)
+
+
+def test_hours_text_reads_hundredths_of_an_hour() -> None:
+    examples = [
+        (0, True, '0.00 hours'),
+        (35, False, '0.00 hours'),
+        (35, True, '0.01 hours'),
+        (36, False, '0.01 hours'),
+        (3600, False, '1.00 hours'),
+        (4997, False, '1.38 hours'),
+        (4997, True, '1.39 hours'),
+        (3_600_000, False, '1,000.00 hours'),
+    ]
+
+    for seconds, rounded_up, expected in examples:
+        shown = processor_service.hours_text(seconds, rounded_up=rounded_up)
+
+        assert shown == expected, (seconds, rounded_up)
+
+    with pytest.raises(ValueError, match='seconds must be non-negative: -1'):
+        processor_service.hours_text(-1, rounded_up=False)
+
+
+def test_hours_text_rounds_the_way_it_is_asked_and_by_less_than_one_hundredth() -> None:
+    generator = random.Random(2026)
+    step = SECONDS_PER_HOUR // HUNDREDTHS_PER_HOUR
+
+    for _ in range(DURATION_SAMPLES):
+        seconds = generator.randint(0, 2000 * SECONDS_PER_HOUR)
+        up = _hours_parsed(processor_service.hours_text(seconds, rounded_up=True))
+        down = _hours_parsed(processor_service.hours_text(seconds, rounded_up=False))
+
+        assert seconds <= up < seconds + step, seconds
+        assert seconds - step < down <= seconds, seconds
+        assert (up == down) == (seconds % step == 0), seconds
 
 
 def test_quotient_a_whole_step_from_the_exact_value_is_a_programming_error() -> None:

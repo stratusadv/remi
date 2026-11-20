@@ -114,6 +114,7 @@ export function job_meta_build(patch: Partial<JobMeta> = {}): JobMeta {
         project: null,
         tags: [],
         favourite: false,
+        template_id: null,
         ...patch,
     }
 }

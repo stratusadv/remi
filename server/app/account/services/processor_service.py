@@ -10,8 +10,10 @@ from django_spire.contrib.constructor.service import BaseDjangoModelService
 
 from app.account.constants import (
     ACCOUNT_LEDGER_ENTRY_REFERENCE_LENGTH_MAX,
+    ADJUSTMENT_HOURS_MAX,
     CHARGE_JOB_ID_PATTERN,
     CHARGE_SECONDS_MAX,
+    HUNDREDTHS_PER_HOUR,
     MILLISECONDS_PER_SECOND,
     QUESTION_TOKENS_MAX,
     QUESTION_UNKNOWN_MESSAGE,
@@ -130,6 +132,22 @@ def _quotient(*, dividend: int, divisor: int, rounded_up: bool) -> int:
     return quotient
 
 
+def hours_text(seconds: int, *, rounded_up: bool) -> str:
+    if seconds < 0:
+        message = f'seconds must be non-negative: {seconds}'
+        raise ValueError(message)
+
+    hundredths = _quotient(
+        dividend=seconds * HUNDREDTHS_PER_HOUR,
+        divisor=SECONDS_PER_HOUR,
+        rounded_up=rounded_up,
+    )
+
+    hours, hundredth = divmod(hundredths, HUNDREDTHS_PER_HOUR)
+
+    return f'{hours:,}.{hundredth:02} hours'
+
+
 class AccountProcessorService(BaseDjangoModelService['Account']):
     obj: Account
 
@@ -143,6 +161,62 @@ class AccountProcessorService(BaseDjangoModelService['Account']):
             raise RuntimeError(message)
 
         return self.obj_class.objects.by_id(self.obj.pk).locked().get()
+
+    def balance_adjust(self, *, reference: str, seconds: int) -> int:
+        seconds_max = ADJUSTMENT_HOURS_MAX * SECONDS_PER_HOUR
+
+        if not 0 < abs(seconds) <= seconds_max:
+            message = f'an adjustment moves 1 to {seconds_max} seconds either way: {seconds}'
+            raise ValueError(message)
+
+        if not 0 < len(reference) <= ACCOUNT_LEDGER_ENTRY_REFERENCE_LENGTH_MAX:
+            message = (
+                f'reference must be 1 to {ACCOUNT_LEDGER_ENTRY_REFERENCE_LENGTH_MAX} '
+                f'characters: {reference!r}'
+            )
+
+            raise ValueError(message)
+
+        with transaction.atomic():
+            account = self._account_locked()
+
+            if account.ledger_entries.adjustments().by_reference(reference).exists():
+                message = (
+                    'This account already has an adjustment with this reason, so this one '
+                    'was not applied again.'
+                )
+
+                raise RequestInvalidError(message)
+
+            balance_seconds = account.ledger_entries.balance_seconds()
+
+            if balance_seconds < 0:
+                message = f'account {account.pk} holds {balance_seconds} seconds'
+                raise RuntimeError(message)
+
+            if balance_seconds + seconds < 0:
+                held = hours_text(balance_seconds, rounded_up=False)
+                removed = hours_text(-seconds, rounded_up=True)
+                message = f'The account holds {held}, so it cannot lose {removed}.'
+                raise BalanceInsufficientError(message)
+
+            AccountLedgerEntry.services.factory.adjustment_create(
+                account=account,
+                reference=reference,
+                seconds=seconds,
+            )
+
+            balance_seconds_after = account.ledger_entries.balance_seconds()
+
+            if balance_seconds_after != balance_seconds + seconds:
+                message = (
+                    f'adjusting account {account.pk} by {seconds} seconds moved its balance '
+                    f'from {balance_seconds} to {balance_seconds_after}'
+                )
+
+                raise RuntimeError(message)
+
+        return balance_seconds_after
 
     def balance_topup(self, *, reference: str) -> int:
         if not 0 < len(reference) <= ACCOUNT_LEDGER_ENTRY_REFERENCE_LENGTH_MAX:

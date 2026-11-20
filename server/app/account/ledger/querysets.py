@@ -15,6 +15,9 @@ if TYPE_CHECKING:
 
 
 class AccountLedgerEntryQuerySet(QuerySet['AccountLedgerEntry']):
+    def adjustments(self) -> Self:
+        return self.filter(kind=AccountLedgerEntryKindChoices.ADJUSTMENT)
+
     def balance_seconds(self) -> int:
         totals = self.aggregate(total=Coalesce(Sum('seconds'), 0))
         balance = totals['total']

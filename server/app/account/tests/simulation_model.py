@@ -186,6 +186,14 @@ class WorldModel:
         if campaign != CAMPAIGN_GENERAL:
             self.metric_add(f'remi:acquisition:click:{campaign}:download')
 
+    def lead_record(self, campaign: str) -> None:
+        assert campaign in CampaignChoices.values
+
+        self.metric_add('remi:acquisition:lead:promo-code')
+
+        if campaign != CAMPAIGN_GENERAL:
+            self.metric_add(f'remi:acquisition:lead:{campaign}:promo-code')
+
     def metric_add(self, reference: str, *, value: Decimal = Decimal(1)) -> None:
         assert value > 0
         assert reference == reference.strip()
@@ -292,6 +300,8 @@ class WorldModel:
 
         account.promos[promo.code] = promo.hours * SECONDS_PER_HOUR
 
+        self.redemption_record(promo.campaign)
+
     def charge_expected(self, account: AccountModel, job_id: str, seconds: int) -> Expected:
         assert self.accounts.get(account.id) is account
         assert JOB_ID_PATTERN.fullmatch(job_id) is not None
@@ -336,6 +346,14 @@ class WorldModel:
         account.purchases[session.session_id] = session.hours * SECONDS_PER_HOUR
 
         self.metric_add('remi:action:purchase-hours')
+
+    def redemption_record(self, campaign: str) -> None:
+        assert campaign in CampaignChoices.values
+
+        self.metric_add('remi:acquisition:redemption:promo-code')
+
+        if campaign != CAMPAIGN_GENERAL:
+            self.metric_add(f'remi:acquisition:redemption:{campaign}:promo-code')
 
     def signup_record(self, account: AccountModel) -> None:
         assert self.accounts.get(account.id) is account

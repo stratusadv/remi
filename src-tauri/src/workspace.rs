@@ -88,6 +88,8 @@ pub(crate) struct JobMeta {
     #[serde(default)]
     pub(crate) tags: Vec<String>,
     #[serde(default)]
+    pub(crate) template_id: Option<String>,
+    #[serde(default)]
     pub(crate) title: Option<String>,
 }
 
@@ -114,6 +116,8 @@ pub(crate) struct JobMetaPatch {
     pub(crate) project: Option<String>,
     #[serde(default)]
     pub(crate) tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub(crate) template_id: Option<String>,
     #[serde(default)]
     pub(crate) title: Option<String>,
 }
@@ -618,6 +622,10 @@ pub(crate) fn meta_apply_patch(id: &str, patch: JobMetaPatch) -> AppResult<JobMe
 
         if let Some(tags) = patch.tags {
             meta.tags = names_clean(tags);
+        }
+
+        if let Some(template_id) = patch.template_id {
+            meta.template_id = text_clean(&template_id);
         }
 
         if let Some(favourite) = patch.favourite {
@@ -1429,6 +1437,7 @@ pub(crate) mod test_support {
             source_path: "/tmp/source.wav".to_owned(),
             source_size_bytes: 3,
             tags: Vec::new(),
+            template_id: None,
             title: None,
         }
     }
@@ -1786,6 +1795,24 @@ mod tests {
         );
 
         assert_ne!(meta_apply_patch(&foreign, JobMetaPatch::empty()).unwrap_err().to_string(), "");
+    }
+
+    #[test]
+    fn a_meeting_keeps_its_template_until_a_patch_carries_another() {
+        let _root = root_scoped();
+        let id = job_id_from_text("template");
+        let older = r#"{"id":"x","source_path":"p","source_size_bytes":1,"created_at_unix":2}"#;
+        let picked: JobMetaPatch = serde_json::from_str(r#"{"template_id":" sync "}"#).unwrap();
+        let starred: JobMetaPatch = serde_json::from_str(r#"{"favourite":true}"#).unwrap();
+        let unpicked: JobMetaPatch = serde_json::from_str(r#"{"template_id":null}"#).unwrap();
+
+        meta_save(&meta_with(&id, 1)).unwrap();
+
+        assert!(serde_json::from_str::<JobMeta>(older).unwrap().template_id.is_none());
+        assert_eq!(meta_apply_patch(&id, picked).unwrap().template_id.as_deref(), Some("sync"));
+        assert_eq!(meta_apply_patch(&id, starred).unwrap().template_id.as_deref(), Some("sync"));
+        assert_eq!(meta_apply_patch(&id, unpicked).unwrap().template_id.as_deref(), Some("sync"));
+        assert_eq!(meta_load(&id).unwrap().unwrap().template_id.as_deref(), Some("sync"));
     }
 
     #[test]

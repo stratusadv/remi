@@ -8,6 +8,7 @@ const module_address = import.meta.url;
 const privacy_address = new URL('../privacy/', module_address).href;
 const settings_selector = 'a[href$="#cookie-settings"]';
 const tag_manager_address = 'https://www.googletagmanager.com/gtm.js?id=GTM-W33NVHZH';
+const tag_manager_event = 'gtm.js';
 const tag_manager_selector = `script[src="${tag_manager_address}"]`;
 
 const banner_markup = `
@@ -83,7 +84,6 @@ const banner_styles = `
 `;
 
 const choice_stored = choice_read();
-let tag_manager_started = false;
 
 banner_sheet.replaceSync(banner_styles);
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, banner_sheet];
@@ -126,7 +126,7 @@ function banner_choose(event) {
     window[measurement_disable_key] = true;
     cookies_clear();
 
-    if (tag_manager_started) location.reload();
+    if (tag_manager_started()) location.reload();
 }
 
 function banner_show() {
@@ -214,7 +214,7 @@ function settings_open(event) {
 }
 
 function tag_manager_load() {
-    if (tag_manager_started) return;
+    if (tag_manager_started()) return;
 
     const script = document.createElement('script');
 
@@ -222,12 +222,22 @@ function tag_manager_load() {
 
     assert(Array.isArray(window[data_layer_key]), 'the data layer is a list');
 
-    window[data_layer_key].push({ 'gtm.start': Date.now(), event: 'gtm.js' });
+    window[data_layer_key].push({ 'gtm.start': Date.now(), event: tag_manager_event });
     script.async = true;
     script.src = tag_manager_address;
     document.head.append(script);
-    tag_manager_started = true;
 
     assert(script.isConnected, 'the tag manager script is on the page');
     assert(document.querySelector(tag_manager_selector) === script, 'the tag manager loads once');
+    assert(tag_manager_started(), 'the data layer records the tag manager start');
+}
+
+function tag_manager_started() {
+    const data_layer = window[data_layer_key];
+
+    assert(data_layer === undefined || Array.isArray(data_layer), 'the data layer is a list');
+
+    if (data_layer === undefined) return false;
+
+    return data_layer.some((message) => message?.event === tag_manager_event);
 }

@@ -64,7 +64,9 @@ class AccountLedgerEntry(models.Model):
         constraints = [
             models.CheckConstraint(
                 condition=(
-                    Q(kind=AccountLedgerEntryKindChoices.CHARGE, seconds__lt=0)
+                    Q(kind=AccountLedgerEntryKindChoices.ADJUSTMENT, seconds__lt=0)
+                    | Q(kind=AccountLedgerEntryKindChoices.ADJUSTMENT, seconds__gt=0)
+                    | Q(kind=AccountLedgerEntryKindChoices.CHARGE, seconds__lt=0)
                     | Q(kind=AccountLedgerEntryKindChoices.GRANT, seconds__gt=0)
                     | Q(kind=AccountLedgerEntryKindChoices.PROMO, seconds__gt=0)
                     | Q(kind=AccountLedgerEntryKindChoices.PURCHASE, seconds__gt=0)

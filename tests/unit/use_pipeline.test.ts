@@ -439,6 +439,52 @@ describe('template_id_ensure', () => {
     })
 })
 
+describe('job_open template', () => {
+    const { templates } = use_notes_templates()
+    const { settings } = use_settings()
+
+    beforeEach(() => {
+        job_open_mocks(['stratus.listen'], '# Notes')
+
+        templates.value = [
+            { id: 'meeting', name: 'Meeting', description: '', instructions: '', edited: false },
+            { id: 'standup', name: 'Standup', description: '', instructions: '', edited: false },
+        ]
+
+        settings.value = { ...settings.value, notes_template_id_default: 'standup' }
+    })
+
+    it('selects the template the meeting was given over the default', async () => {
+        await pipeline.job_open(job_meta_build({ template_id: 'meeting' }), null)
+
+        expect(pipeline.template_id_selected.value).toBe('meeting')
+    })
+
+    it('never carries the template picked for one meeting over to the next', async () => {
+        await pipeline.job_open(job_meta_build({ id: 'job-8' }), null)
+        template_select('meeting')
+        await pipeline.job_open(job_meta_build({ id: 'job-9' }), null)
+
+        expect(pipeline.template_id_selected.value).toBe('standup')
+    })
+
+    it('keeps a template picked for the open meeting when it opens again', async () => {
+        const meta = job_meta_build({ template_id: 'meeting' })
+
+        await pipeline.job_open(meta, null)
+        template_select('standup')
+        await pipeline.job_open(meta, null)
+
+        expect(pipeline.template_id_selected.value).toBe('standup')
+    })
+
+    it('selects nothing for a meeting whose template was deleted', async () => {
+        await pipeline.job_open(job_meta_build({ template_id: 'deleted' }), null)
+
+        expect(pipeline.template_id_selected.value).toBeNull()
+    })
+})
+
 describe('meta_refresh', () => {
     it('does nothing when no job is open', async () => {
         await pipeline.meta_refresh()

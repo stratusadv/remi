@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { computed, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { use_folders } from '../composables/use_folders'
 import { use_jobs } from '../composables/use_jobs'
 import { use_notes_templates } from '../composables/use_notes_templates'
@@ -160,9 +160,7 @@ const folder_options = computed<FolderName[]>(() => {
     return [...folders.value, chosen].sort(folder_compare)
 })
 
-onMounted(() => {
-    template_id_ensure()
-})
+template_id_ensure()
 
 onUnmounted(() => {
     if (timer_id.value === null) return
@@ -199,7 +197,14 @@ watch(
 )
 
 watch(
-    [title_input, person_ids_current, person_ids_mentioned, project_input, tags_current],
+    [
+        title_input,
+        person_ids_current,
+        person_ids_mentioned,
+        project_input,
+        tags_current,
+        template_id_selected,
+    ],
     () => {
         if (job_id_current.value === null) return
 
@@ -328,6 +333,7 @@ function patch_build(): JobMetaPatch {
         person_ids_mentioned: people_mentioned.value.map((person) => person.id),
         project: project_input.value.trim(),
         tags: [...tags_current.value],
+        template_id: template_id_selected.value,
     }
 }
 

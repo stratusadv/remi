@@ -6,6 +6,7 @@ import pytest
 
 from decimal import Decimal
 from pathlib import Path
+from types import MappingProxyType
 from typing_extensions import TYPE_CHECKING, Any
 
 from app.funnel.metric import RemiMetric
@@ -35,6 +36,24 @@ METRIC_FAILED = 'Metric record failed'
 METRIC_FAILED_KNOWN = "AttributeError: 'dict' object has no attribute 'json'"
 PURCHASE_HOURS = 50
 REFERENCE_DOWNLOAD = 'remi:acquisition:click:download'
+
+JOURNEY_TOTALS = MappingProxyType({
+    'remi:acquisition:click:download': Decimal(1),
+    'remi:acquisition:click:download:windows': Decimal(1),
+    'remi:acquisition:click:landing': Decimal(1),
+    'remi:acquisition:click:wib:download': Decimal(1),
+    'remi:acquisition:click:wib:promo': Decimal(1),
+    'remi:acquisition:lead:promo-code': Decimal(1),
+    'remi:acquisition:lead:wib:promo-code': Decimal(1),
+    'remi:acquisition:redemption:promo-code': Decimal(1),
+    'remi:acquisition:redemption:wib:promo-code': Decimal(1),
+    'remi:acquisition:signup:completed': Decimal(1),
+    'remi:acquisition:signup:wib:promo-code': Decimal(1),
+    'remi:action:hours-transcribed': Decimal('0.5'),
+    'remi:action:meeting-transcribed': Decimal(1),
+    'remi:action:new-chat': Decimal(1),
+    'remi:action:purchase-hours': Decimal(1),
+})
 
 pytestmark = pytest.mark.system
 
@@ -131,20 +150,7 @@ def test_a_conference_journey_lands_each_of_its_references_in_the_portal(
     assert acted.status == 204
 
     finished = _purchase_paid(world_live, token)
-
-    expected = {
-        'remi:acquisition:click:download': Decimal(1),
-        'remi:acquisition:click:download:windows': Decimal(1),
-        'remi:acquisition:click:landing': Decimal(1),
-        'remi:acquisition:click:wib:download': Decimal(1),
-        'remi:acquisition:click:wib:promo': Decimal(1),
-        'remi:acquisition:signup:completed': Decimal(1),
-        'remi:acquisition:signup:wib:promo-code': Decimal(1),
-        'remi:action:hours-transcribed': Decimal('0.5'),
-        'remi:action:meeting-transcribed': Decimal(1),
-        'remi:action:new-chat': Decimal(1),
-        'remi:action:purchase-hours': Decimal(1),
-    }
+    expected = dict(JOURNEY_TOTALS)
 
     portal_totals_wait(world_live, before=before, expected=expected)
 
@@ -168,6 +174,7 @@ def test_a_one_second_recording_keeps_its_hours_to_four_places_in_the_portal(
     assert charged.status == 200
 
     expected = {
+        'remi:acquisition:redemption:promo-code': Decimal(1),
         'remi:acquisition:signup:completed': Decimal(1),
         'remi:action:hours-transcribed': Decimal('0.0003'),
         'remi:action:meeting-transcribed': Decimal(1),

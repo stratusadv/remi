@@ -278,6 +278,7 @@ const SEED_JOBS: readonly JobMeta[] = Object.freeze([
         project: 'Remi',
         tags: ['meeting-notes', 'platform'],
         favourite: true,
+        template_id: null,
     },
     {
         id: JOB_ID_SAMPLE_SECOND,
@@ -293,6 +294,7 @@ const SEED_JOBS: readonly JobMeta[] = Object.freeze([
         project: null,
         tags: [],
         favourite: false,
+        template_id: null,
     },
 ])
 
@@ -1075,7 +1077,7 @@ function commands_notes(command: string, call: CommandCall): unknown {
         case 'notes_export':
             return field_of(call, 'target_path')
         case 'notes_generate_remote_streaming':
-            return stream_text_emit(text_field(call, 'stream_id'), NOTES_SAMPLE)
+            return notes_generate_stream(call)
         case 'notes_load':
             return store.notes_markdown.get(text_field(call, 'job_id')) ?? null
         case 'notes_print':
@@ -1344,6 +1346,8 @@ function job_meta_update(call: CommandCall): JobMeta {
 
     if (patch.title !== undefined) patch.title = text_clean(patch.title)
     if (patch.project !== undefined) patch.project = text_clean(patch.project)
+    if (patch.template_id === null) delete patch.template_id
+    if (patch.template_id !== undefined) patch.template_id = text_clean(patch.template_id)
 
     Object.assign(job, patch)
 
@@ -1576,6 +1580,17 @@ function markdown_line_render(
     html.push(`<p>${inline_html_render(line)}</p>`)
 
     return null
+}
+
+async function notes_generate_stream(call: CommandCall): Promise<string> {
+    assert(typeof call === 'object')
+
+    const job_id = field_of(call, 'job_id')
+    const job = typeof job_id === 'string' ? job_find(job_id) : null
+
+    if (job !== null) job.template_id = text_field(call, 'template_id')
+
+    return stream_text_emit(text_field(call, 'stream_id'), NOTES_SAMPLE)
 }
 
 function notes_markdown_seed(): Map<string, string> {

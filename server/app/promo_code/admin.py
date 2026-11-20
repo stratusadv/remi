@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing_extensions import TYPE_CHECKING
 
 from django.contrib import admin, messages
+from django.urls import reverse
+from django.utils.html import format_html, format_html_join
 
 from app.promo_code.models import PromoCode
 from app.promo_code.querysets import PromoCodeQuerySet
@@ -14,8 +16,20 @@ if TYPE_CHECKING:
 
 
 PROMO_CODE_ACTION_COUNT_MAX = 100
+
+PROMO_CODE_FIELDS = (
+    'code',
+    'campaign',
+    'hours',
+    'redemptions_max',
+    'early_codes_max',
+    'early_hours',
+    'early_codes_issued',
+)
+
 PROMO_CODE_FOLLOW_UP_DOWNLOADED = 'downloaded'
 PROMO_CODE_FOLLOW_UP_EMAILED = 'emailed'
+PROMO_CODE_REDEEMERS_LISTED_MAX = 25
 
 
 class PromoCodeFollowUpFilter(admin.SimpleListFilter):
@@ -64,16 +78,6 @@ class PromoCodeAdmin(admin.ModelAdmin):
     ordering = ['code']
     search_fields = ['code', 'email', 'name_first', 'name_last']
 
-    fields = [
-        'code',
-        'campaign',
-        'hours',
-        'redemptions_max',
-        'early_codes_max',
-        'early_hours',
-        'early_codes_issued',
-    ]
-
     list_display = [
         'code',
         'campaign',
@@ -106,6 +110,14 @@ class PromoCodeAdmin(admin.ModelAdmin):
         for promo in promos:
             promo.services.processor.active_set(is_active=is_active)
 
+    def get_fields(self, request: HttpRequest, obj: PromoCode | None = None) -> tuple[str, ...]:
+        _ = request
+
+        if obj is None:
+            return PROMO_CODE_FIELDS
+
+        return (*PROMO_CODE_FIELDS, 'redeemers')
+
     def get_queryset(self, request: HttpRequest) -> QuerySet[PromoCode]:
         _ = request
 
@@ -122,9 +134,9 @@ class PromoCodeAdmin(admin.ModelAdmin):
             return ['early_codes_issued']
 
         if obj.email != '':
-            return ['code', 'early_codes_issued', 'early_codes_max', 'early_hours']
+            return ['code', 'early_codes_issued', 'early_codes_max', 'early_hours', 'redeemers']
 
-        return ['code', 'early_codes_issued']
+        return ['code', 'early_codes_issued', 'redeemers']
 
     @admin.action(description='Activate the selected promo codes', permissions=['change'])
     def promo_activate(self, request: HttpRequest, queryset: QuerySet[PromoCode]) -> None:
@@ -133,6 +145,22 @@ class PromoCodeAdmin(admin.ModelAdmin):
     @admin.action(description='Deactivate the selected promo codes', permissions=['change'])
     def promo_deactivate(self, request: HttpRequest, queryset: QuerySet[PromoCode]) -> None:
         self._promo_active_set(request, queryset, is_active=False)
+
+    @admin.display(description='Redeemed by')
+    def redeemers(self, promo: PromoCode) -> str:
+        redemptions = promo.redemptions.select_related('account').order_by('-created_datetime')
+        redemptions_listed = redemptions[:PROMO_CODE_REDEEMERS_LISTED_MAX]
+        accounts = [(redemption.account,) for redemption in redemptions_listed]
+        listed = format_html_join('', '<div>{}</div>', accounts)
+        remaining = promo.redemption_count - len(accounts)
+
+        if remaining <= 0:
+            return listed
+
+        changelist = reverse('admin:account_ledger_accountledgerentry_changelist')
+        url = f'{changelist}?promo_code__id__exact={promo.pk}'
+
+        return format_html('{}<div><a href="{}">and {} more</a></div>', listed, url, remaining)
 
     @admin.display(description='Redemptions', ordering='redemption_count')
     def redemptions(self, promo: PromoCode) -> int:

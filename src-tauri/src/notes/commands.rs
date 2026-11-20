@@ -161,6 +161,10 @@ pub(crate) async fn notes_generate_remote_streaming(
     let meta = meta_resolve(job_id.as_deref())?;
     let people = people_resolve(meta.as_ref())?;
 
+    if let Some(record) = &meta {
+        template_record(record, &template.id);
+    }
+
     let user_prompt = prompt_build(&PromptParts {
         instructions: &template.instructions,
         meta: meta.as_ref(),
@@ -535,6 +539,23 @@ fn prompt_build(parts: &PromptParts<'_>) -> String {
     prompt
 }
 
+fn template_record(meta: &JobMeta, template_id: &str) {
+    assert_ne!(meta.id, "");
+    assert_ne!(template_id, "");
+
+    if meta.template_id.as_deref() == Some(template_id) {
+        return;
+    }
+
+    let recorded = workspace::meta_update(&meta.id, |latest| {
+        latest.template_id = Some(template_id.to_owned());
+    });
+
+    if let Err(error) = recorded {
+        tracing::warn!("the template for job {} could not be saved: {error}", meta.id);
+    }
+}
+
 fn title_case(text: &str) -> String {
     let mut title = String::with_capacity(text.len());
 
@@ -746,6 +767,24 @@ mod tests {
     }
 
     #[test]
+    fn a_generation_records_its_template_on_the_meeting_without_touching_the_rest() {
+        let _root = root_scoped();
+        let absent = meta_with(&workspace::job_id_from_text("absent"), 1);
+        let mut meta = meta_with(&workspace::job_id_from_text("record"), 1);
+
+        meta.title = Some("Kickoff".to_owned());
+        workspace::meta_save(&meta).unwrap();
+        template_record(&meta, "sync");
+        template_record(&absent, "sync");
+
+        let recorded = workspace::meta_load(&meta.id).unwrap().unwrap();
+
+        assert_eq!(recorded.template_id.as_deref(), Some("sync"));
+        assert_eq!(recorded.title.as_deref(), Some("Kickoff"));
+        assert!(workspace::meta_load(&absent.id).unwrap().is_none());
+    }
+
+    #[test]
     fn corrections_keep_only_numbered_lines_inside_the_transcript() {
         let reply = concat!(
             "```\n",
@@ -831,6 +870,7 @@ mod tests {
             source_path: "/tmp/a.wav".to_owned(),
             source_size_bytes: 1,
             tags: vec!["weekly".to_owned()],
+            template_id: None,
             title: Some("Kickoff".to_owned()),
         };
 

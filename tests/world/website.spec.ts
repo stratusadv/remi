@@ -297,6 +297,8 @@ test(TITLE_CONFERENCE, async ({ page_open }) => {
         'remi:acquisition:click:download:windows': 1,
         'remi:acquisition:click:wib:download': 1,
         'remi:acquisition:click:wib:promo': 1,
+        'remi:acquisition:lead:promo-code': 1,
+        'remi:acquisition:lead:wib:promo-code': 1,
     })
 
     const messages = await messages_to(address)
@@ -357,6 +359,8 @@ test(TITLE_REFUSED, async ({ page_open }) => {
 
     await portal_deltas_wait(before, {
         'remi:acquisition:click:wib:promo': 1,
+        'remi:acquisition:lead:promo-code': 1,
+        'remi:acquisition:lead:wib:promo-code': 1,
     })
 
     const messages = await messages_to(address)

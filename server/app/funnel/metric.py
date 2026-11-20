@@ -25,6 +25,8 @@ from app.funnel.choices import (
 
 METRIC_DOMAIN_KEY = 'remi'
 METRIC_EVENT_CLICK = 'click'
+METRIC_EVENT_LEAD = 'lead'
+METRIC_EVENT_REDEMPTION = 'redemption'
 METRIC_EVENT_SIGNUP = 'signup'
 METRIC_GROUP_KEY = 'remi-metric'
 METRIC_HOURS_QUANTUM = Decimal('0.0001')
@@ -155,6 +157,22 @@ def funnel_download_record(*, campaign: str, platform: str) -> None:
         )
 
 
+def funnel_lead_record(*, campaign: str) -> None:
+    if campaign not in CampaignChoices.values:
+        message = f'campaign must be one of {CampaignChoices.values}: {campaign!r}'
+        raise ValueError(message)
+
+    metric_record(MetricStatistic.ACQUISITION, METRIC_EVENT_LEAD, METRIC_QUALIFIER_PROMO_CODE)
+
+    if campaign != CampaignChoices.GENERAL:
+        metric_record(
+            MetricStatistic.ACQUISITION,
+            METRIC_EVENT_LEAD,
+            campaign,
+            METRIC_QUALIFIER_PROMO_CODE,
+        )
+
+
 def funnel_page_belongs(*, campaign: str, page: str) -> bool:
     if campaign not in CampaignChoices.values:
         message = f'campaign must be one of {CampaignChoices.values}: {campaign!r}'
@@ -165,6 +183,22 @@ def funnel_page_belongs(*, campaign: str, page: str) -> bool:
         raise ValueError(message)
 
     return (page == FunnelPageChoices.LANDING) == (campaign == CampaignChoices.GENERAL)
+
+
+def funnel_redemption_record(*, campaign: str) -> None:
+    if campaign not in CampaignChoices.values:
+        message = f'campaign must be one of {CampaignChoices.values}: {campaign!r}'
+        raise ValueError(message)
+
+    metric_record(MetricStatistic.ACQUISITION, METRIC_EVENT_REDEMPTION, METRIC_QUALIFIER_PROMO_CODE)
+
+    if campaign != CampaignChoices.GENERAL:
+        metric_record(
+            MetricStatistic.ACQUISITION,
+            METRIC_EVENT_REDEMPTION,
+            campaign,
+            METRIC_QUALIFIER_PROMO_CODE,
+        )
 
 
 def funnel_signup_record(*, campaign: str) -> None:

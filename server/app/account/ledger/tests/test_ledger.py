@@ -8,7 +8,7 @@ from typing_extensions import TYPE_CHECKING
 
 from django.db import IntegrityError, transaction
 
-from app.account.constants import CHARGE_SECONDS_MAX, SECONDS_PER_HOUR
+from app.account.constants import ADJUSTMENT_HOURS_MAX, CHARGE_SECONDS_MAX, SECONDS_PER_HOUR
 from app.account.ledger.choices import AccountLedgerEntryKindChoices
 from app.account.ledger.models import AccountLedgerEntry
 from app.account.payment.tests.factories import create_test_payment
@@ -296,3 +296,44 @@ def test_ledger_matches_a_reference_model_under_random_operations(stripe_fake: S
 
             assert expected >= 0, context
             assert account.ledger_entries.balance_seconds() == expected, context
+
+
+def test_ledger_adjustment_moves_hours_either_way_but_never_zero() -> None:
+    account = create_test_account()
+    seconds_max = ADJUSTMENT_HOURS_MAX * SECONDS_PER_HOUR
+
+    for seconds in (0, seconds_max + 1, -seconds_max - 1):
+        with pytest.raises(ValueError, match='an adjustment moves 1 to'):
+            AccountLedgerEntry.services.factory.adjustment_create(
+                account=account,
+                reference='ADJUST',
+                seconds=seconds,
+            )
+
+    with pytest.raises(ValueError, match='cannot move 0 seconds'):
+        AccountLedgerEntry.services.factory._entry_create(
+            account=account,
+            kind=AccountLedgerEntryKindChoices.ADJUSTMENT,
+            reference='ADJUST',
+            seconds=0,
+        )
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        AccountLedgerEntry.objects.create(
+            account=account,
+            kind=AccountLedgerEntryKindChoices.ADJUSTMENT,
+            reference='ADJUST',
+            seconds=0,
+        )
+
+    for seconds in (seconds_max, -seconds_max, 1, -1):
+        AccountLedgerEntry.services.factory.adjustment_create(
+            account=account,
+            reference=f'ADJUST{seconds}',
+            seconds=seconds,
+        )
+
+    moved = sorted(account.ledger_entries.adjustments().values_list('seconds', flat=True))
+
+    assert moved == [-seconds_max, -1, 1, seconds_max]
+    assert account.ledger_entries.balance_seconds() == 0

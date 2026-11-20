@@ -2,6 +2,7 @@ from django.db.models import TextChoices
 
 
 class AccountLedgerEntryKindChoices(TextChoices):
+    ADJUSTMENT = 'adjustment', 'Adjustment'
     CHARGE = 'charge', 'Charge'
     GRANT = 'grant', 'Grant'
     PROMO = 'promo', 'Promo'

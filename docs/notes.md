@@ -25,6 +25,8 @@ A meeting that already has notes keeps them. The step waits for *Generate notes*
 
 The *Regenerate notes* button replaces the whole document, including your edits, so it asks first.
 
+A meeting keeps its template. *Regenerate notes* writes from the latest version of it, so an edit on the *Templates* page carries over.
+
 ## Rewrite Text
 
 Select text and press *AI* on the toolbar, then pick an action or type your own instruction. Select nothing to rewrite the whole document.
