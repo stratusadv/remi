@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 import threading
 
@@ -19,7 +20,7 @@ from app.account.models import Account
 from app.account.tests.factories import create_test_account
 from app.core.exceptions import PromoInvalidError
 from app.funnel.choices import CampaignChoices
-from app.promo_code.admin import PromoCodeAdmin
+from app.promo_code.admin import PROMO_CODE_REDEEMERS_LISTED_MAX, PromoCodeAdmin
 from app.promo_code.constants import PROMO_CODE_EARLY_HOURS_MESSAGE, PROMO_CODE_ISSUE_ATTEMPTS_MAX
 from app.promo_code.models import PromoCode
 from app.promo_code.services import processor_service
@@ -565,6 +566,52 @@ def test_promo_code_admin_lists_and_finds_a_personal_code_by_name(admin_client: 
     assert [promo.code for promo in found.context['cl'].queryset] == [named.code]
     assert (named.name_first, named.name_last) == ('Wren', 'Louden')
     assert b'Louden' in listed.content
+
+
+def test_promo_code_admin_page_lists_who_redeemed_the_code_and_links_the_rest(
+    admin_client: Client,
+) -> None:
+    page_add = admin_client.get(reverse('admin:promo_code_promocode_add')).content.decode()
+
+    assert 'Redeemed by' not in page_add
+
+    friend = create_test_promo_code(code='FRIEND', hours=1)
+    hidden_count = 2
+    redeemer_count = PROMO_CODE_REDEEMERS_LISTED_MAX + hidden_count
+    emails = [f'friend{index}@example.com' for index in range(redeemer_count)]
+
+    for email in emails:
+        account = create_test_account(email=email)
+
+        account.services.processor.promo_redeem('FRIEND')
+
+    url_friend = reverse('admin:promo_code_promocode_change', args=[friend.pk])
+    page_friend = admin_client.get(url_friend).content.decode()
+    links = re.findall(r'<a href="([^"]+)">and (\d+) more</a>', page_friend)
+    shown = [email in page_friend for email in emails]
+    shown_expected = [False] * hidden_count + [True] * PROMO_CODE_REDEEMERS_LISTED_MAX
+
+    assert 'Redeemed by' in page_friend
+    assert shown == shown_expected
+    assert [count for _, count in links] == [str(hidden_count)]
+
+    redemptions = admin_client.get(html.unescape(links[0][0]))
+    emails_redeemed = {entry.account.email for entry in redemptions.context['cl'].result_list}
+
+    assert redemptions.status_code == 200
+    assert emails_redeemed == set(emails)
+
+    podcast = create_test_promo_code(code='PODCAST', hours=1)
+    listener = create_test_account(email='listener@example.com')
+
+    listener.services.processor.promo_redeem('PODCAST')
+
+    url_podcast = reverse('admin:promo_code_promocode_change', args=[podcast.pk])
+    page_podcast = admin_client.get(url_podcast).content.decode()
+
+    assert 'listener@example.com' in page_podcast
+    assert not any(email in page_podcast for email in emails)
+    assert 'more</a>' not in page_podcast
 
 
 def test_promo_code_longer_than_the_limit_or_blank_is_refused() -> None:

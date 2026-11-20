@@ -1,0 +1,40 @@
+{% extends "admin/base_site.html" %}
+{% load i18n l10n static %}
+
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'admin/css/forms.css' %}">{% endblock %}
+
+{% block content %}
+<p>{{ account.name }} ({{ account.email }}) holds {{ balance }}.</p>
+<form method="post">
+    {% csrf_token %}
+    {% if form.errors %}
+        <p class="errornote">
+        {% blocktranslate count counter=form.errors|length %}Please correct the error below.{% plural %}Please correct the errors below.{% endblocktranslate %}
+        </p>
+        {{ form.non_field_errors }}
+    {% endif %}
+    <fieldset class="module aligned">
+        {% for field in form %}
+            <div class="form-row{% if field.errors %} errors{% endif %} field-{{ field.name }}">
+                {{ field.errors }}
+                <div>
+                    <div class="flex-container">
+                        {{ field.label_tag }}
+                        {{ field }}
+                    </div>
+                    <div class="help" id="{{ field.auto_id }}_helptext">
+                        <div>{{ field.help_text }}</div>
+                    </div>
+                </div>
+            </div>
+        {% endfor %}
+    </fieldset>
+    <input type="hidden" name="action" value="balance_adjust">
+    <input type="hidden" name="_selected_action" value="{{ account.pk|unlocalize }}">
+    <input type="hidden" name="apply" value="yes">
+    <div class="submit-row">
+        <input type="submit" class="default" value="{{ title }}">
+        <a role="button" href="{{ request.get_full_path }}" class="closelink">Cancel</a>
+    </div>
+</form>
+{% endblock %}

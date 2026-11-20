@@ -2,7 +2,7 @@
 
 ## Overview
 
-Stratus Advanced Technologies makes remi, a desktop app that turns a recording of a meeting into notes, and runs its website at remirememberthat.com. This policy describes the personal information the app and the website collect, why they collect it, who else receives it, how long it is kept, and how you can see, correct, or delete it. This version took effect on November 18, 2026.
+Stratus Advanced Technologies makes remi, a desktop app that turns a recording of a meeting into notes, and runs its website at remirememberthat.com. This policy describes the personal information the app and the website collect, why they collect it, who else receives it, how long it is kept, and how you can see, correct, or delete it. This version took effect on November 19, 2026.
 
 ## Contact
 
@@ -61,7 +61,7 @@ The app checks GitHub for new versions and downloads them from there, so GitHub 
 
 ### Server Records
 
-remi's server logs each request with its time, path, and result, and with your account ID for a request from the app. DigitalOcean, which hosts the server, receives the IP address of each request, and the server keeps a count of recent requests from each address in memory to block floods of requests. Stratus Advanced Technologies also counts sign-ups, sign-ups through each campaign, purchases, and transcribed meetings and hours for its internal reports. Each of these counts is a daily total, like the counts from the website and the app, and holds no account ID, promo code, name, or email address.
+remi's server logs each request with its time, path, and result, and with your account ID for a request from the app. DigitalOcean, which hosts the server, receives the IP address of each request, and the server keeps a count of recent requests from each address in memory to block floods of requests. Stratus Advanced Technologies also counts sign-ups, sign-ups through each campaign, the personal promo codes each campaign page sends, promo code redemptions, purchases, and transcribed meetings and hours for its internal reports. Each of these counts is a daily total, like the counts from the website and the app, and holds no account ID, promo code, name, or email address.
 
 ## Service Providers
 

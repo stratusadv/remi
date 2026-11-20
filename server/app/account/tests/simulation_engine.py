@@ -1878,6 +1878,8 @@ class RemiSimulation:
         )
 
         self.model.promos[stored.code.upper()] = promo
+        self.model.lead_record(promo.campaign)
+
         return stored.code
 
     def _email_window_settle(
@@ -1950,6 +1952,8 @@ class RemiSimulation:
                 hours=hours,
                 redemptions_max=1,
             )
+
+            self.model.lead_record(promo.campaign)
 
     def complimentary_start(self, run: Run) -> None:
         assert 0 <= run.step < STEP_COUNT_MAX

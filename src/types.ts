@@ -114,6 +114,7 @@ export interface JobMeta {
     project: string | null
     tags: string[]
     favourite: boolean
+    template_id: string | null
 }
 
 export interface JobListing extends JobMeta {
@@ -130,6 +131,7 @@ export interface JobMetaPatch {
     project?: string | null
     tags?: string[]
     favourite?: boolean
+    template_id?: string | null
 }
 
 export interface ChatChunk {

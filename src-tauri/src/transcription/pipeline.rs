@@ -181,6 +181,7 @@ fn audio_prepare_meta(
             source_path: source_path_text,
             source_size_bytes,
             tags: Vec::new(),
+            template_id: None,
             title: None,
         },
         Some(previous) => JobMeta {
@@ -196,6 +197,7 @@ fn audio_prepare_meta(
             source_path: source_path_text,
             source_size_bytes,
             tags: previous.tags,
+            template_id: previous.template_id,
             title: previous.title,
         },
     };
@@ -345,6 +347,7 @@ fn transcript_import_meta(
             source_path: SOURCE_PATH_IMPORTED.to_owned(),
             source_size_bytes,
             tags: Vec::new(),
+            template_id: None,
             title: title_clean,
         },
         Some(previous) => JobMeta {
@@ -360,6 +363,7 @@ fn transcript_import_meta(
             source_path: previous.source_path,
             source_size_bytes,
             tags: previous.tags,
+            template_id: previous.template_id,
             title: previous.title.or(title_clean),
         },
     };

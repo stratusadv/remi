@@ -238,6 +238,10 @@ async function journey_portal(journey: Readonly<Journey>): Promise<void> {
     assert(hours > 0)
 
     await portal_deltas_wait(journey.before, {
+        'remi:acquisition:lead:promo-code': 1,
+        'remi:acquisition:lead:wib:promo-code': 1,
+        'remi:acquisition:redemption:promo-code': 1,
+        'remi:acquisition:redemption:wib:promo-code': 1,
         'remi:acquisition:signup:completed': 1,
         'remi:acquisition:signup:wib:promo-code': 1,
         'remi:action:ask-library-question': 1,

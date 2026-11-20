@@ -13,6 +13,8 @@ from typing_extensions import TYPE_CHECKING
 from django.db import connection, transaction
 
 from app.account.constants import (
+    ACCOUNT_LEDGER_ENTRY_REFERENCE_LENGTH_MAX,
+    ADJUSTMENT_HOURS_MAX,
     CHARGE_SECONDS_MAX,
     SECONDS_PER_HOUR,
     SECONDS_PER_MINUTE,
@@ -22,7 +24,7 @@ from app.account.ledger.models import AccountLedgerEntry
 from app.account.ledger.querysets import AccountLedgerEntryQuerySet
 from app.account.models import Account
 from app.account.tests.factories import create_test_account
-from app.core.exceptions import BalanceInsufficientError
+from app.core.exceptions import BalanceInsufficientError, RequestInvalidError
 from app.funnel.choices import CampaignChoices
 from app.promo_code.tests.factories import create_test_promo_code
 from harness.api import ACCOUNT_CHARGE_PATH, account_create, account_get, api_post
@@ -38,6 +40,8 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.django_db
+ADJUSTMENT_SEEDS = 8
+ADJUSTMENT_STEPS = 30
 BALANCE_MESSAGE_SAMPLES = 60
 JOB_ID_FIRST = '86dfb1d3b0140ecf2fd59075421f1cb5'
 JOB_ID_SECOND = '47ead100cc5cd956aa10b3c4d5e6f708'
@@ -49,6 +53,47 @@ BALANCE_MESSAGE_PATTERN = re.compile(
     r'needs (?P<needed>\d+(?:\.\d)?) (?P<needed_unit>minutes?|hours?) of transcription and the '
     r'account has (?P<held>\d+(?:\.\d)?) (?P<held_unit>minutes?|hours?) left\.',
 )
+
+
+def _adjustment_thread(
+    account: Account,
+    seconds: int,
+    *,
+    done_second: threading.Event,
+    outcomes: dict[str, str],
+) -> None:
+    name = threading.current_thread().name
+
+    assert seconds != 0
+    assert not done_second.is_set()
+    assert name not in outcomes
+
+    try:
+        _ = account.services.processor.balance_adjust(reference=f'test: {name}', seconds=seconds)
+    except BalanceInsufficientError:
+        outcomes[name] = 'insufficient'
+    else:
+        outcomes[name] = 'adjusted'
+    finally:
+        if name == 'second':
+            done_second.set()
+
+        connection.close()
+
+
+def _adjustment_seconds(generator: random.Random, *, expected: int, seconds_max: int) -> int:
+    assert type(generator) is random.Random
+    assert expected >= 0
+    assert seconds_max > 0
+
+    magnitudes = [1, expected, expected + 1, seconds_max, generator.randint(1, seconds_max)]
+    candidates = [value for value in magnitudes if 0 < value <= seconds_max]
+    sign = generator.choice([-1, 1])
+    seconds = sign * generator.choice(candidates)
+
+    assert 0 < abs(seconds) <= seconds_max
+
+    return seconds
 
 
 def _balance_seconds_pausing(
@@ -162,6 +207,120 @@ def _topup_thread(
             done_second.set()
 
         connection.close()
+
+
+def test_balance_adjust_below_zero_is_refused_without_a_ledger_entry() -> None:
+    account = create_test_account(seconds=30 * SECONDS_PER_MINUTE)
+
+    with pytest.raises(BalanceInsufficientError) as caught:
+        account.services.processor.balance_adjust(
+            reference='admin: Correction',
+            seconds=-SECONDS_PER_HOUR,
+        )
+
+    assert str(caught.value) == 'The account holds 0.50 hours, so it cannot lose 1.00 hours.'
+    assert not account.ledger_entries.adjustments().exists()
+    assert account.ledger_entries.balance_seconds() == 30 * SECONDS_PER_MINUTE
+
+
+def test_balance_adjust_matches_a_running_total_under_random_adjustments() -> None:
+    seconds_max = ADJUSTMENT_HOURS_MAX * SECONDS_PER_HOUR
+
+    for seed in range(ADJUSTMENT_SEEDS):
+        generator = random.Random(seed)
+        account = create_test_account(email=f'adjust{seed}@example.com')
+        expected = 0
+        applied = 0
+
+        for step in range(ADJUSTMENT_STEPS):
+            seconds = _adjustment_seconds(generator, expected=expected, seconds_max=seconds_max)
+            reference = f'test: seed {seed} step {step}'
+            context = f'seed {seed}, step {step}, {seconds} seconds from {expected}'
+
+            if expected + seconds < 0:
+                with pytest.raises(BalanceInsufficientError):
+                    account.services.processor.balance_adjust(
+                        reference=reference,
+                        seconds=seconds,
+                    )
+
+                assert account.ledger_entries.balance_seconds() == expected, context
+
+                continue
+
+            balance = account.services.processor.balance_adjust(
+                reference=reference,
+                seconds=seconds,
+            )
+
+            expected = expected + seconds
+            applied = applied + 1
+
+            assert balance == expected, context
+
+        entries = account.ledger_entries.values_list('seconds', flat=True)
+
+        assert sum(entries) == expected
+        assert account.ledger_entries.adjustments().count() == applied
+
+
+def test_balance_adjust_of_zero_too_many_hours_or_a_bad_reference_is_a_programming_error() -> None:
+    account = create_test_account(seconds=SECONDS_PER_HOUR)
+    seconds_max = ADJUSTMENT_HOURS_MAX * SECONDS_PER_HOUR
+    reference_long = 'a' * (ACCOUNT_LEDGER_ENTRY_REFERENCE_LENGTH_MAX + 1)
+
+    cases = [
+        ('admin: Zero', 0, 'an adjustment moves 1 to'),
+        ('admin: Too many', seconds_max + 1, 'an adjustment moves 1 to'),
+        ('admin: Too many', -seconds_max - 1, 'an adjustment moves 1 to'),
+        ('', SECONDS_PER_HOUR, 'reference must be 1 to'),
+        (reference_long, SECONDS_PER_HOUR, 'reference must be 1 to'),
+    ]
+
+    for reference, seconds, match in cases:
+        with pytest.raises(ValueError, match=match):
+            account.services.processor.balance_adjust(reference=reference, seconds=seconds)
+
+    assert not account.ledger_entries.adjustments().exists()
+    assert account.ledger_entries.balance_seconds() == SECONDS_PER_HOUR
+
+
+def test_balance_adjust_records_no_metric_and_counts_as_no_purchase_promo_or_grant(
+    metric_dispatched: MetricExecutorFake,
+    django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
+) -> None:
+    account = create_test_account()
+
+    with django_capture_on_commit_callbacks(execute=True):
+        balance = account.services.processor.balance_adjust(
+            reference='admin: Refund',
+            seconds=SECONDS_PER_HOUR,
+        )
+
+    assert balance == SECONDS_PER_HOUR
+    assert metric_dispatched.statistic_keys() == []
+    assert not account.ledger_entries.grants().exists()
+    assert not account.ledger_entries.promos().exists()
+    assert not account.ledger_entries.purchases().exists()
+
+
+def test_balance_adjust_repeated_with_the_same_reference_is_applied_once() -> None:
+    account = create_test_account()
+
+    balance = account.services.processor.balance_adjust(
+        reference='admin: Refund',
+        seconds=SECONDS_PER_HOUR,
+    )
+
+    with pytest.raises(RequestInvalidError, match='already has an adjustment with this reason'):
+        account.services.processor.balance_adjust(
+            reference='admin: Refund',
+            seconds=SECONDS_PER_HOUR,
+        )
+
+    assert balance == SECONDS_PER_HOUR
+    assert account.ledger_entries.balance_seconds() == SECONDS_PER_HOUR
+    assert account.ledger_entries.adjustments().count() == 1
 
 
 def test_balance_topup_after_a_charge_grants_back_exactly_the_charge() -> None:
@@ -337,6 +496,46 @@ def test_code_issued_from_a_stale_copy_keeps_a_campaign_set_meanwhile() -> None:
     assert stale.campaign == CampaignChoices.GENERAL
     assert stored.campaign == CampaignChoices.WIB
     assert stored.token_hash == hashlib.sha256(token.encode()).hexdigest()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_lock_makes_a_charge_wait_for_an_adjustment_that_empties_the_balance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = create_test_account(email='lock@example.com', seconds=SECONDS_PER_HOUR)
+    read_first = threading.Event()
+    done_second = threading.Event()
+    outcomes = {}
+    balance_seconds_original = AccountLedgerEntryQuerySet.balance_seconds
+
+    balance_seconds_pausing = partialmethod(
+        _balance_seconds_pausing,
+        done_second=done_second,
+        read_first=read_first,
+        balance_seconds=balance_seconds_original,
+    )
+
+    adjust = partial(_adjustment_thread, account, done_second=done_second, outcomes=outcomes)
+    charge = partial(_charge_thread, account, done_second=done_second, outcomes=outcomes)
+
+    monkeypatch.setattr(AccountLedgerEntryQuerySet, 'balance_seconds', balance_seconds_pausing)
+
+    first = threading.Thread(target=adjust, args=(-SECONDS_PER_HOUR,), name='first')
+    second = threading.Thread(target=charge, args=(JOB_ID_FIRST,), name='second')
+
+    first.start()
+
+    waited = read_first.wait(timeout=THREAD_WAIT_SECONDS)
+
+    assert waited
+
+    second.start()
+    first.join(timeout=THREAD_WAIT_SECONDS)
+    second.join(timeout=THREAD_WAIT_SECONDS)
+    monkeypatch.undo()
+
+    assert outcomes == {'first': 'adjusted', 'second': 'insufficient'}
+    assert account.ledger_entries.balance_seconds() == 0
 
 
 @pytest.mark.django_db(transaction=True)

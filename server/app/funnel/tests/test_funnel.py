@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing_extensions import TYPE_CHECKING, cast
 from urllib.parse import urlencode
 
+from django.core.cache import cache
 from django.db import transaction
 from django.test import Client
 
@@ -29,7 +30,9 @@ from app.funnel.metric import (
     RemiMetric,
     funnel_click_record,
     funnel_download_record,
+    funnel_lead_record,
     funnel_page_belongs,
+    funnel_redemption_record,
     funnel_signup_record,
     metric_action_record,
     metric_hours,
@@ -44,6 +47,7 @@ from harness.api import (
     BEACON_CONTENT_TYPE,
     FUNNEL_CLICK_PATH,
     FUNNEL_DOWNLOAD_PATH,
+    FUNNEL_EMAIL_PATH,
     account_create,
     api_post,
     checkout_finish,
@@ -73,9 +77,13 @@ REFERENCE_DOWNLOAD_WIB = 'remi:acquisition:click:wib:download'
 REFERENCE_DOWNLOAD_WINDOWS = 'remi:acquisition:click:download:windows'
 REFERENCE_HOURS = 'remi:action:hours-transcribed'
 REFERENCE_LANDING = 'remi:acquisition:click:landing'
+REFERENCE_LEAD = 'remi:acquisition:lead:promo-code'
+REFERENCE_LEAD_WIB = 'remi:acquisition:lead:wib:promo-code'
 REFERENCE_MEETING = 'remi:action:meeting-transcribed'
 REFERENCE_PROMO_WIB = 'remi:acquisition:click:wib:promo'
 REFERENCE_PURCHASE = 'remi:action:purchase-hours'
+REFERENCE_REDEMPTION = 'remi:acquisition:redemption:promo-code'
+REFERENCE_REDEMPTION_WIB = 'remi:acquisition:redemption:wib:promo-code'
 REFERENCE_SIGNUP = 'remi:acquisition:signup:completed'
 REFERENCE_SIGNUP_WIB = 'remi:acquisition:signup:wib:promo-code'
 STATISTIC_ACQUISITION = 'remi--remi-metric--acquisition'
@@ -112,6 +120,22 @@ ACTIONS_REFUSED = (
     '',
 )
 
+EMAIL_REQUESTS = (
+    ('wib', 'avery@example.com'),
+    ('wib', ' AVERY@example.com'),
+    ('general', 'casey@example.com'),
+    ('wib', 'morgan@example.com'),
+    ('wib', 'avery@example.com'),
+)
+
+PROMO_REDEMPTIONS = (
+    ('WELCOME', 200),
+    ('WIB2026', 200),
+    ('WIB2026', 400),
+    ('SPENT', 400),
+    ('NOPE', 400),
+)
+
 ERROR_ACTION_UNKNOWN = MappingProxyType({
     'code': 'request_invalid',
     'message': ACTION_UNKNOWN_MESSAGE,
@@ -132,6 +156,10 @@ REFERENCES_ACQUISITION = frozenset({
     'remi:acquisition:click:landing',
     'remi:acquisition:click:wib:download',
     'remi:acquisition:click:wib:promo',
+    'remi:acquisition:lead:promo-code',
+    'remi:acquisition:lead:wib:promo-code',
+    'remi:acquisition:redemption:promo-code',
+    'remi:acquisition:redemption:wib:promo-code',
     'remi:acquisition:signup:completed',
     'remi:acquisition:signup:wib:promo-code',
 })
@@ -190,6 +218,15 @@ def _beacon_send(
     assert fields.keys() <= {'campaign', 'code', 'page', 'platform'}
 
     return client.post(path, data=urlencode(fields), content_type=BEACON_CONTENT_TYPE)
+
+
+def _email_send(client: Client, *, address: str, campaign: str) -> _MonkeyPatchedWSGIResponse:
+    assert campaign in CampaignChoices.values
+    assert address.strip() != ''
+
+    fields = {'campaign': campaign, 'email': address}
+
+    return client.post(FUNNEL_EMAIL_PATH, data=urlencode(fields), content_type=BEACON_CONTENT_TYPE)
 
 
 def _metric_record_rolled_back() -> None:
@@ -482,6 +519,29 @@ def test_download_total_equals_the_sum_of_its_platforms_for_any_beacon_sequence(
     assert 0 < wib_count < DOWNLOAD_SAMPLES
 
 
+@pytest.mark.usefixtures('sendgrid_fake')
+def test_email_counts_a_lead_for_each_personal_code_it_issues_and_none_without_one(
+    client: Client,
+    metric_dispatched: MetricExecutorFake,
+    django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
+) -> None:
+    create_test_promo_code(campaign=CampaignChoices.WIB, code='WIB2026')
+
+    with django_capture_on_commit_callbacks(execute=True):
+        for campaign, address in EMAIL_REQUESTS:
+            cache.clear()
+
+            response = _email_send(client, address=address, campaign=campaign)
+
+            assert response.status_code == 204, address
+
+    issued_count = PromoCode.objects.issued().count()
+    leads = [_acquisition(REFERENCE_LEAD), _acquisition(REFERENCE_LEAD_WIB)]
+
+    assert issued_count == 2
+    assert metric_dispatched.dispatched == leads * issued_count
+
+
 def test_funnel_records_refuse_an_undeclared_campaign_page_or_platform(
     metric_dispatched: MetricExecutorFake,
 ) -> None:
@@ -502,6 +562,12 @@ def test_funnel_records_refuse_an_undeclared_campaign_page_or_platform(
 
     with pytest.raises(ValueError, match='the wib campaign has no landing page'):
         funnel_click_record(campaign='wib', page='landing')
+
+    with pytest.raises(ValueError, match='campaign must be one of'):
+        funnel_lead_record(campaign='spring')
+
+    with pytest.raises(ValueError, match='campaign must be one of'):
+        funnel_redemption_record(campaign='spring')
 
     with pytest.raises(ValueError, match='campaign must be one of'):
         funnel_signup_record(campaign='spring')
@@ -598,21 +664,35 @@ def test_metric_registry_declares_the_keys_the_portal_holds() -> None:
 
 
 @pytest.mark.usefixtures('stripe_configured')
-def test_promo_redeemed_after_sign_up_records_nothing(
+def test_promo_redemptions_count_once_each_at_sign_up_or_after_and_refusals_count_none(
     client: Client,
     metric_dispatched: MetricExecutorFake,
     django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
 ) -> None:
     create_test_promo_code(campaign=CampaignChoices.WIB, code='WIB2026')
+    create_test_promo_code(code='SPENT', redemptions_max=0)
+    create_test_promo_code(code='WELCOME')
 
     with django_capture_on_commit_callbacks(execute=True):
-        token = account_create(client)
-        body = {'code': 'WIB2026'}
-        response = api_post(client, ACCOUNT_PROMO_PATH, body=body, token=token)
+        account_create(client, promo_code='WIB2026')
+        token = account_create(client, email='morgan@example.com')
 
-    assert response.status_code == 200
-    assert AccountLedgerEntry.objects.promos().count() == 1
-    assert metric_dispatched.dispatched == [_acquisition(REFERENCE_SIGNUP)]
+        for code, status in PROMO_REDEMPTIONS:
+            body = {'code': code}
+            response = api_post(client, ACCOUNT_PROMO_PATH, body=body, token=token)
+
+            assert response.status_code == status, code
+
+    promos = AccountLedgerEntry.objects.promos()
+
+    assert promos.count() == 3
+
+    assert Counter(metric_dispatched.references()) == {
+        REFERENCE_REDEMPTION: promos.count(),
+        REFERENCE_REDEMPTION_WIB: promos.by_campaign(CampaignChoices.WIB).count(),
+        REFERENCE_SIGNUP: 2,
+        REFERENCE_SIGNUP_WIB: 1,
+    }
 
 
 def test_purchase_records_purchase_hours_once(
@@ -719,6 +799,8 @@ def test_recorders_produce_exactly_the_closed_reference_set(
 ) -> None:
     with django_capture_on_commit_callbacks(execute=True):
         for campaign in CampaignChoices.values:
+            funnel_lead_record(campaign=campaign)
+            funnel_redemption_record(campaign=campaign)
             funnel_signup_record(campaign=campaign)
 
             for page in FunnelPageChoices.values:
@@ -768,8 +850,11 @@ def test_signup_counts_every_account_and_a_campaign_promo_under_its_campaign(
     assert AccountLedgerEntry.objects.promos().count() == 2
 
     assert metric_dispatched.dispatched == [
+        _acquisition(REFERENCE_REDEMPTION),
+        _acquisition(REFERENCE_REDEMPTION_WIB),
         _acquisition(REFERENCE_SIGNUP),
         _acquisition(REFERENCE_SIGNUP_WIB),
         _acquisition(REFERENCE_SIGNUP),
+        _acquisition(REFERENCE_REDEMPTION),
         _acquisition(REFERENCE_SIGNUP),
     ]

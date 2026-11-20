@@ -4,6 +4,7 @@
 *.key
 *.local
 *.log
+*.sql
 *.sqlite3
 *.tsbuildinfo
 .cache/

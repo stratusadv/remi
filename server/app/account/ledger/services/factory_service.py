@@ -13,6 +13,7 @@ from django_spire.contrib.constructor.service import BaseDjangoModelService
 
 from app.account.constants import (
     ACCOUNT_LEDGER_ENTRY_REFERENCE_LENGTH_MAX,
+    ADJUSTMENT_HOURS_MAX,
     CHARGE_JOB_ID_PATTERN,
     CHARGE_SECONDS_MAX,
     SECONDS_PER_HOUR,
@@ -75,6 +76,17 @@ def _entry_relations_validate(
         if promo_code.pk is None:
             message = f'promo_code must be saved: {promo_code!r}'
             raise ValueError(message)
+
+
+def _entry_seconds_sign(*, kind: str, negative: bool) -> int:
+    if kind not in AccountLedgerEntryKindChoices.values:
+        message = f'kind must be one of {AccountLedgerEntryKindChoices.values}: {kind!r}'
+        raise ValueError(message)
+
+    if kind == AccountLedgerEntryKindChoices.ADJUSTMENT:
+        return -1 if negative else 1
+
+    return -1 if kind in ACCOUNT_LEDGER_ENTRY_KINDS_DEBIT else 1
 
 
 def _metadata_integer(metadata: dict[str, str], key: str) -> int:
@@ -212,10 +224,9 @@ class AccountLedgerEntryFactoryService(BaseDjangoModelService['AccountLedgerEntr
 
             raise ValueError(message)
 
-        seconds_sign = -1 if kind in ACCOUNT_LEDGER_ENTRY_KINDS_DEBIT else 1
         seconds_min = 0 if kind in ACCOUNT_LEDGER_ENTRY_KINDS_ZERO else 1
 
-        if seconds * seconds_sign < seconds_min:
+        if seconds * _entry_seconds_sign(kind=kind, negative=seconds < 0) < seconds_min:
             message = f'a {kind} entry cannot move {seconds} seconds'
             raise ValueError(message)
 
@@ -423,6 +434,28 @@ class AccountLedgerEntryFactoryService(BaseDjangoModelService['AccountLedgerEntr
             )
 
             raise RuntimeError(message)
+
+    def adjustment_create(self, *, account: Account, reference: str, seconds: int) -> None:
+        seconds_max = ADJUSTMENT_HOURS_MAX * SECONDS_PER_HOUR
+
+        if not 0 < abs(seconds) <= seconds_max:
+            message = f'an adjustment moves 1 to {seconds_max} seconds either way: {seconds}'
+            raise ValueError(message)
+
+        if not 0 < len(reference) <= ACCOUNT_LEDGER_ENTRY_REFERENCE_LENGTH_MAX:
+            message = (
+                f'reference must be 1 to {ACCOUNT_LEDGER_ENTRY_REFERENCE_LENGTH_MAX} '
+                f'characters: {reference!r}'
+            )
+
+            raise ValueError(message)
+
+        _ = self._entry_create(
+            account=account,
+            kind=AccountLedgerEntryKindChoices.ADJUSTMENT,
+            reference=reference,
+            seconds=seconds,
+        )
 
     def charge_create(self, *, account: Account, job_id: str, seconds: int) -> None:
         if CHARGE_JOB_ID_PATTERN.fullmatch(job_id) is None:

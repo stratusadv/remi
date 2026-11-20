@@ -66,6 +66,7 @@ jobs:
                   uploadWorkflowArtifacts: ${{ github.event_name == 'workflow_dispatch' }}
                   releaseBody: See the assets below to download this version.
                   releaseDraft: false
+                  prerelease: true
                   updaterJsonPreferNsis: true
 
     updater:
@@ -108,3 +109,9 @@ jobs:
                   done
 
                   gh release upload "$GITHUB_REF_NAME" latest.json --clobber
+
+            - name: Mark the release latest
+              shell: bash
+              run: |
+                  gh release edit "$GITHUB_REF_NAME" --prerelease=false
+                  gh release edit "$GITHUB_REF_NAME" --latest

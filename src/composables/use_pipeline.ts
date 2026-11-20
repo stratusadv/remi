@@ -181,15 +181,19 @@ function job_open_commit(
 
     const generation = notes_generations.value.find((entry) => entry.job_id === meta.id)
     const notes_kept = meta.id === job_id_current.value ? notes_markdown.value : null
+    const template_id_kept = meta.id === job_id_current.value ? template_id_selected.value : null
 
     job_id_current.value = meta.id
     source_path.value = meta.source_path
     meta_current.value = meta
-    transcript.value = documents.transcript
     notes_markdown.value = generation?.text ?? notes_kept ?? documents.notes ?? ''
+    template_id_selected.value = template_id_kept ?? meta.template_id
+    transcript.value = documents.transcript
     waveform_current.value = null
     segment_focus.value = opening.focus
     citation_return.value = opening.citation
+
+    template_id_ensure()
 
     void waveform_refresh()
 
